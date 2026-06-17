@@ -512,9 +512,9 @@ func (h *TpcClientesHandler) ResetWalletAll(w http.ResponseWriter, r *http.Reque
 			`DELETE FROM wp_postmeta WHERE meta_key LIKE '_senderzz_wallet_%'`)
 		res["order_meta_deleted"] += tag.RowsAffected()
 	}
-	if h.tableExists(ctx, "wc_orders_meta") {
+	if h.tableExists(ctx, "sz_order_meta") {
 		tag, _ := tx.Exec(ctx,
-			`DELETE FROM wc_orders_meta WHERE meta_key LIKE '_senderzz_wallet_%'`)
+			`DELETE FROM sz_order_meta WHERE meta_key LIKE '_senderzz_wallet_%'`)
 		res["order_meta_deleted"] += tag.RowsAffected()
 	}
 

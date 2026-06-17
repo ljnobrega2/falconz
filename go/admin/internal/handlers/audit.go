@@ -54,7 +54,7 @@ func (h *AuditHandler) Counts(w http.ResponseWriter, r *http.Request) {
 		_ = h.Pool.QueryRow(ctx,
 			`SELECT COUNT(*) FROM sz_orders o
 			 WHERE o.status IN ('completo','entregue')
-			   AND ABS(COALESCE(o.gross,0)
+			   AND ABS(COALESCE(o.total,0)
 			           - COALESCE(o.affiliate_amount,0)
 			           - COALESCE(o.senderzz_fee,0)
 			           - COALESCE(o.producer_net,0)) > 0.01`).Scan(&out.Split)
@@ -106,13 +106,13 @@ func (h *AuditHandler) Problems(w http.ResponseWriter, r *http.Request) {
 		if typeKey == "" || typeKey == "split" {
 			rows, err := h.Pool.Query(ctx,
 				`SELECT o.id, o.affiliate_id, o.produtor_id,
-				        COALESCE(o.gross,0) AS expected,
+				        COALESCE(o.total,0) AS expected,
 				        (COALESCE(o.affiliate_amount,0)
 				         + COALESCE(o.senderzz_fee,0)
 				         + COALESCE(o.producer_net,0)) AS actual
 				 FROM sz_orders o
 				 WHERE o.status IN ('completo','entregue')
-				   AND ABS(COALESCE(o.gross,0)
+				   AND ABS(COALESCE(o.total,0)
 				           - COALESCE(o.affiliate_amount,0)
 				           - COALESCE(o.senderzz_fee,0)
 				           - COALESCE(o.producer_net,0)) > 0.01
@@ -250,7 +250,7 @@ func (h *AuditHandler) FixAll(w http.ResponseWriter, r *http.Request) {
 	if h.tableExists(ctx, "sz_orders") && h.tableExists(ctx, "sz_cod_wallet_transactions") {
 		tag, err := h.Pool.Exec(ctx,
 			`UPDATE sz_cod_wallet_transactions c
-			 SET gross = COALESCE(o.gross,0),
+			 SET gross = COALESCE(o.total,0),
 			     fee = COALESCE(o.senderzz_fee,0) + COALESCE(o.delivery_fee,0),
 			     net = COALESCE(o.producer_net,0),
 			     updated_at = NOW()
@@ -335,7 +335,7 @@ func (h *AuditHandler) FixOrder(w http.ResponseWriter, r *http.Request) {
 	if h.tableExists(ctx, "sz_orders") && h.tableExists(ctx, "sz_cod_wallet_transactions") {
 		tag, err := h.Pool.Exec(ctx,
 			`UPDATE sz_cod_wallet_transactions c
-			 SET gross = COALESCE(o.gross,0),
+			 SET gross = COALESCE(o.total,0),
 			     fee = COALESCE(o.senderzz_fee,0) + COALESCE(o.delivery_fee,0),
 			     net = COALESCE(o.producer_net,0),
 			     updated_at = NOW()

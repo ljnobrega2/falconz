@@ -197,8 +197,8 @@ func (h *CodLivroHandler) Orders(w http.ResponseWriter, r *http.Request) {
 	// por par (afiliado_id, produtor_id). COALESCE: valor armazenado → derivado por aritmética.
 	// Quando a tabela não existe, mantém cálculo derivado via (affiliate_amount/gross*100).
 	affJoin := ""
-	commPctExpr := `CASE WHEN COALESCE(o.gross,0) > 0
-		             THEN ROUND( (COALESCE(o.affiliate_amount,0) / o.gross * 100)::numeric, 2)
+	commPctExpr := `CASE WHEN COALESCE(o.total,0) > 0
+		             THEN ROUND( (COALESCE(o.affiliate_amount,0) / o.total * 100)::numeric, 2)
 		             ELSE 0
 		        END`
 	if hasAffiliates {
@@ -210,8 +210,8 @@ func (h *CodLivroHandler) Orders(w http.ResponseWriter, r *http.Request) {
 		) saff ON saff.afiliado_id = o.affiliate_id AND saff.produtor_id = o.produtor_id`
 		commPctExpr = `CASE WHEN COALESCE(saff.comissao_pct, 0) > 0
 		             THEN ROUND(saff.comissao_pct::numeric, 2)
-		             WHEN COALESCE(o.gross,0) > 0
-		             THEN ROUND( (COALESCE(o.affiliate_amount,0) / o.gross * 100)::numeric, 2)
+		             WHEN COALESCE(o.total,0) > 0
+		             THEN ROUND( (COALESCE(o.affiliate_amount,0) / o.total * 100)::numeric, 2)
 		             ELSE 0
 		        END`
 	}
@@ -231,14 +231,14 @@ func (h *CodLivroHandler) Orders(w http.ResponseWriter, r *http.Request) {
 		        `+emailExpr+` AS affiliate_email,
 		        COALESCE(o.produtor_id, 0)::bigint AS producer_id,
 		        `+commPctExpr+` AS commission_pct,
-		        COALESCE(o.gross,0) AS valor_pedido,
-		        CASE WHEN o.status IN (`+codLivroFrustratedStatuses+`) THEN 0 ELSE COALESCE(o.gross,0)             END AS bruto_valido,
+		        COALESCE(o.total,0) AS valor_pedido,
+		        CASE WHEN o.status IN (`+codLivroFrustratedStatuses+`) THEN 0 ELSE COALESCE(o.total,0)             END AS bruto_valido,
 		        CASE WHEN o.status IN (`+codLivroFrustratedStatuses+`) THEN 0 ELSE COALESCE(o.senderzz_fee,0)      END AS taxas_senderzz,
 		        CASE WHEN o.status IN (`+codLivroFrustratedStatuses+`) THEN 0 ELSE COALESCE(o.delivery_fee,0)      END AS taxa_entrega,
 		        CASE WHEN o.status IN (`+codLivroFrustratedStatuses+`) THEN 0 ELSE COALESCE(o.transaction_fee,0)   END AS taxa_transacao,
 		        CASE WHEN o.status IN (`+codLivroFrustratedStatuses+`) THEN 0 ELSE COALESCE(o.affiliate_amount,0)  END AS valor_afiliado,
 		        CASE WHEN o.status IN (`+codLivroFrustratedStatuses+`) THEN 0 ELSE COALESCE(o.producer_net,0)      END AS liquido_produtor,
-		        CASE WHEN o.status IN (`+codLivroFrustratedStatuses+`) THEN COALESCE(o.gross,0) ELSE 0             END AS valor_nao_recebido,
+		        CASE WHEN o.status IN (`+codLivroFrustratedStatuses+`) THEN COALESCE(o.total,0) ELSE 0             END AS valor_nao_recebido,
 		        CASE WHEN o.status IN (`+codLivroFrustratedStatuses+`)
 		             THEN COALESCE(tx.tx_penalty,0) + 0 /* frustrado_produtor sem fonte ainda */
 		             ELSE 0
@@ -445,10 +445,10 @@ func (h *CodLivroHandler) ProducersSummary(w http.ResponseWriter, r *http.Reques
 		                  AND o.status NOT IN (`+codLivroFrustratedStatuses+`)
 		                 THEN 1 ELSE 0 END)::bigint AS previstos,
 		        COALESCE(SUM(CASE WHEN o.status NOT IN (`+codLivroFrustratedStatuses+`)
-		                          THEN COALESCE(o.gross,0) ELSE 0 END), 0)             AS bruto,
+		                          THEN COALESCE(o.total,0) ELSE 0 END), 0)             AS bruto,
 		        COALESCE(SUM(CASE WHEN o.status NOT IN (`+codLivroReceivedStatuses+`)
 		                           AND o.status NOT IN (`+codLivroFrustratedStatuses+`)
-		                          THEN COALESCE(o.gross,0) ELSE 0 END), 0)             AS bruto_previsto,
+		                          THEN COALESCE(o.total,0) ELSE 0 END), 0)             AS bruto_previsto,
 		        COALESCE(SUM(CASE WHEN o.status NOT IN (`+codLivroFrustratedStatuses+`)
 		                          THEN COALESCE(o.senderzz_fee,0) ELSE 0 END), 0)      AS taxas_senderzz,
 		        COALESCE(SUM(CASE WHEN o.status NOT IN (`+codLivroFrustratedStatuses+`)

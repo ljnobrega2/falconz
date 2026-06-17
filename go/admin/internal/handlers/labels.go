@@ -237,7 +237,7 @@ func (h *LabelsHandler) KPIs(w http.ResponseWriter, r *http.Request) {
 	_ = h.Pool.QueryRow(ctx,
 		fmt.Sprintf(`SELECT COUNT(*) FROM sz_orders
 		 WHERE status IN (%s)
-		   AND date_created_gmt::date = $%d`, inClause, len(args)+1),
+		   AND created_at::date = $%d`, inClause, len(args)+1),
 		append(args, today)...).Scan(&k.Hoje)
 
 	// Processando: total sem filtro de data.
@@ -347,7 +347,7 @@ func (h *LabelsHandler) fetchMarginData(ctx context.Context, dateFrom, dateTo st
 	qSQL := `
 		SELECT
 			o.id                                                                    AS order_id,
-			COALESCE(o.date_created_gmt::date::text, '')                           AS order_date,
+			COALESCE(o.created_at::date::text, '')                           AS order_date,
 			COALESCE(o.status, '')                                                  AS order_status,
 			MAX(CASE WHEN m.meta_key = '_senderzz_service_fee'
 				THEN CAST(m.meta_value AS NUMERIC(10,2)) END)                       AS margin,
@@ -377,11 +377,11 @@ func (h *LabelsHandler) fetchMarginData(ctx context.Context, dateFrom, dateTo st
 				'_senderzz_motoboy_flow_status',
 				'_senderzz_motoboy_status'
 			)
-		WHERE o.date_created_gmt::date BETWEEN $1::date AND $2::date
-		GROUP BY o.id, o.date_created_gmt, o.status
+		WHERE o.created_at::date BETWEEN $1::date AND $2::date
+		GROUP BY o.id, o.created_at, o.status
 		HAVING MAX(CASE WHEN m.meta_key = '_senderzz_service_fee'
 			THEN CAST(m.meta_value AS NUMERIC(10,2)) END) IS NOT NULL
-		ORDER BY o.date_created_gmt DESC`
+		ORDER BY o.created_at DESC`
 
 	rows, err := h.Pool.Query(ctx, qSQL, dateFrom, dateTo)
 	if err != nil {

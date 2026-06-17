@@ -151,7 +151,7 @@ func (h *OrdersHandler) ListMotoboy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sqlQ := `SELECT mp.id, mp.wc_order_id, ` + szOrderSel + `,
-	                mp.motoboy_id, COALESCE(mp.status,''), COALESCE(mp.valor,0),
+	                mp.motoboy_id, COALESCE(mp.status,''), COALESCE(mp.valor_pedido,0),
 	                COALESCE(mp.dest_nome,''), COALESCE(mp.dest_cep,''),
 	                COALESCE(mp.dest_cidade,''), COALESCE(mp.dest_nome,'') AS cliente_nome,
 	                ` + produtoSel + `, ` + afiliadoSel + `, ` + comissaoSel + `,
@@ -272,7 +272,7 @@ func (h *OrdersHandler) AuditFix(w http.ResponseWriter, r *http.Request) {
 	if h.tableExists(ctx, "sz_cod_wallet_transactions") {
 		tag, e := h.Pool.Exec(ctx,
 			`UPDATE sz_cod_wallet_transactions c
-			 SET gross = COALESCE(o.gross,0),
+			 SET gross = COALESCE(o.total,0),
 			     fee = COALESCE(o.senderzz_fee,0) + COALESCE(o.delivery_fee,0),
 			     net = COALESCE(o.producer_net,0),
 			     updated_at = NOW()

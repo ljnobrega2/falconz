@@ -3,8 +3,8 @@ import { api } from '../api'
 
 type Tab = 'webhooks' | 'integrations' | 'motoboy'
 type WH = { id: number; webhook_id: number | null; event_type: string; response_code: number | null; response_body: string | null; created_at: string }
-type IL = { id: number; user_id: number | null; event: string; payload: string; created_at: string }
-type AU = { id: number; pedido_id: number | null; acao: string; descricao: string | null; created_at: string }
+type IL = { id: number; user_id: number | null; event: string; payload: unknown; created_at: string }
+type AU = { id: number; pedido_id: number | null; motoboy_id: number | null; actor_tipo: string; acao: string; de_status: string | null; para_status: string | null; meta_json: string | null; created_at: string }
 
 export default function Logs() {
   const [tab, setTab] = useState<Tab>('webhooks')
@@ -17,11 +17,11 @@ export default function Logs() {
   useEffect(() => {
     setErr('')
     if (tab === 'webhooks')
-      api<{ items: WH[]; total: number }>('/logs/webhooks?limit=100').then(r => { setWh(r.items); setTotals(t => ({ ...t, wh: r.total })) }).catch(e => setErr(e.message))
+      api<{ items: WH[]; total: number }>('/logs/webhooks?limit=100').then(r => { setWh(r.items ?? []); setTotals(t => ({ ...t, wh: r.total ?? 0 })) }).catch(e => setErr(e.message))
     if (tab === 'integrations')
-      api<{ items: IL[]; total: number }>('/logs/integrations?limit=100').then(r => { setIl(r.items); setTotals(t => ({ ...t, il: r.total })) }).catch(e => setErr(e.message))
+      api<{ items: IL[]; total: number }>('/logs/integrations?limit=100').then(r => { setIl(r.items ?? []); setTotals(t => ({ ...t, il: r.total ?? 0 })) }).catch(e => setErr(e.message))
     if (tab === 'motoboy')
-      api<{ items: AU[]; total: number }>('/logs/motoboy?limit=100').then(r => { setAu(r.items); setTotals(t => ({ ...t, au: r.total })) }).catch(e => setErr(e.message))
+      api<{ items: AU[]; total: number }>('/logs/motoboy?limit=100').then(r => { setAu(r.items ?? []); setTotals(t => ({ ...t, au: r.total ?? 0 })) }).catch(e => setErr(e.message))
   }, [tab])
 
   const tabs: { key: Tab; label: string; count: number }[] = [
@@ -85,7 +85,7 @@ export default function Logs() {
                   <td style={{ fontSize: '12px', color: 'var(--szv2-text-muted)' }}>#{l.id}</td>
                   <td style={{ fontSize: '13px' }}>{l.user_id ?? '—'}</td>
                   <td><span style={{ fontFamily: 'var(--szv2-font-mono)', fontSize: '11px', background: 'var(--szv2-neutral-bg)', padding: '2px 8px', borderRadius: '6px' }}>{l.event}</span></td>
-                  <td style={{ fontSize: '13px', color: 'var(--szv2-text-soft)', maxWidth: '300px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{l.payload}</td>
+                  <td style={{ fontSize: '13px', color: 'var(--szv2-text-soft)', maxWidth: '300px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{typeof l.payload === 'string' ? l.payload : JSON.stringify(l.payload)}</td>
                   <td style={{ fontSize: '12px', color: 'var(--szv2-text-muted)' }}>{l.created_at.slice(0, 16).replace('T', ' ')}</td>
                 </tr>
               ))}
@@ -107,7 +107,7 @@ export default function Logs() {
                   <td style={{ fontSize: '12px', color: 'var(--szv2-text-muted)' }}>#{a.id}</td>
                   <td style={{ fontSize: '13px' }}>{a.pedido_id ? `#${a.pedido_id}` : '—'}</td>
                   <td><span style={{ background: 'var(--szv2-brand-light)', color: 'var(--szv2-brand)', fontSize: '11px', fontWeight: 700, padding: '2px 8px', borderRadius: '6px' }}>{a.acao}</span></td>
-                  <td style={{ fontSize: '13px', color: 'var(--szv2-text-soft)', maxWidth: '300px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.descricao ?? '—'}</td>
+                  <td style={{ fontSize: '13px', color: 'var(--szv2-text-soft)', maxWidth: '300px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.de_status && a.para_status ? `${a.de_status} → ${a.para_status}` : (a.meta_json ?? '—')}</td>
                   <td style={{ fontSize: '12px', color: 'var(--szv2-text-muted)' }}>{a.created_at.slice(0, 16).replace('T', ' ')}</td>
                 </tr>
               ))}

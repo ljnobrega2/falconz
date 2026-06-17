@@ -96,7 +96,7 @@ func (h *DashboardHandler) countByStatus(ctx context.Context, tbl string, status
 	dateClause := ""
 	if date != "" {
 		args = append(args, date)
-		dateClause = " AND date_created_gmt::date = $" + itoa(len(args))
+		dateClause = " AND created_at::date = $" + itoa(len(args))
 	}
 
 	var n int64
@@ -217,8 +217,8 @@ func (h *DashboardHandler) stoppedOrderRows(ctx context.Context) []stoppedOrder 
 		 WHERE m.meta_key = '_senderzz_motoboy_flow_status'
 		   AND m.meta_value IN ('agendado','embalado','em_rota','em-rota')
 		   AND COALESCE(o.status,'') NOT IN ('completed','entregue','frustrado','cancelled','refunded','failed')
-		   AND COALESCE(o.date_updated_gmt, o.date_created_gmt) < $1
-		 ORDER BY COALESCE(o.date_updated_gmt, o.date_created_gmt) ASC
+		   AND COALESCE(o.updated_at, o.created_at) < $1
+		 ORDER BY COALESCE(o.updated_at, o.created_at) ASC
 		 LIMIT 100`, threshold)
 	if err != nil {
 		return nil
@@ -240,7 +240,7 @@ func (h *DashboardHandler) auditCounts(ctx context.Context) (split, affBad, affM
 		_ = h.Pool.QueryRow(ctx,
 			`SELECT COUNT(*) FROM sz_orders o
 			 WHERE o.status IN ('completo','entregue')
-			   AND ABS(COALESCE(o.gross,0)
+			   AND ABS(COALESCE(o.total,0)
 			           - COALESCE(o.affiliate_amount,0)
 			           - COALESCE(o.senderzz_fee,0)
 			           - COALESCE(o.producer_net,0)) > 0.01`).Scan(&split)

@@ -332,7 +332,7 @@ func (h *MotoboysHandler) Dia(w http.ResponseWriter, r *http.Request) {
 		       COUNT(*) FILTER (WHERE p.status IN ('em_rota','wc-em-rota','wc-em_rota','a_caminho'))::bigint,
 		       COUNT(*) FILTER (WHERE p.status NOT IN ('entregue','frustrado','em_rota',
 		             'wc-em-rota','wc-em_rota','a_caminho','cancelado'))::bigint,
-		       COALESCE(SUM(p.valor), 0),
+		       COALESCE(SUM(p.valor_pedido), 0),
 		       ` + cdCol + `,
 		       ` + zonaCol + `,
 		       CASE WHEN COUNT(p.id) > 0

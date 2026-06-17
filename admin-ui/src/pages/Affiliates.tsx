@@ -12,7 +12,7 @@ export default function Affiliates() {
   async function load() {
     try {
       const r = await api<{ items: A[]; total: number }>(`/affiliates?q=${encodeURIComponent(q)}&limit=100`)
-      setItems(r.items); setTotal(r.total)
+      setItems(r.items ?? []); setTotal(r.total)
     } catch (e: any) { setErr(e.message) }
   }
   useEffect(() => { load() }, [])

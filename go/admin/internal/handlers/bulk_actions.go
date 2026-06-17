@@ -88,7 +88,7 @@ func (h *BulkActionsHandler) ListOrders(w http.ResponseWriter, r *http.Request) 
 			COALESCE(o.status, '') AS status,
 			COALESCE(o.shipping_class, '') AS shipping_class,
 			o.shipping_class_id,
-			COALESCE(o.gross, 0) AS total,
+			COALESCE(o.total, 0) AS total,
 			o.created_at::text`)
 
 	if hasLabels {

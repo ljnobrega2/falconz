@@ -1,6 +1,7 @@
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { getToken } from './api'
 import Layout from './components/Layout'
+import ErrorBoundary from './components/ErrorBoundary'
 import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
 import Users from './pages/Users'
@@ -61,6 +62,7 @@ function Protected({ children }: { children: JSX.Element }) {
 
 export default function App() {
   return (
+    <ErrorBoundary>
     <Routes>
       <Route path="/login" element={<Login />} />
       <Route path="/setup" element={<OnboardingSetup />} />
@@ -118,5 +120,6 @@ export default function App() {
         <Route path="/motoboy-mapa" element={<MotoboyMapa />} />
       </Route>
     </Routes>
+    </ErrorBoundary>
   )
 }

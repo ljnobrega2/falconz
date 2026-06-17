@@ -73,9 +73,9 @@ export default function Zonas() {
   const cepRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
-    api<{ items: CD[] }>('/cds').then(r => setCds(r.items)).catch(e => setErr(e.message))
-    api<{ items: Zona[] }>('/zonas').then(r => setZonas(r.items)).catch(e => setErr(e.message))
-    api<{ items: CepRange[] }>('/zonas/ceps').then(r => setCeps(r.items)).catch(e => setErr(e.message))
+    api<{ items: CD[] }>('/cds').then(r => setCds(r.items ?? [])).catch(e => setErr(e.message))
+    api<{ items: Zona[] }>('/zonas').then(r => setZonas(r.items ?? [])).catch(e => setErr(e.message))
+    api<{ items: CepRange[] }>('/zonas/ceps').then(r => setCeps(r.items ?? [])).catch(e => setErr(e.message))
   }, [])
 
   const cdName = (id: number) => cds.find(c => c.id === id)?.nome ?? `CD #${id}`
