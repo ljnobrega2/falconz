@@ -7,6 +7,9 @@ import FilterTopPanel, {
   ActiveFilterChips,
   type ActiveChip,
 } from '../components/FilterTopPanel'
+import TableSkeleton from '../components/TableSkeleton'
+import EmptyState from '../components/EmptyState'
+import CardKpiSkeleton from '../components/CardKpiSkeleton'
 
 type MB = {
   id: number
@@ -136,9 +139,10 @@ export default function MotoboysDay() {
       {err && <div className="sz-alert-danger">{err}</div>}
 
       {loading && (
-        <div className="szv2-card" style={{ padding: '48px', textAlign: 'center' }}>
-          <span style={{ color: 'var(--szv2-text-muted)' }}>Carregando…</span>
-        </div>
+        <>
+          <CardKpiSkeleton count={6} />
+          <TableSkeleton rows={4} cols={4} />
+        </>
       )}
 
       {/* Alerta: pedidos sem motoboy */}
@@ -188,9 +192,11 @@ export default function MotoboysDay() {
       )}
 
       {!loading && mbs.length === 0 && !err && (
-        <div className="szv2-card">
-          <div className="szv2-empty"><h3>Nenhum motoboy com pedidos hoje</h3></div>
-        </div>
+        <EmptyState
+          icon="🛵"
+          title="Nenhum motoboy com pedidos hoje."
+          description="Pedidos atribuídos aos motoboys aparecem aqui ao longo do dia."
+        />
       )}
 
       {/* Grid de cards por motoboy */}

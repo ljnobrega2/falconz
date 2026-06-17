@@ -18,6 +18,8 @@ import FilterTopPanel, {
   ActiveFilterChips,
   type ActiveChip,
 } from '../components/FilterTopPanel'
+import TableSkeleton from '../components/TableSkeleton'
+import EmptyState from '../components/EmptyState'
 
 // ─── Tipos ────────────────────────────────────────────────────────────────
 
@@ -297,14 +299,14 @@ export default function MotoboyEtiquetas() {
 
       {/* Container que sobrevive ao @media print. */}
       <div id="sz-etiq-print">
-        {loading ? (
-          <div className="szv2-card" style={{ padding: 48, textAlign: 'center', color: 'var(--szv2-text-muted)' }}>
-            Carregando…
-          </div>
-        ) : items.length === 0 ? (
-          <div className="szv2-card" style={{ padding: 48, textAlign: 'center', color: 'var(--szv2-text-muted)' }}>
-            Nenhum pedido {STATUS_LIST.find(s => s.key === status)?.label.toLowerCase() ?? status} em {dateLabel}.
-          </div>
+        {loading && items.length === 0 ? (
+          <TableSkeleton rows={4} cols={5} />
+        ) : !loading && items.length === 0 ? (
+          <EmptyState
+            icon="🏷️"
+            title={`Nenhum pedido ${STATUS_LIST.find(s => s.key === status)?.label.toLowerCase() ?? status} em ${dateLabel}.`}
+            description="Selecione outro dia ou outro status para gerar etiquetas."
+          />
         ) : (
           <div className="sz-etiq-grid">
             {items.map((e) => (

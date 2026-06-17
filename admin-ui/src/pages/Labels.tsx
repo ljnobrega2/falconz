@@ -7,6 +7,8 @@ import FilterTopPanel, {
   ActiveFilterChips,
   type ActiveChip,
 } from '../components/FilterTopPanel'
+import TableSkeleton from '../components/TableSkeleton'
+import EmptyState from '../components/EmptyState'
 
 type L = { id: number; wc_order_id: number; me_shipment_id: string | null; status: string; service_name: string | null; tracking_code: string | null; created_at: string }
 
@@ -31,6 +33,7 @@ export default function Labels() {
   const init = useMemo(defaultRange, [])
   const [items, setItems] = useState<L[]>([])
   const [total, setTotal] = useState(0)
+  const [loading, setLoading] = useState(true)
 
   // Filtros aplicados.
   const [status, setStatus] = useState('')
@@ -57,9 +60,11 @@ export default function Labels() {
   }
 
   useEffect(() => {
+    setLoading(true)
     api<{ items: L[]; total: number }>(`/labels?${buildQs()}`)
       .then(r => { setItems(r.items || []); setTotal(r.total) })
       .catch(e => setErr(e.message))
+      .finally(() => setLoading(false))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status, dataIni, dataFim, q])
 
@@ -103,6 +108,15 @@ export default function Labels() {
 
       {err && <div className="sz-alert-danger">{err}</div>}
 
+      {loading && items.length === 0 ? (
+        <TableSkeleton rows={6} cols={7} />
+      ) : !loading && items.length === 0 ? (
+        <EmptyState
+          icon="🏷️"
+          title="Nenhuma etiqueta gerada no período."
+          description="Ajuste o intervalo ou remova os filtros aplicados."
+        />
+      ) : (
       <div className="szv2-table-wrap">
         <table className="szv2-table">
           <thead>
@@ -132,12 +146,10 @@ export default function Labels() {
                 <td style={{ color: 'var(--szv2-text-muted)', fontSize: '12px' }}>{l.created_at.slice(0, 16).replace('T', ' ')}</td>
               </tr>
             ))}
-            {items.length === 0 && (
-              <tr><td colSpan={7}><div className="szv2-empty"><h3>Nenhuma etiqueta</h3><p>Tente outro filtro.</p></div></td></tr>
-            )}
           </tbody>
         </table>
       </div>
+      )}
 
       <FilterTopPanel
         open={filterOpen}

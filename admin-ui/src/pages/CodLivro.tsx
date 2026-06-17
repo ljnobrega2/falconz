@@ -7,6 +7,8 @@ import FilterTopPanel, {
   ActiveFilterChips,
   type ActiveChip,
 } from '../components/FilterTopPanel'
+import TableSkeleton from '../components/TableSkeleton'
+import EmptyState from '../components/EmptyState'
 
 type Summary = {
   bruto_cod: number
@@ -267,14 +269,14 @@ export default function CodLivro() {
           </div>
         </div>
 
-        {loading ? (
-          <div style={{ padding: 48, textAlign: 'center', color: 'var(--szv2-text-muted)' }}>
-            Carregando…
-          </div>
-        ) : filteredOrders.length === 0 ? (
-          <div style={{ padding: 48, textAlign: 'center', color: 'var(--szv2-text-muted)' }}>
-            Nenhum pedido no período selecionado.
-          </div>
+        {loading && filteredOrders.length === 0 ? (
+          <TableSkeleton rows={6} cols={22} />
+        ) : !loading && filteredOrders.length === 0 ? (
+          <EmptyState
+            icon="📒"
+            title="Nenhum pedido no período selecionado."
+            description="Ajuste o range de datas ou os filtros aplicados."
+          />
         ) : (
           <div style={{ overflowX: 'auto' }}>
             <table className="szv2-table" style={{ minWidth: 2400 }}>

@@ -7,6 +7,8 @@ import FilterTopPanel, {
   ActiveFilterChips,
   type ActiveChip,
 } from '../components/FilterTopPanel'
+import TableSkeleton from '../components/TableSkeleton'
+import EmptyState from '../components/EmptyState'
 
 type A = {
   user_id: number
@@ -42,6 +44,7 @@ const STATUS_OPTS = [
 export default function Affiliates() {
   const [items, setItems] = useState<A[]>([])
   const [total, setTotal] = useState(0)
+  const [loading, setLoading] = useState(true)
   const [err, setErr] = useState('')
 
   // Filtros aplicados — disparam fetch.
@@ -69,12 +72,15 @@ export default function Affiliates() {
   }
 
   async function load() {
+    setLoading(true)
     try {
       const r = await api<{ items: A[]; total: number }>(`/affiliates?${buildQs()}`)
       setItems(r.items ?? [])
       setTotal(r.total)
     } catch (e: any) {
       setErr(e.message)
+    } finally {
+      setLoading(false)
     }
   }
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -152,6 +158,15 @@ export default function Affiliates() {
         </div></div>
       </div>
 
+      {loading && items.length === 0 ? (
+        <TableSkeleton rows={6} cols={15} />
+      ) : !loading && items.length === 0 ? (
+        <EmptyState
+          icon="🤝"
+          title="Nenhum afiliado cadastrado ainda."
+          description="Quando houver afiliados, eles aparecem aqui."
+        />
+      ) : (
       <div className="szv2-table-wrap">
         <table className="szv2-table">
           <thead>
@@ -219,12 +234,10 @@ export default function Affiliates() {
                 <td style={{ color: 'var(--szv2-text-muted)', fontSize: '12px' }}>{a.created_at ? a.created_at.slice(0, 10) : '—'}</td>
               </tr>
             ))}
-            {items.length === 0 && (
-              <tr><td colSpan={15}><div className="szv2-empty"><h3>Nenhum afiliado</h3><p>Tente ajustar o filtro.</p></div></td></tr>
-            )}
           </tbody>
         </table>
       </div>
+      )}
 
       <FilterTopPanel
         open={filterOpen}

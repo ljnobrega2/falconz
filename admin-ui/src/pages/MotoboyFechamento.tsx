@@ -13,6 +13,8 @@ import FilterTopPanel, {
   ActiveFilterChips,
   type ActiveChip,
 } from '../components/FilterTopPanel'
+import TableSkeleton from '../components/TableSkeleton'
+import EmptyState from '../components/EmptyState'
 
 // ─── Tipos ────────────────────────────────────────────────────────────────
 
@@ -519,14 +521,14 @@ export default function MotoboyFechamento() {
           </div>
         </div>
 
-        {loading ? (
-          <div style={{ padding: 48, textAlign: 'center', color: 'var(--szv2-text-muted)' }}>
-            Carregando…
-          </div>
-        ) : items.length === 0 ? (
-          <div style={{ padding: 48, textAlign: 'center', color: 'var(--szv2-text-muted)' }}>
-            Nenhum fechamento no período selecionado.
-          </div>
+        {loading && items.length === 0 ? (
+          <TableSkeleton rows={5} cols={13} />
+        ) : !loading && items.length === 0 ? (
+          <EmptyState
+            icon="🧾"
+            title="Nenhum fechamento no período selecionado."
+            description="Fechamentos diários aparecem aqui após Alan confirmar e o repasse ser registrado."
+          />
         ) : (
           <div style={{ overflowX: 'auto' }}>
             <table className="szv2-table">

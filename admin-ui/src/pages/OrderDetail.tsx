@@ -15,6 +15,8 @@ import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 
 import { useNavigate, useParams } from 'react-router-dom'
 import { api } from '../api'
 import CopyButton from '../components/CopyButton'
+import EmptyState from '../components/EmptyState'
+import CardKpiSkeleton from '../components/CardKpiSkeleton'
 
 // ── Tipos ─────────────────────────────────────────────────────────────────────
 
@@ -415,9 +417,18 @@ export default function OrderDetail() {
   }
 
   if (loading) {
+    // Skeleton de cards enquanto o payload consolidado carrega — evita "tela branca".
     return (
-      <div className="szv2-card" style={{ padding: 48, textAlign: 'center' }}>
-        <span style={{ color: 'var(--szv2-text-muted)' }}>Carregando pedido…</span>
+      <div>
+        <div className="szv2-section-head">
+          <div>
+            <h1>Pedido</h1>
+            <p>Carregando…</p>
+          </div>
+        </div>
+        <CardKpiSkeleton count={1} />
+        <CardKpiSkeleton count={1} />
+        <CardKpiSkeleton count={1} />
       </div>
     )
   }
@@ -428,11 +439,19 @@ export default function OrderDetail() {
         <div className="szv2-section-head">
           <div>
             <h1>Pedido</h1>
-            <p>Erro ao carregar</p>
+            <p>{err ? 'Erro ao carregar' : 'Pedido não encontrado'}</p>
           </div>
           <button className="szv2-btn-secondary" onClick={() => navigate(-1)}>Voltar</button>
         </div>
-        {err && <div className="sz-alert-danger">{err}</div>}
+        {err && <div className="sz-alert-danger" style={{ marginBottom: 16 }}>{err}</div>}
+        {!data && !err && (
+          <EmptyState
+            icon="🔍"
+            title="Pedido não encontrado."
+            description="Verifique o ID do pedido ou volte para a listagem."
+            action={{ label: 'Voltar', onClick: () => navigate(-1) }}
+          />
+        )}
       </div>
     )
   }

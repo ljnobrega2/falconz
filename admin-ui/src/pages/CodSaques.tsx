@@ -13,6 +13,8 @@ import FilterTopPanel, {
   ActiveFilterChips,
   type ActiveChip,
 } from '../components/FilterTopPanel'
+import TableSkeleton from '../components/TableSkeleton'
+import EmptyState from '../components/EmptyState'
 
 // ─── Tipos ────────────────────────────────────────────────────────────────
 
@@ -556,14 +558,16 @@ export default function CodSaques() {
             />
           </div>
 
-          {loading ? (
-            <div style={{ padding: 48, textAlign: 'center', color: 'var(--szv2-text-muted)' }}>
-              Carregando…
-            </div>
-          ) : (tab === 'producer' ? visibleProd.length : visibleAff.length) === 0 ? (
-            <div style={{ padding: 48, textAlign: 'center', color: 'var(--szv2-text-muted)' }}>
-              Nenhum saque encontrado para este filtro.
-            </div>
+          {loading && (tab === 'producer' ? visibleProd.length : visibleAff.length) === 0 ? (
+            <TableSkeleton rows={5} cols={9} />
+          ) : !loading && (tab === 'producer' ? visibleProd.length : visibleAff.length) === 0 ? (
+            <EmptyState
+              icon="💸"
+              title="Nenhum saque encontrado para este filtro."
+              description={tab === 'producer'
+                ? 'Solicitações de saque dos produtores aparecem aqui.'
+                : 'Solicitações de saque dos afiliados aparecem aqui.'}
+            />
           ) : tab === 'producer' ? (
             <div style={{ overflowX: 'auto' }}>
               <table className="szv2-table">

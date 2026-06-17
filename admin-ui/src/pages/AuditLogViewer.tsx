@@ -7,6 +7,8 @@ import FilterTopPanel, {
   ActiveFilterChips,
   type ActiveChip,
 } from '../components/FilterTopPanel'
+import TableSkeleton from '../components/TableSkeleton'
+import EmptyState from '../components/EmptyState'
 
 // ----- Tipos do handler Go ---------------------------------------------------
 
@@ -349,6 +351,15 @@ export default function AuditLogViewer() {
       )}
 
       {/* ── Tabela ──────────────────────────────────────────────────── */}
+      {loading && items.length === 0 ? (
+        <TableSkeleton rows={6} cols={8} />
+      ) : !loading && items.length === 0 ? (
+        <EmptyState
+          icon="📜"
+          title="Sem eventos no período."
+          description="Ajuste o range de datas ou os filtros aplicados."
+        />
+      ) : (
       <div className="szv2-table-wrap">
         <table className="szv2-table">
           <thead>
@@ -364,22 +375,7 @@ export default function AuditLogViewer() {
             </tr>
           </thead>
           <tbody>
-            {loading ? (
-              <tr>
-                <td colSpan={8}>
-                  <div className="szv2-empty"><h3>Carregando…</h3></div>
-                </td>
-              </tr>
-            ) : items.length === 0 ? (
-              <tr>
-                <td colSpan={8}>
-                  <div className="szv2-empty">
-                    <h3>Nenhum registro de auditoria no período.</h3>
-                    <p>Ajuste o range de datas ou os filtros aplicados.</p>
-                  </div>
-                </td>
-              </tr>
-            ) : items.map(row => (
+            {items.map(row => (
               <tr key={row.id}>
                 <td style={{ color: 'var(--szv2-text-muted)', fontSize: 12 }}>#{row.id}</td>
                 <td style={{ fontSize: 12, color: 'var(--szv2-text-muted)' }}>
@@ -453,6 +449,7 @@ export default function AuditLogViewer() {
           </tbody>
         </table>
       </div>
+      )}
 
       {/* ── Paginação ─────────────────────────────────────────────── */}
       {total > perPage && (

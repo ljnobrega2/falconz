@@ -7,6 +7,8 @@ import FilterTopPanel, {
   ActiveFilterChips,
   type ActiveChip,
 } from '../components/FilterTopPanel'
+import TableSkeleton from '../components/TableSkeleton'
+import EmptyState from '../components/EmptyState'
 
 // ---------------------------------------------------------------------------
 // Tipos espelhados de internal/handlers/affiliate_wallet.go
@@ -559,6 +561,15 @@ export default function AffiliateWallet() {
       </div>
 
       {/* Tabela */}
+      {loading && rows.length === 0 ? (
+        <TableSkeleton rows={6} cols={9} />
+      ) : !loading && rows.length === 0 ? (
+        <EmptyState
+          icon="💼"
+          title="Nenhum afiliado com carteira encontrado."
+          description="Carteiras de afiliados aparecem aqui assim que houver comissões."
+        />
+      ) : (
       <div className="szv2-table-wrap">
         <table className="szv2-table">
           <thead>
@@ -575,23 +586,6 @@ export default function AffiliateWallet() {
             </tr>
           </thead>
           <tbody>
-            {loading && rows.length === 0 && (
-              <tr><td colSpan={9}>
-                <div style={{ padding: 40, textAlign: 'center', color: 'var(--szv2-text-muted)' }}>
-                  Carregando…
-                </div>
-              </td></tr>
-            )}
-
-            {!loading && rows.length === 0 && (
-              <tr><td colSpan={9}>
-                <div className="szv2-empty">
-                  <h3>Nenhum afiliado</h3>
-                  <p>Tente ajustar o filtro de busca.</p>
-                </div>
-              </td></tr>
-            )}
-
             {rows.map(r => {
               const st = statusCarteira(r)
               return (
@@ -655,6 +649,7 @@ export default function AffiliateWallet() {
           </tbody>
         </table>
       </div>
+      )}
 
       {drawer && (
         <TxDrawer

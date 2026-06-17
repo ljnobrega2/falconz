@@ -7,6 +7,9 @@ import FilterTopPanel, {
   ActiveFilterChips,
   type ActiveChip,
 } from '../components/FilterTopPanel'
+import TableSkeleton from '../components/TableSkeleton'
+import EmptyState from '../components/EmptyState'
+import CardKpiSkeleton from '../components/CardKpiSkeleton'
 
 // MotoboyDashboard — espelho da aba Dashboard do módulo Motoboy do plugin PHP.
 // Endpoint: GET /motoboy-dashboard?date=YYYY-MM-DD (default hoje em America/Sao_Paulo).
@@ -193,6 +196,9 @@ export default function MotoboyDashboard() {
       {err && <div className="sz-alert-danger" style={{ marginBottom: 16 }}>{err}</div>}
 
       {/* KPI grid — 5 cards (espelha sz_mb_tab_dashboard PHP) */}
+      {!kpis && loading ? (
+        <CardKpiSkeleton count={5} />
+      ) : (
       <div
         className="szv2-kpi-grid"
         style={{
@@ -206,6 +212,7 @@ export default function MotoboyDashboard() {
         <KpiCard label="Entregues"  value={kpis?.entregues  ?? 0} icon="✅" tone="success" sub="concluídos no dia" />
         <KpiCard label="Frustrados" value={kpis?.frustrados ?? 0} icon="❌" tone="danger"  sub="tentativas sem sucesso" />
       </div>
+      )}
 
       {/* Banner de fechamentos pendentes — exibido apenas quando count > 0, igual ao PHP */}
       {(kpis?.fechamentos_pendentes ?? 0) > 0 && (
@@ -225,14 +232,14 @@ export default function MotoboyDashboard() {
           </div>
         </div>
 
-        {loading ? (
-          <div style={{ padding: 48, textAlign: 'center', color: 'var(--szv2-text-muted)' }}>
-            Carregando…
-          </div>
-        ) : ranking.length === 0 ? (
-          <div style={{ padding: 48, textAlign: 'center', color: 'var(--szv2-text-muted)' }}>
-            Nenhum motoboy ativo no dia
-          </div>
+        {loading && ranking.length === 0 ? (
+          <TableSkeleton rows={5} cols={8} />
+        ) : !loading && ranking.length === 0 ? (
+          <EmptyState
+            icon="🛵"
+            title="Nenhum motoboy ativo no dia."
+            description="Selecione outro dia ou aguarde os motoboys iniciarem rotas."
+          />
         ) : (
           <div style={{ overflowX: 'auto' }}>
             <table className="szv2-table">

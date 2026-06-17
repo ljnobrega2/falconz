@@ -7,6 +7,8 @@ import FilterTopPanel, {
   ActiveFilterChips,
   type ActiveChip,
 } from '../components/FilterTopPanel'
+import TableSkeleton from '../components/TableSkeleton'
+import EmptyState from '../components/EmptyState'
 
 // ---------------------------------------------------------------------------
 // Tipos espelhados de internal/handlers/cod_wallet_producer.go
@@ -458,6 +460,15 @@ function FinancialSection() {
       )}
 
       {/* Tabela de produtores — 11 colunas do WP (linha 798) */}
+      {loading && finRows.length === 0 ? (
+        <TableSkeleton rows={5} cols={11} />
+      ) : !loading && finRows.length === 0 ? (
+        <EmptyState
+          icon="📊"
+          title="Nenhum produtor no período."
+          description="Tente ajustar o intervalo de datas."
+        />
+      ) : (
       <div className="szv2-table-wrap">
         <table className="szv2-table">
           <thead>
@@ -476,21 +487,6 @@ function FinancialSection() {
             </tr>
           </thead>
           <tbody>
-            {loading && finRows.length === 0 && (
-              <tr><td colSpan={11}>
-                <div style={{ padding: 32, textAlign: 'center', color: 'var(--szv2-text-muted)' }}>
-                  Carregando…
-                </div>
-              </td></tr>
-            )}
-            {!loading && finRows.length === 0 && (
-              <tr><td colSpan={11}>
-                <div className="szv2-empty">
-                  <h3>Nenhum produtor no período</h3>
-                  <p>Tente ajustar o intervalo de datas.</p>
-                </div>
-              </td></tr>
-            )}
             {finRows.map(r => (
               <tr key={r.producer_id}>
                 <td>
@@ -524,6 +520,7 @@ function FinancialSection() {
           </tbody>
         </table>
       </div>
+      )}
     </div>
   )
 }
@@ -1108,6 +1105,15 @@ export default function CodWalletProducer() {
           </div>
 
           {/* Tabela de carteira */}
+          {loading && rows.length === 0 ? (
+            <TableSkeleton rows={6} cols={7} />
+          ) : !loading && filteredRows.length === 0 ? (
+            <EmptyState
+              icon="💼"
+              title="Nenhum produtor com carteira COD encontrado."
+              description="Ajuste o filtro de busca ou aguarde a primeira movimentação."
+            />
+          ) : (
           <div className="szv2-table-wrap">
             <table className="szv2-table">
               <thead>
@@ -1122,23 +1128,6 @@ export default function CodWalletProducer() {
                 </tr>
               </thead>
               <tbody>
-                {loading && rows.length === 0 && (
-                  <tr><td colSpan={7}>
-                    <div style={{ padding: 40, textAlign: 'center', color: 'var(--szv2-text-muted)' }}>
-                      Carregando…
-                    </div>
-                  </td></tr>
-                )}
-
-                {!loading && filteredRows.length === 0 && (
-                  <tr><td colSpan={7}>
-                    <div className="szv2-empty">
-                      <h3>Nenhum produtor</h3>
-                      <p>Tente ajustar o filtro de busca.</p>
-                    </div>
-                  </td></tr>
-                )}
-
                 {filteredRows.map(r => (
                   <tr key={r.user_id}>
                     <td>
@@ -1208,6 +1197,7 @@ export default function CodWalletProducer() {
               </tbody>
             </table>
           </div>
+          )}
         </>
       )}
 

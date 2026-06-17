@@ -7,6 +7,8 @@ import FilterTopPanel, {
   ActiveFilterChips,
   type ActiveChip,
 } from '../components/FilterTopPanel'
+import TableSkeleton from '../components/TableSkeleton'
+import EmptyState from '../components/EmptyState'
 
 // ── Tipos ─────────────────────────────────────────────────────────────────────
 
@@ -423,14 +425,14 @@ export default function BulkActions() {
           </div>
         </div>
 
-        {loading ? (
-          <div style={{ padding: 48, textAlign: 'center', color: 'var(--szv2-text-muted)' }}>
-            Carregando…
-          </div>
-        ) : orders.length === 0 ? (
-          <div style={{ padding: 48, textAlign: 'center', color: 'var(--szv2-text-muted)' }}>
-            Nenhum pedido encontrado com os filtros atuais.
-          </div>
+        {loading && orders.length === 0 ? (
+          <TableSkeleton rows={6} cols={8} />
+        ) : !loading && orders.length === 0 ? (
+          <EmptyState
+            icon="📦"
+            title="Nenhum pedido elegível para ação em lote."
+            description="Ajuste os filtros acima para encontrar pedidos."
+          />
         ) : (
           <div style={{ overflowX: 'auto' }}>
             <table className="szv2-table">

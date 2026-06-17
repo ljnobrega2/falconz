@@ -7,6 +7,9 @@ import FilterTopPanel, {
   ActiveFilterChips,
   type ActiveChip,
 } from '../components/FilterTopPanel'
+import TableSkeleton from '../components/TableSkeleton'
+import EmptyState from '../components/EmptyState'
+import CardKpiSkeleton from '../components/CardKpiSkeleton'
 
 // MotoboyConciliacao — espelha sz_mb_tab_conciliacao() (admin.php:2064).
 // Conciliação bancária por pedido: confronta valores recebidos do cliente
@@ -351,6 +354,7 @@ export default function MotoboyConciliacao() {
       </FilterTopPanel>
 
       {/* 8 KPI cards (2 fileiras de 4) */}
+      {!kpis && loading && <CardKpiSkeleton count={4} />}
       {kpis && (
         <>
           <div
@@ -415,14 +419,14 @@ export default function MotoboyConciliacao() {
           </div>
         </div>
 
-        {loading ? (
-          <div style={{ padding: 48, textAlign: 'center', color: 'var(--szv2-text-muted)' }}>
-            Carregando…
-          </div>
-        ) : items.length === 0 ? (
-          <div style={{ padding: 48, textAlign: 'center', color: 'var(--szv2-text-muted)' }}>
-            Nenhum pedido válido no período.
-          </div>
+        {loading && items.length === 0 ? (
+          <TableSkeleton rows={6} cols={14} />
+        ) : !loading && items.length === 0 ? (
+          <EmptyState
+            icon="💼"
+            title="Nenhum pedido a conciliar no período."
+            description="Pedidos entregues ou frustrados aguardando conciliação aparecem aqui."
+          />
         ) : (
           <div style={{ overflowX: 'auto' }}>
             <table className="szv2-table">

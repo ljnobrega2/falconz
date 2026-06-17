@@ -7,6 +7,8 @@ import FilterTopPanel, {
   ActiveFilterChips,
   type ActiveChip,
 } from '../components/FilterTopPanel'
+import TableSkeleton from '../components/TableSkeleton'
+import EmptyState from '../components/EmptyState'
 
 type Counts = {
   split: number
@@ -242,14 +244,14 @@ export default function AuditEngine() {
           </div>
         </div>
 
-        {loading ? (
-          <div style={{ padding: 48, textAlign: 'center', color: 'var(--szv2-text-muted)' }}>
-            Carregando…
-          </div>
-        ) : problems.length === 0 ? (
-          <div style={{ padding: 48, textAlign: 'center', color: 'var(--szv2-text-muted)' }}>
-            Nenhuma divergência encontrada.
-          </div>
+        {loading && problems.length === 0 ? (
+          <TableSkeleton rows={5} cols={8} />
+        ) : !loading && problems.length === 0 ? (
+          <EmptyState
+            icon="✅"
+            title="Sem pedidos com divergência."
+            description="Quando houver divergências entre carteiras e pedidos, elas aparecem aqui."
+          />
         ) : (
           <div style={{ overflowX: 'auto' }}>
             <table className="szv2-table">

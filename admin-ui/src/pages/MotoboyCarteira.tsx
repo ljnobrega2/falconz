@@ -7,6 +7,9 @@ import FilterTopPanel, {
   ActiveFilterChips,
   type ActiveChip,
 } from '../components/FilterTopPanel'
+import TableSkeleton from '../components/TableSkeleton'
+import EmptyState from '../components/EmptyState'
+import CardKpiSkeleton from '../components/CardKpiSkeleton'
 
 // ----- Tipos retornados pelo handler Go -------------------------------------
 
@@ -248,6 +251,7 @@ export default function MotoboyCarteira() {
       )}
 
       {/* KPIs */}
+      {!summary && loading && <CardKpiSkeleton count={3} />}
       {summary && (
         <div className="szv2-kpi-grid" style={{ gridTemplateColumns: 'repeat(3, minmax(0,1fr))' }}>
           <KpiCard
@@ -280,14 +284,14 @@ export default function MotoboyCarteira() {
           </div>
         </div>
 
-        {loading ? (
-          <div style={{ padding: 48, textAlign: 'center', color: 'var(--szv2-text-muted)' }}>
-            Carregando…
-          </div>
-        ) : rows.length === 0 ? (
-          <div style={{ padding: 48, textAlign: 'center', color: 'var(--szv2-text-muted)' }}>
-            Nenhum motoboy encontrado.
-          </div>
+        {loading && rows.length === 0 ? (
+          <TableSkeleton rows={6} cols={8} />
+        ) : !loading && rows.length === 0 ? (
+          <EmptyState
+            icon="🛵"
+            title="Nenhum motoboy encontrado."
+            description="Cadastre motoboys ativos para começar a movimentar a carteira."
+          />
         ) : (
           <div style={{ overflowX: 'auto' }}>
             <table className="szv2-table">
@@ -640,14 +644,13 @@ function HistoricoModal({
         <div className="szv2-modal-body">
           {err && <div className="sz-alert-danger" style={{ marginBottom: 12 }}>{err}</div>}
 
-          {loading ? (
-            <div style={{ padding: 48, textAlign: 'center', color: 'var(--szv2-text-muted)' }}>
-              Carregando…
-            </div>
-          ) : items.length === 0 ? (
-            <div style={{ padding: 48, textAlign: 'center', color: 'var(--szv2-text-muted)' }}>
-              Sem lançamentos.
-            </div>
+          {loading && items.length === 0 ? (
+            <TableSkeleton rows={4} cols={9} />
+          ) : !loading && items.length === 0 ? (
+            <EmptyState
+              icon="📜"
+              title="Sem lançamentos para este motoboy."
+            />
           ) : (
             <div style={{ overflowX: 'auto' }}>
               <table className="szv2-table">

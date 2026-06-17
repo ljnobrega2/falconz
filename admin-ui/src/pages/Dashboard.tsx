@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../api'
+import CardKpiSkeleton from '../components/CardKpiSkeleton'
 
 type KPIs = {
   pedidos_hoje: number
@@ -130,11 +131,7 @@ export default function Dashboard() {
           />
         </div>
       ) : (
-        !errK && (
-          <div className="szv2-card" style={{ padding: '48px', textAlign: 'center' }}>
-            <span style={{ color: 'var(--szv2-text-muted)', fontSize: '14px' }}>Carregando KPIs…</span>
-          </div>
-        )
+        !errK && <CardKpiSkeleton count={6} />
       )}
 
       {/* Seção Alertas operacionais — espelha alert_line() */}
@@ -162,11 +159,7 @@ export default function Dashboard() {
             />
           </div>
         ) : (
-          !errAl && (
-            <div style={{ padding: '16px 0', color: 'var(--szv2-text-muted)', fontSize: '14px' }}>
-              Carregando alertas…
-            </div>
-          )
+          !errAl && <CardKpiSkeleton count={3} />
         )}
       </div>
     </div>

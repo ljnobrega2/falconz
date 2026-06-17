@@ -7,6 +7,8 @@ import FilterTopPanel, {
   ActiveFilterChips,
   type ActiveChip,
 } from '../components/FilterTopPanel'
+import TableSkeleton from '../components/TableSkeleton'
+import EmptyState from '../components/EmptyState'
 
 type Tab = 'webhooks' | 'integrations' | 'motoboy'
 type WH = { id: number; webhook_id: number | null; event_type: string; response_code: number | null; response_body: string | null; created_at: string }
@@ -19,6 +21,7 @@ export default function Logs() {
   const [il, setIl] = useState<IL[]>([])
   const [au, setAu] = useState<AU[]>([])
   const [totals, setTotals] = useState({ wh: 0, il: 0, au: 0 })
+  const [loading, setLoading] = useState(true)
   const [err, setErr] = useState('')
 
   // Filtros aplicados — compartilhados entre tabs.
@@ -39,6 +42,7 @@ export default function Logs() {
 
   useEffect(() => {
     setErr('')
+    setLoading(true)
     const p = new URLSearchParams()
     if (q.trim()) p.set('q', q.trim())
     if (dataIni) p.set('data_ini', dataIni)
@@ -50,11 +54,11 @@ export default function Logs() {
     p.set('limit', '100')
     const qs = p.toString()
     if (tab === 'webhooks')
-      api<{ items: WH[]; total: number }>(`/logs/webhooks?${qs}`).then(r => { setWh(r.items ?? []); setTotals(t => ({ ...t, wh: r.total ?? 0 })) }).catch(e => setErr(e.message))
+      api<{ items: WH[]; total: number }>(`/logs/webhooks?${qs}`).then(r => { setWh(r.items ?? []); setTotals(t => ({ ...t, wh: r.total ?? 0 })) }).catch(e => setErr(e.message)).finally(() => setLoading(false))
     if (tab === 'integrations')
-      api<{ items: IL[]; total: number }>(`/logs/integrations?${qs}`).then(r => { setIl(r.items ?? []); setTotals(t => ({ ...t, il: r.total ?? 0 })) }).catch(e => setErr(e.message))
+      api<{ items: IL[]; total: number }>(`/logs/integrations?${qs}`).then(r => { setIl(r.items ?? []); setTotals(t => ({ ...t, il: r.total ?? 0 })) }).catch(e => setErr(e.message)).finally(() => setLoading(false))
     if (tab === 'motoboy')
-      api<{ items: AU[]; total: number }>(`/logs/motoboy?${qs}`).then(r => { setAu(r.items ?? []); setTotals(t => ({ ...t, au: r.total ?? 0 })) }).catch(e => setErr(e.message))
+      api<{ items: AU[]; total: number }>(`/logs/motoboy?${qs}`).then(r => { setAu(r.items ?? []); setTotals(t => ({ ...t, au: r.total ?? 0 })) }).catch(e => setErr(e.message)).finally(() => setLoading(false))
   }, [tab, q, acao, ator, dataIni, dataFim])
 
   function openPanel() {
@@ -109,6 +113,11 @@ export default function Logs() {
       {err && <div className="sz-alert-danger">{err}</div>}
 
       {tab === 'webhooks' && (
+        loading && wh.length === 0 ? (
+          <TableSkeleton rows={6} cols={5} />
+        ) : !loading && wh.length === 0 ? (
+          <EmptyState icon="🔗" title="Sem logs de webhook no período." />
+        ) : (
         <div className="szv2-table-wrap">
           <table className="szv2-table">
             <thead><tr>
@@ -128,13 +137,18 @@ export default function Logs() {
                   <td style={{ fontSize: '12px', color: 'var(--szv2-text-muted)' }}>{l.created_at.slice(0, 16).replace('T', ' ')}</td>
                 </tr>
               ))}
-              {wh.length === 0 && <tr><td colSpan={6}><div className="szv2-empty"><h3>Sem logs de webhook</h3></div></td></tr>}
             </tbody>
           </table>
         </div>
+        )
       )}
 
       {tab === 'integrations' && (
+        loading && il.length === 0 ? (
+          <TableSkeleton rows={6} cols={5} />
+        ) : !loading && il.length === 0 ? (
+          <EmptyState icon="🔌" title="Sem logs de integração no período." />
+        ) : (
         <div className="szv2-table-wrap">
           <table className="szv2-table">
             <thead><tr>
@@ -150,13 +164,18 @@ export default function Logs() {
                   <td style={{ fontSize: '12px', color: 'var(--szv2-text-muted)' }}>{l.created_at.slice(0, 16).replace('T', ' ')}</td>
                 </tr>
               ))}
-              {il.length === 0 && <tr><td colSpan={5}><div className="szv2-empty"><h3>Sem logs de integração</h3></div></td></tr>}
             </tbody>
           </table>
         </div>
+        )
       )}
 
       {tab === 'motoboy' && (
+        loading && au.length === 0 ? (
+          <TableSkeleton rows={6} cols={5} />
+        ) : !loading && au.length === 0 ? (
+          <EmptyState icon="🛵" title="Sem auditoria motoboy no período." />
+        ) : (
         <div className="szv2-table-wrap">
           <table className="szv2-table">
             <thead><tr>
@@ -172,10 +191,10 @@ export default function Logs() {
                   <td style={{ fontSize: '12px', color: 'var(--szv2-text-muted)' }}>{a.created_at.slice(0, 16).replace('T', ' ')}</td>
                 </tr>
               ))}
-              {au.length === 0 && <tr><td colSpan={5}><div className="szv2-empty"><h3>Sem auditoria motoboy</h3></div></td></tr>}
             </tbody>
           </table>
         </div>
+        )
       )}
 
       <FilterTopPanel

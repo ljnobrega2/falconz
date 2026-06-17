@@ -7,6 +7,8 @@ import FilterTopPanel, {
   ActiveFilterChips,
   type ActiveChip,
 } from '../components/FilterTopPanel'
+import TableSkeleton from '../components/TableSkeleton'
+import EmptyState from '../components/EmptyState'
 
 // Linha da listagem de recargas (inclui nome/email via JOIN com portal_users)
 type R = {
@@ -75,6 +77,7 @@ function KpiCard({ label, value, sub, danger }: { label: string; value: number |
 
 export default function Pix() {
   const [items, setItems] = useState<R[]>([])
+  const [loading, setLoading] = useState(true)
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
   const [perPage] = useState(25)
@@ -119,6 +122,7 @@ export default function Pix() {
   }
 
   async function load() {
+    setLoading(true)
     try {
       const r = await api<{ items: R[]; total: number; page: number; per_page: number }>(
         `/pix?${buildQs()}`
@@ -126,6 +130,7 @@ export default function Pix() {
       setItems(r.items ?? [])
       setTotal(r.total)
     } catch (e: any) { setErr(e.message) }
+    finally { setLoading(false) }
   }
 
   async function loadReconcile() {
@@ -314,6 +319,15 @@ export default function Pix() {
       </FilterTopPanel>
 
       {/* Tabela */}
+      {loading && items.length === 0 ? (
+        <TableSkeleton rows={6} cols={9} />
+      ) : !loading && items.length === 0 ? (
+        <EmptyState
+          icon="💸"
+          title="Nenhuma recarga PIX encontrada."
+          description="Ajuste o filtro de status, data ou usuário."
+        />
+      ) : (
       <div className="szv2-table-wrap">
         <table className="szv2-table">
           <thead>
@@ -372,19 +386,10 @@ export default function Pix() {
                 </td>
               </tr>
             ))}
-            {items.length === 0 && (
-              <tr>
-                <td colSpan={9}>
-                  <div className="szv2-empty">
-                    <h3>Nenhuma recarga encontrada</h3>
-                    <p>Tente outro filtro de status, data ou usuário.</p>
-                  </div>
-                </td>
-              </tr>
-            )}
           </tbody>
         </table>
       </div>
+      )}
 
       {/* Paginação */}
       {totalPages > 1 && (

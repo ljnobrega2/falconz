@@ -8,6 +8,8 @@ import FilterTopPanel, {
   ActiveFilterChips,
   type ActiveChip,
 } from '../components/FilterTopPanel'
+import TableSkeleton from '../components/TableSkeleton'
+import EmptyState from '../components/EmptyState'
 
 type Aff = {
   id: number
@@ -64,6 +66,7 @@ export default function Commissions() {
   const [affsPage, setAffsPage] = useState(1)
   const [affsStatus, setAffsStatus] = useState('')
   const [affsQ, setAffsQ] = useState('')
+  const [affsLoading, setAffsLoading] = useState(true)
 
   // --- Aba Comissões ---
   const [comms, setComms] = useState<Commission[]>([])
@@ -73,6 +76,7 @@ export default function Commissions() {
   const [commsDataIni, setCommsDataIni] = useState('')
   const [commsDataFim, setCommsDataFim] = useState('')
   const [commsQ, setCommsQ] = useState('')
+  const [commsLoading, setCommsLoading] = useState(true)
 
   // --- Painéis ---
   const [vincOpen, setVincOpen] = useState(false)
@@ -94,9 +98,11 @@ export default function Commissions() {
     if (affsQ.trim()) p.set('q', affsQ.trim())
     p.set('limit', String(PER_PAGE))
     p.set('offset', String((affsPage - 1) * PER_PAGE))
+    setAffsLoading(true)
     api<{ items: Aff[]; total: number }>(`/affiliates/links?${p}`)
       .then(r => { setAffs(r.items ?? []); setAffsTotal(r.total ?? 0) })
       .catch(e => setErr(e.message))
+      .finally(() => setAffsLoading(false))
   }, [tab, affsStatus, affsQ, affsPage])
 
   // Carrega comissões sempre que filtros ou página mudam
@@ -109,9 +115,11 @@ export default function Commissions() {
     if (commsQ.trim()) p.set('q', commsQ.trim())
     p.set('limit', String(PER_PAGE))
     p.set('offset', String((commsPage - 1) * PER_PAGE))
+    setCommsLoading(true)
     api<{ items: Commission[]; total: number }>(`/affiliates/commissions?${p}`)
       .then(r => { setComms(r.items ?? []); setCommsTotal(r.total ?? 0) })
       .catch(e => setErr(e.message))
+      .finally(() => setCommsLoading(false))
   }, [tab, commsTipo, commsDataIni, commsDataFim, commsQ, commsPage])
 
   const affsTotalPages = Math.max(1, Math.ceil(affsTotal / PER_PAGE))
@@ -190,6 +198,15 @@ export default function Commissions() {
         <>
           <ActiveFilterChips chips={vincChips} onClearAll={clearVinc} />
 
+          {affsLoading && affs.length === 0 ? (
+            <TableSkeleton rows={6} cols={8} />
+          ) : !affsLoading && affs.length === 0 ? (
+            <EmptyState
+              icon="🔗"
+              title="Nenhum vínculo encontrado."
+              description="Vínculos entre produtores e afiliados aparecem aqui assim que forem criados."
+            />
+          ) : (
           <div className="szv2-table-wrap">
             <table className="szv2-table">
               <thead>
@@ -221,12 +238,10 @@ export default function Commissions() {
                     <td style={{ fontSize: '12px', color: 'var(--szv2-text-muted)' }}>{a.created_at.slice(0, 10)}</td>
                   </tr>
                 ))}
-                {affs.length === 0 && (
-                  <tr><td colSpan={8}><div className="szv2-empty"><h3>Sem vínculos</h3></div></td></tr>
-                )}
               </tbody>
             </table>
           </div>
+          )}
 
           {/* Paginação Vínculos */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 12, justifyContent: 'space-between' }}>
@@ -258,6 +273,15 @@ export default function Commissions() {
         <>
           <ActiveFilterChips chips={commsChips} onClearAll={clearComms} />
 
+          {commsLoading && comms.length === 0 ? (
+            <TableSkeleton rows={6} cols={16} />
+          ) : !commsLoading && comms.length === 0 ? (
+            <EmptyState
+              icon="💰"
+              title="Sem comissões no período."
+              description="Quando houver pagamentos de comissão, eles aparecem aqui."
+            />
+          ) : (
           <div className="szv2-table-wrap">
             <table className="szv2-table">
               <thead>
@@ -346,12 +370,10 @@ export default function Commissions() {
                     <td style={{ fontSize: '12px', color: 'var(--szv2-text-muted)' }}>{c.created_at.slice(0, 10)}</td>
                   </tr>
                 ))}
-                {comms.length === 0 && (
-                  <tr><td colSpan={16}><div className="szv2-empty"><h3>Sem comissões</h3></div></td></tr>
-                )}
               </tbody>
             </table>
           </div>
+          )}
 
           {/* Paginação Comissões */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 12, justifyContent: 'space-between' }}>

@@ -14,6 +14,9 @@ import FilterTopPanel, {
   ActiveFilterChips,
   type ActiveChip,
 } from '../components/FilterTopPanel'
+import TableSkeleton from '../components/TableSkeleton'
+import EmptyState from '../components/EmptyState'
+import CardKpiSkeleton from '../components/CardKpiSkeleton'
 
 // ─── Tipos ────────────────────────────────────────────────────────────────
 
@@ -196,6 +199,7 @@ export default function MotoboySaques() {
       {err && <div className="sz-alert-danger" style={{ marginBottom: 16 }}>{err}</div>}
 
       {/* 4 KPI cards */}
+      {!summary && loading ? <CardKpiSkeleton count={4} /> : (
       <div
         className="szv2-kpi-grid"
         style={{
@@ -230,6 +234,7 @@ export default function MotoboySaques() {
           tone="warning"
         />
       </div>
+      )}
 
       <FilterTopPanel
         open={filterOpen}
@@ -283,14 +288,14 @@ export default function MotoboySaques() {
           </div>
         </div>
 
-        {loading ? (
-          <div style={{ padding: 48, textAlign: 'center', color: 'var(--szv2-text-muted)' }}>
-            Carregando…
-          </div>
-        ) : items.length === 0 ? (
-          <div style={{ padding: 48, textAlign: 'center', color: 'var(--szv2-text-muted)' }}>
-            Nenhum saque/pagamento registrado.
-          </div>
+        {loading && items.length === 0 ? (
+          <TableSkeleton rows={6} cols={8} />
+        ) : !loading && items.length === 0 ? (
+          <EmptyState
+            icon="💸"
+            title="Nenhum saque registrado no período."
+            description="Solicitações de saque criadas pelos motoboys aparecem aqui."
+          />
         ) : (
           <div style={{ overflowX: 'auto' }}>
             <table className="szv2-table">

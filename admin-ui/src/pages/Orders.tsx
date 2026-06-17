@@ -9,6 +9,8 @@ import FilterTopPanel, {
   type ActiveChip,
 } from '../components/FilterTopPanel'
 import CopyButton from '../components/CopyButton'
+import TableSkeleton from '../components/TableSkeleton'
+import EmptyState from '../components/EmptyState'
 
 // ── Tipos do detalhe enriquecido (GET /orders/{id}) ──────────────────────────
 // Mantém em sync com OrderDetail.tsx — só os campos exibidos no drawer.
@@ -79,6 +81,7 @@ export default function Orders() {
 
   // Dados
   const [items, setItems] = useState<P[]>([])
+  const [loading, setLoading] = useState(true)
   const [err, setErr]     = useState('')
   const [toast, setToast] = useState<{ kind: 'ok' | 'err'; msg: string } | null>(null)
   const [busyId, setBusyId] = useState<number | null>(null)
@@ -139,9 +142,11 @@ export default function Orders() {
 
   function load() {
     setErr('')
+    setLoading(true)
     api<{ items: P[] }>(`/orders/motoboy?${buildQS()}`)
       .then(r => setItems(r.items || []))
       .catch(e => setErr(e.message))
+      .finally(() => setLoading(false))
   }
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -259,6 +264,15 @@ export default function Orders() {
       )}
 
       {/* ── Tabela ───────────────────────────────────────────── */}
+      {loading && items.length === 0 ? (
+        <TableSkeleton rows={6} cols={12} />
+      ) : !loading && items.length === 0 ? (
+        <EmptyState
+          icon="📦"
+          title="Nenhum pedido encontrado com esses filtros."
+          description="Ajuste o período ou remova os filtros aplicados."
+        />
+      ) : (
       <div className="szv2-table-wrap">
         <table className="szv2-table">
           <thead>
@@ -357,19 +371,10 @@ export default function Orders() {
                 </td>
               </tr>
             ))}
-            {items.length === 0 && (
-              <tr>
-                <td colSpan={12}>
-                  <div className="szv2-empty">
-                    <h3>Sem pedidos</h3>
-                    <p>Tente outro filtro ou remova os filtros aplicados.</p>
-                  </div>
-                </td>
-              </tr>
-            )}
           </tbody>
         </table>
       </div>
+      )}
 
       {/* ── Painel de Filtros (topo) ────────────────────────── */}
       <FilterTopPanel

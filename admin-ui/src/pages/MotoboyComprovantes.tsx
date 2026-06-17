@@ -20,6 +20,9 @@ import FilterTopPanel, {
   ActiveFilterChips,
   type ActiveChip,
 } from '../components/FilterTopPanel'
+import TableSkeleton from '../components/TableSkeleton'
+import EmptyState from '../components/EmptyState'
+import CardKpiSkeleton from '../components/CardKpiSkeleton'
 
 // ─── Tipos ────────────────────────────────────────────────────────────────
 
@@ -533,10 +536,11 @@ export default function MotoboyComprovantes() {
       <ActiveFilterChips chips={chips} onClearAll={clearFilters} />
 
       {/* ─── KPIs ─── */}
+      {loadingStats && !stats ? (
+        <CardKpiSkeleton count={6} />
+      ) : (
       <div className="sz-comp-kpi-row">
-        {loadingStats ? (
-          <div style={{ fontSize: 13, color: '#9ca3af', padding: '8px 0' }}>Carregando KPIs…</div>
-        ) : stats ? (
+        {stats ? (
           <>
             <KpiCard label="📦 Total de pedidos" value={stats.total}
               bg="#f9fafb" border="#e5e7eb" color="#374151" />
@@ -553,6 +557,7 @@ export default function MotoboyComprovantes() {
           </>
         ) : null}
       </div>
+      )}
 
       {/* ─── Alerta sem_comp ─── (espelha relatorios.php:177-181) */}
       {!loadingStats && stats && stats.sem_comp > 0 && (
@@ -579,14 +584,14 @@ export default function MotoboyComprovantes() {
           </div>
         </div>
 
-        {loading ? (
-          <div style={{ padding: 48, textAlign: 'center', color: 'var(--szv2-text-muted)' }}>
-            Carregando…
-          </div>
-        ) : items.length === 0 ? (
-          <div style={{ padding: 48, textAlign: 'center', color: 'var(--szv2-text-muted)' }}>
-            Nenhum comprovante encontrado.
-          </div>
+        {loading && items.length === 0 ? (
+          <TableSkeleton rows={3} cols={6} />
+        ) : !loading && items.length === 0 ? (
+          <EmptyState
+            icon="📸"
+            title="Nenhum comprovante encontrado."
+            description="Comprovantes de entrega aparecem aqui assim que motoboys baixarem pedidos no PWA."
+          />
         ) : (
           <div className="sz-comp-grid">
             {items.map(c => (

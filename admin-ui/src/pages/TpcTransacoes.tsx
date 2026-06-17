@@ -7,6 +7,8 @@ import FilterTopPanel, {
   ActiveFilterChips,
   type ActiveChip,
 } from '../components/FilterTopPanel'
+import TableSkeleton from '../components/TableSkeleton'
+import EmptyState from '../components/EmptyState'
 
 // ----- Tipos retornados pelo handler Go ---------------------------------------
 
@@ -393,6 +395,15 @@ export default function TpcTransacoes() {
       </FilterTopPanel>
 
       {/* Tabela */}
+      {loading && visibleItems.length === 0 ? (
+        <TableSkeleton rows={6} cols={9} />
+      ) : !loading && visibleItems.length === 0 ? (
+        <EmptyState
+          icon="💼"
+          title="Nenhuma transação encontrada."
+          description={(hasAnyFilter || carteira !== 'todas') ? 'Tente ajustar os filtros acima.' : undefined}
+        />
+      ) : (
       <div className="szv2-table-wrap">
         <table className="szv2-table">
           <thead>
@@ -409,22 +420,7 @@ export default function TpcTransacoes() {
             </tr>
           </thead>
           <tbody>
-            {loading ? (
-              <tr>
-                <td colSpan={9}>
-                  <div className="szv2-empty"><h3>Carregando…</h3></div>
-                </td>
-              </tr>
-            ) : visibleItems.length === 0 ? (
-              <tr>
-                <td colSpan={9}>
-                  <div className="szv2-empty">
-                    <h3>Nenhuma transação encontrada</h3>
-                    {(hasAnyFilter || carteira !== 'todas') && <p>Tente ajustar os filtros acima.</p>}
-                  </div>
-                </td>
-              </tr>
-            ) : visibleItems.map(t => {
+            {visibleItems.map(t => {
               const isCredito = t.tipo === 'credito'
               const isDebito  = t.tipo === 'debito'
               const tipoBadgeCls =
@@ -508,6 +504,7 @@ export default function TpcTransacoes() {
           </tbody>
         </table>
       </div>
+      )}
 
       {/* Paginação */}
       {total > PER_PAGE && (

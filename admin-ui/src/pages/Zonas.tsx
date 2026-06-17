@@ -7,6 +7,7 @@ import FilterTopPanel, {
   ActiveFilterChips,
   type ActiveChip,
 } from '../components/FilterTopPanel'
+import EmptyState from '../components/EmptyState'
 
 type CD = { id: number; nome: string; cidade: string; uf: string; ativo: boolean }
 type Zona = {
@@ -223,11 +224,18 @@ export default function Zonas() {
           </div>
         ))}
         {filteredZonas.length === 0 && (
-          <div className="szv2-card">
-            <div className="szv2-empty">
-              <h3>Nenhuma zona</h3>
-            </div>
-          </div>
+          <EmptyState
+            icon="🗺️"
+            title={zonas.length === 0 ? 'Nenhuma zona cadastrada.' : 'Nenhuma zona com esses filtros.'}
+            description={zonas.length === 0
+              ? 'Crie a primeira zona vinculada a um CD para configurar entregas.'
+              : 'Ajuste os filtros aplicados para ver as zonas existentes.'}
+            // TODO: substituir alert por modal de criação de zona quando o endpoint existir.
+            action={zonas.length === 0 ? {
+              label: 'Criar zona',
+              onClick: () => alert('Em breve: criação de zona pelo painel. Por enquanto, configure pelo módulo CDs / banco.'),
+            } : undefined}
+          />
         )}
       </div>
 

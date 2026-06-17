@@ -7,6 +7,8 @@ import FilterTopPanel, {
   ActiveFilterChips,
   type ActiveChip,
 } from '../components/FilterTopPanel'
+import TableSkeleton from '../components/TableSkeleton'
+import EmptyState from '../components/EmptyState'
 
 // ----- Tipos retornados pelo handler Go ---------------------------------------
 
@@ -212,6 +214,15 @@ export default function TpcClientes() {
       )}
 
       {/* Tabela principal */}
+      {loading && items.length === 0 ? (
+        <TableSkeleton rows={6} cols={9} />
+      ) : !loading && items.length === 0 ? (
+        <EmptyState
+          icon="💼"
+          title="Nenhum cliente com carteira encontrado."
+          description="Carteiras aparecem aqui assim que houver movimentação."
+        />
+      ) : (
       <div className="szv2-table-wrap">
         <table className="szv2-table">
           <thead>
@@ -228,19 +239,7 @@ export default function TpcClientes() {
             </tr>
           </thead>
           <tbody>
-            {loading ? (
-              <tr>
-                <td colSpan={9}>
-                  <div className="szv2-empty"><h3>Carregando…</h3></div>
-                </td>
-              </tr>
-            ) : items.length === 0 ? (
-              <tr>
-                <td colSpan={9}>
-                  <div className="szv2-empty"><h3>Nenhum cliente com carteira</h3></div>
-                </td>
-              </tr>
-            ) : items.map(c => (
+            {items.map(c => (
               <tr key={c.user_id}>
                 <td style={{ color: 'var(--szv2-text-muted)', fontSize: 12 }}>#{c.user_id}</td>
                 <td style={{ fontSize: 13 }}>{c.nome || <span style={{ color: 'var(--szv2-text-faint)' }}>—</span>}</td>
@@ -285,6 +284,7 @@ export default function TpcClientes() {
           </tbody>
         </table>
       </div>
+      )}
 
       {/* Paginação simples */}
       {total > perPage && (

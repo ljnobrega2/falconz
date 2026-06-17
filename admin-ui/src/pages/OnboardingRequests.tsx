@@ -7,6 +7,8 @@ import FilterTopPanel, {
   ActiveFilterChips,
   type ActiveChip,
 } from '../components/FilterTopPanel'
+import TableSkeleton from '../components/TableSkeleton'
+import EmptyState from '../components/EmptyState'
 
 type Request = {
   id: number
@@ -251,6 +253,15 @@ export default function OnboardingRequests() {
         </div>
       )}
 
+      {loading && items.length === 0 ? (
+        <TableSkeleton rows={5} cols={9} />
+      ) : !loading && items.length === 0 ? (
+        <EmptyState
+          icon="📋"
+          title="Sem solicitações pendentes."
+          description='Use "+ Novo cadastro" para criar manualmente, ou aguarde solicitações públicas.'
+        />
+      ) : (
       <div className="szv2-table-wrap">
         <table className="szv2-table">
           <thead>
@@ -267,20 +278,7 @@ export default function OnboardingRequests() {
             </tr>
           </thead>
           <tbody>
-            {loading ? (
-              <tr><td colSpan={9}>
-                <div style={{ padding: 32, textAlign: 'center', color: 'var(--szv2-text-muted)' }}>
-                  Carregando…
-                </div>
-              </td></tr>
-            ) : items.length === 0 ? (
-              <tr><td colSpan={9}>
-                <div className="szv2-empty">
-                  <h3>Nenhum cadastro pendente.</h3>
-                  <p>Use "+ Novo cadastro" para criar manualmente, ou aguarde solicitações públicas.</p>
-                </div>
-              </td></tr>
-            ) : items.map(req => (
+            {items.map(req => (
               <tr key={req.id}>
                 <td style={{ color: 'var(--szv2-text-muted)', fontSize: 12 }}>#{req.id}</td>
                 <td style={{ fontWeight: 600 }}>{req.nome}</td>
@@ -323,6 +321,7 @@ export default function OnboardingRequests() {
           </tbody>
         </table>
       </div>
+      )}
 
       {/* Modal: Novo cadastro */}
       {showCreate && (

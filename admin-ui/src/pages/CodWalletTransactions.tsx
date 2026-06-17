@@ -7,6 +7,8 @@ import FilterTopPanel, {
   ActiveFilterChips,
   type ActiveChip,
 } from '../components/FilterTopPanel'
+import TableSkeleton from '../components/TableSkeleton'
+import EmptyState from '../components/EmptyState'
 
 // ---------------------------------------------------------------------------
 // Tipos espelhados de internal/handlers/cod_wallet_transactions.go
@@ -566,6 +568,15 @@ export default function CodWalletTransactions() {
       )}
 
       {/* ── Tabela ───────────────────────────────────────────────────── */}
+      {loading && items.length === 0 ? (
+        <TableSkeleton rows={6} cols={10} />
+      ) : !loading && items.length === 0 ? (
+        <EmptyState
+          icon="💼"
+          title="Nenhuma transação no período."
+          description="Ajuste o range de datas ou os filtros aplicados."
+        />
+      ) : (
       <div className="szv2-table-wrap">
         <table className="szv2-table">
           <thead>
@@ -583,22 +594,7 @@ export default function CodWalletTransactions() {
             </tr>
           </thead>
           <tbody>
-            {loading ? (
-              <tr>
-                <td colSpan={10}>
-                  <div className="szv2-empty"><h3>Carregando…</h3></div>
-                </td>
-              </tr>
-            ) : items.length === 0 ? (
-              <tr>
-                <td colSpan={10}>
-                  <div className="szv2-empty">
-                    <h3>Nenhuma transação no período.</h3>
-                    <p>Ajuste o range de datas ou os filtros aplicados.</p>
-                  </div>
-                </td>
-              </tr>
-            ) : items.map(t => {
+            {items.map(t => {
               const isNeg = NEGATIVE_TYPES.has(t.type)
               return (
                 <tr key={t.id}>
@@ -653,6 +649,7 @@ export default function CodWalletTransactions() {
           </tbody>
         </table>
       </div>
+      )}
 
       {/* ── Paginação ────────────────────────────────────────────────── */}
       {total > perPage && (

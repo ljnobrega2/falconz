@@ -7,6 +7,8 @@ import FilterTopPanel, {
   ActiveFilterChips,
   type ActiveChip,
 } from '../components/FilterTopPanel'
+import TableSkeleton from '../components/TableSkeleton'
+import EmptyState from '../components/EmptyState'
 
 type CD = { id: number; nome: string; ativo: boolean }
 type Zona = { id: number; cd_id: number; nome: string; ativo: boolean }
@@ -53,6 +55,7 @@ const emptyForm = (): FormState => ({
 
 export default function Motoboys() {
   const [items, setItems] = useState<M[]>([])
+  const [loading, setLoading] = useState(true)
   const [cds, setCds] = useState<CD[]>([])
   const [zonas, setZonas] = useState<Zona[]>([])
   const [err, setErr] = useState('')
@@ -78,6 +81,7 @@ export default function Motoboys() {
   const [draftFim, setDraftFim] = useState('')
 
   async function load() {
+    setLoading(true)
     try {
       // QS opcional para data de cadastro — backend filtra se suportar; senão no-op.
       const qs = new URLSearchParams()
@@ -94,6 +98,8 @@ export default function Motoboys() {
       setZonas(rZonas.items || [])
     } catch (e: any) {
       setErr(e.message)
+    } finally {
+      setLoading(false)
     }
   }
 
@@ -502,6 +508,16 @@ export default function Motoboys() {
         </div>
       )}
 
+      {loading && filtered.length === 0 ? (
+        <TableSkeleton rows={5} cols={9} />
+      ) : !loading && filtered.length === 0 ? (
+        <EmptyState
+          icon="🛵"
+          title={items.length === 0 ? 'Nenhum motoboy cadastrado.' : 'Nenhum motoboy encontrado com esses filtros.'}
+          description={items.length === 0 ? 'Cadastre o primeiro motoboy para começar.' : 'Tente ajustar os filtros aplicados.'}
+          action={items.length === 0 ? { label: 'Cadastrar motoboy', onClick: () => { setForm(emptyForm()); setShowForm(true) } } : undefined}
+        />
+      ) : (
       <div className="szv2-table-wrap">
         <table className="szv2-table">
           <thead>
@@ -556,19 +572,10 @@ export default function Motoboys() {
                 </td>
               </tr>
             ))}
-            {filtered.length === 0 && (
-              <tr>
-                <td colSpan={9}>
-                  <div className="szv2-empty">
-                    <h3>Nenhum motoboy encontrado</h3>
-                    <p>{items.length === 0 ? 'Clique em "Novo Motoboy" para adicionar.' : 'Tente ajustar os filtros.'}</p>
-                  </div>
-                </td>
-              </tr>
-            )}
           </tbody>
         </table>
       </div>
+      )}
     </div>
   )
 }

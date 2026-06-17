@@ -7,6 +7,8 @@ import FilterTopPanel, {
   ActiveFilterChips,
   type ActiveChip,
 } from '../components/FilterTopPanel'
+import TableSkeleton from '../components/TableSkeleton'
+import EmptyState from '../components/EmptyState'
 
 type User = { id: number; email: string; nome: string; role: string; ativo: boolean; plano: string; created_at: string }
 
@@ -30,6 +32,7 @@ const ROLES = ['admin', 'operator', 'producer', 'produtor', 'affiliate', 'afilia
 
 export default function Users() {
   const [items, setItems] = useState<User[]>([])
+  const [loading, setLoading] = useState(true)
   const [total, setTotal] = useState(0)
   const [err, setErr] = useState('')
 
@@ -50,6 +53,7 @@ export default function Users() {
   const [filterOpen, setFilterOpen] = useState(false)
 
   async function load() {
+    setLoading(true)
     try {
       const p = new URLSearchParams()
       if (q.trim()) p.set('q', q.trim())
@@ -62,6 +66,7 @@ export default function Users() {
       setItems(r.items ?? [])
       setTotal(r.total)
     } catch (e: any) { setErr(e.message) }
+    finally { setLoading(false) }
   }
 
   useEffect(() => { load() /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [q, role, ativo, dataIni, dataFim])
@@ -118,6 +123,22 @@ export default function Users() {
 
       {err && <div className="sz-alert-danger">{err}</div>}
 
+      {loading && filtered.length === 0 ? (
+        <TableSkeleton rows={6} cols={7} />
+      ) : !loading && filtered.length === 0 ? (
+        <EmptyState
+          icon="👤"
+          title={items.length === 0 ? 'Nenhum usuário cadastrado ainda.' : 'Nenhum usuário encontrado com esses filtros.'}
+          description={items.length === 0
+            ? 'Cadastre o primeiro usuário do portal para começar.'
+            : 'Ajuste o filtro de busca ou remova os filtros aplicados.'}
+          // TODO: substituir alert por modal de criação de usuário quando o endpoint existir.
+          action={items.length === 0 ? {
+            label: 'Cadastrar usuário',
+            onClick: () => alert('Em breve: cadastro de usuário pelo painel. Por enquanto, crie via "Solicitações de onboarding".'),
+          } : undefined}
+        />
+      ) : (
       <div className="szv2-table-wrap">
         <table className="szv2-table">
           <thead>
@@ -149,17 +170,10 @@ export default function Users() {
                 </td>
               </tr>
             ))}
-            {filtered.length === 0 && (
-              <tr><td colSpan={7}>
-                <div className="szv2-empty">
-                  <h3>Nenhum usuário</h3>
-                  <p>Tente ajustar o filtro de busca.</p>
-                </div>
-              </td></tr>
-            )}
           </tbody>
         </table>
       </div>
+      )}
 
       <FilterTopPanel
         open={filterOpen}

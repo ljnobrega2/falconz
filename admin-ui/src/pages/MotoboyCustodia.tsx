@@ -7,6 +7,8 @@ import FilterTopPanel, {
   ActiveFilterChips,
   type ActiveChip,
 } from '../components/FilterTopPanel'
+import TableSkeleton from '../components/TableSkeleton'
+import EmptyState from '../components/EmptyState'
 
 // MotoboyCustodia — espelha sz_mb_tab_estoque_motoboy() (admin.php:1510).
 // Custódia física de pacotes em rota / aguardando OL / com ocorrência.
@@ -482,14 +484,14 @@ export default function MotoboyCustodia() {
           <span style={{ fontSize: 12, color: 'var(--szv2-text-muted)' }}>abrir/fechar</span>
         </summary>
         <div style={{ padding: '0 20px 20px' }}>
-          {loading ? (
-            <div style={{ padding: 24, textAlign: 'center', color: 'var(--szv2-text-muted)' }}>
-              Carregando…
-            </div>
-          ) : items.length === 0 ? (
-            <div style={{ padding: 24, textAlign: 'center', color: 'var(--szv2-text-muted)' }}>
-              Nenhum pacote em rota, frustrado, aguardando OL ou avariado.
-            </div>
+          {loading && items.length === 0 ? (
+            <TableSkeleton rows={5} cols={8} />
+          ) : !loading && items.length === 0 ? (
+            <EmptyState
+              icon="📦"
+              title="Nenhum pacote em custódia."
+              description="Pacotes em rota, frustrados, aguardando OL ou avariados aparecem aqui."
+            />
           ) : (
             <div style={{ overflowX: 'auto' }}>
               <table className="szv2-table">
