@@ -689,14 +689,14 @@ func (h *MotoboyCarteiraHandler) Sync(w http.ResponseWriter, r *http.Request) {
 	// 3. Promove lançamentos 'pendente' de pedidos já finalizados → 'disponivel'.
 	//    (Paridade com sz_mbw_backfill_status_from_pedidos: pedidos entregue/frustrado
 	//     já foram conciliados → o ganho deve ser disponivel para pagamento.)
-	concilRes, _ := h.Pool.Exec(ctx,
+	concilRes, concilErr := h.Pool.Exec(ctx,
 		`UPDATE sz_motoboy_ganhos g SET status = 'disponivel'
 		 FROM sz_motoboy_pedidos ped
 		 WHERE g.pedido_id = ped.id
 		   AND g.status = 'pendente'
 		   AND ped.status IN ('entregue','frustrado')`)
 	conciliados := int64(0)
-	if concilRes != nil {
+	if concilErr == nil {
 		conciliados = concilRes.RowsAffected()
 	}
 
