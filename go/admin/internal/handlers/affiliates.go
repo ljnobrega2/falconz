@@ -12,14 +12,14 @@ import (
 type AffiliatesHandler struct{ Pool *pgxpool.Pool }
 
 type affiliate struct {
-	ID          int64  `json:"id"`
-	ProdutorID  int64  `json:"produtor_id"`
-	ProdutorNome string `json:"produtor_nome"`
-	AfiliadoID  int64  `json:"afiliado_id"`
-	AfiliadoNome string `json:"afiliado_nome"`
-	ProdutoID   int64  `json:"produto_id"`
-	Status      string `json:"status"`
-	CreatedAt   string `json:"created_at"`
+	UserID        int64   `json:"user_id"`
+	Email         string  `json:"email"`
+	Nome          string  `json:"nome"`
+	AffiliateCode string  `json:"affiliate_code"`
+	ComissaoPct   float64 `json:"comissao_pct"`
+	Status        string  `json:"status"`
+	CreatedAt     string  `json:"created_at"`
+	Vinculos      int64   `json:"vinculos"`
 }
 
 func (h *AffiliatesHandler) List(w http.ResponseWriter, r *http.Request) {
@@ -29,19 +29,33 @@ func (h *AffiliatesHandler) List(w http.ResponseWriter, r *http.Request) {
 		limit = 100
 	}
 	offset, _ := strconv.Atoi(q.Get("offset"))
-	status := q.Get("status")
+	status := strings.TrimSpace(q.Get("status"))
+	// busca textual por email ou nome do afiliado (?q=)
+	search := strings.TrimSpace(q.Get("q"))
+	if search != "" {
+		search = "%" + search + "%"
+	}
 
+	// Lista AFILIADOS ÚNICOS (usuários) com agregações dos vínculos produtor↔afiliado.
 	rows, err := h.Pool.Query(r.Context(),
-		`SELECT a.id, a.produtor_id,
-		        COALESCE(p.nome,'') AS produtor_nome,
-		        a.afiliado_id,
-		        COALESCE(af.nome,'') AS afiliado_nome,
-		        a.produto_id, a.status, a.created_at::text
-		 FROM senderzz_affiliates a
-		 LEFT JOIN senderzz_portal_users p  ON p.id = a.produtor_id
-		 LEFT JOIN senderzz_portal_users af ON af.id = a.afiliado_id
-		 WHERE ($1='' OR a.status=$1)
-		 ORDER BY a.id DESC LIMIT $2 OFFSET $3`, status, limit, offset)
+		`SELECT af.id AS user_id,
+		        COALESCE(af.email,'') AS email,
+		        COALESCE(af.nome,'')  AS nome,
+		        COALESCE(MAX(al.link_token), '')          AS affiliate_code,
+		        COALESCE(MAX(a.comissao_pct), 0)::float8  AS comissao_pct,
+		        COALESCE(MAX(a.status), 'pending')        AS status,
+		        MIN(a.created_at)::text                   AS created_at,
+		        COUNT(DISTINCT a.id)                      AS vinculos
+		 FROM senderzz_portal_users af
+		 JOIN senderzz_affiliates a ON a.afiliado_id = af.id
+		 LEFT JOIN senderzz_affiliate_links al
+		        ON al.affiliate_id = a.id AND al.active = TRUE
+		 WHERE ($1='' OR a.status = $1)
+		   AND ($2='' OR COALESCE(af.email,'') ILIKE $2
+		              OR COALESCE(af.nome,'')  ILIKE $2)
+		 GROUP BY af.id, af.email, af.nome
+		 ORDER BY MIN(a.created_at) DESC
+		 LIMIT $3 OFFSET $4`, status, search, limit, offset)
 	if err != nil {
 		httpx.Err(w, 500, "db_error", err.Error())
 		return
@@ -51,14 +65,20 @@ func (h *AffiliatesHandler) List(w http.ResponseWriter, r *http.Request) {
 	out := []affiliate{}
 	for rows.Next() {
 		var a affiliate
-		_ = rows.Scan(&a.ID, &a.ProdutorID, &a.ProdutorNome,
-			&a.AfiliadoID, &a.AfiliadoNome, &a.ProdutoID, &a.Status, &a.CreatedAt)
+		_ = rows.Scan(&a.UserID, &a.Email, &a.Nome, &a.AffiliateCode,
+			&a.ComissaoPct, &a.Status, &a.CreatedAt, &a.Vinculos)
 		out = append(out, a)
 	}
 
+	// Total = contagem de afiliados únicos que casam com o filtro.
 	var total int64
 	_ = h.Pool.QueryRow(r.Context(),
-		`SELECT COUNT(*) FROM senderzz_affiliates WHERE ($1='' OR status=$1)`, status).Scan(&total)
+		`SELECT COUNT(DISTINCT af.id)
+		 FROM senderzz_portal_users af
+		 JOIN senderzz_affiliates a ON a.afiliado_id = af.id
+		 WHERE ($1='' OR a.status = $1)
+		   AND ($2='' OR COALESCE(af.email,'') ILIKE $2
+		              OR COALESCE(af.nome,'')  ILIKE $2)`, status, search).Scan(&total)
 
 	httpx.JSON(w, 200, map[string]any{"items": out, "total": total})
 }

@@ -37,30 +37,60 @@ const NAV_GROUPS: NavGroup[] = [
   {
     kicker: 'Usuários',
     items: [
-      { to: '/users',       label: 'Usuários',    icon: ICONS.users },
-      { to: '/affiliates',  label: 'Afiliados',   icon: ICONS.affiliate },
-      { to: '/commissions', label: 'Comissões',   icon: ICONS.commissions },
+      { to: '/users',                label: 'Usuários',    icon: ICONS.users },
+      { to: '/affiliates',           label: 'Afiliados',   icon: ICONS.affiliate },
+      { to: '/commissions',          label: 'Comissões',   icon: ICONS.commissions },
+      { to: '/onboarding-requests',  label: 'Onboarding',  icon: ICONS.onboarding },
     ],
   },
   {
-    kicker: 'Logística',
+    kicker: 'Pedidos',
     items: [
-      { to: '/motoboy-dashboard', label: 'Dashboard Motoboy', icon: ICONS.dashboard },
-      { to: '/motoboys',          label: 'Motoboys',          icon: ICONS.motoboy },
-      { to: '/orders',            label: 'Pedidos Motoboy',   icon: ICONS.orders },
-      { to: '/motoboys-dia',      label: 'Motoboys do Dia',   icon: ICONS.mbday },
-      { to: '/motoboy-carteira',  label: 'Carteira Motoboy',  icon: ICONS.wallet },
-      { to: '/motoboy-fechamento',label: 'Fechamento Motoboy',icon: ICONS.fechamento },
-      { to: '/motoboy-config',    label: 'Config Motoboy',    icon: ICONS.settings },
-      { to: '/motoboy-mapa',      label: 'Mapa Ao Vivo',      icon: ICONS.zonas },
-      { to: '/bulk-actions',      label: 'Ações em Lote',     icon: ICONS.labels },
-      { to: '/motoboy-etiquetas', label: 'Etiquetas/QR',      icon: ICONS.labels },
-      { to: '/motoboy-comprovantes', label: 'Comprovantes',   icon: ICONS.labels },
-      { to: '/motoboy-saques',    label: 'Saques Motoboy',    icon: ICONS.wallet },
-      { to: '/motoboy-custodia',  label: 'Custódia',          icon: ICONS.cds },
-      { to: '/motoboy-conciliacao', label: 'Conciliação',     icon: ICONS.commissions },
-      { to: '/cds',               label: 'CDs',               icon: ICONS.cds },
-      { to: '/zonas',             label: 'Zonas / CEPs',      icon: ICONS.zonas },
+      { to: '/orders',       label: 'Pedidos Motoboy', icon: ICONS.orders },
+      { to: '/bulk-actions', label: 'Ações em Lote',   icon: ICONS.labels },
+    ],
+  },
+  {
+    kicker: 'Motoboy',
+    items: [
+      { to: '/motoboy-dashboard',    label: 'Dashboard Motoboy',  icon: ICONS.dashboard },
+      { to: '/motoboys',             label: 'Motoboys',           icon: ICONS.motoboy },
+      { to: '/motoboys-dia',         label: 'Motoboys do Dia',    icon: ICONS.mbday },
+      { to: '/motoboy-etiquetas',    label: 'Etiquetas/QR',       icon: ICONS.labels },
+      { to: '/motoboy-comprovantes', label: 'Comprovantes',       icon: ICONS.labels },
+      { to: '/motoboy-carteira',     label: 'Carteira Motoboy',   icon: ICONS.wallet },
+      { to: '/motoboy-saques',       label: 'Saques Motoboy',     icon: ICONS.wallet },
+      { to: '/motoboy-custodia',     label: 'Custódia',           icon: ICONS.cds },
+      { to: '/motoboy-conciliacao',  label: 'Conciliação',        icon: ICONS.commissions },
+      { to: '/motoboy-fechamento',   label: 'Fechamento Motoboy', icon: ICONS.fechamento },
+      { to: '/motoboy-mapa',         label: 'Mapa Ao Vivo',       icon: ICONS.zonas },
+      { to: '/motoboy-config',       label: 'Config Motoboy',     icon: ICONS.settings },
+    ],
+  },
+  {
+    kicker: 'Logística (CDs)',
+    items: [
+      { to: '/cds',   label: 'CDs',           icon: ICONS.cds },
+      { to: '/zonas', label: 'Zonas / CEPs',  icon: ICONS.zonas },
+    ],
+  },
+  {
+    kicker: 'Expedição (Melhor Envio)',
+    items: [
+      { to: '/labels',                label: 'Etiquetas ME',       icon: ICONS.labels },
+      { to: '/expedicao-integracoes', label: 'Markup / Integ.',    icon: ICONS.settings },
+      { to: '/expedicao-webhooks',    label: 'Webhooks Expedição', icon: ICONS.webhooks },
+      { to: '/tracking-brand',        label: 'Tracking Brand',     icon: ICONS.webhooks },
+    ],
+  },
+  {
+    kicker: 'COD (Cash on Delivery)',
+    items: [
+      { to: '/cod-livro',               label: 'Livro COD',           icon: ICONS.commissions },
+      { to: '/cod-saques',              label: 'Saques COD',          icon: ICONS.wallet },
+      { to: '/cod-taxas',               label: 'Taxas de Entrega',    icon: ICONS.settings },
+      { to: '/cod-wallet-producer',     label: 'Wallet Produtor COD', icon: ICONS.wallet },
+      { to: '/cod-wallet-transactions', label: 'Transações COD',      icon: ICONS.commissions },
     ],
   },
   {
@@ -68,49 +98,34 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { to: '/wallet',            label: 'Carteiras',          icon: ICONS.wallet },
       { to: '/pix',               label: 'PIX',                icon: ICONS.pix },
-      { to: '/cod-livro',         label: 'Livro COD',          icon: ICONS.commissions },
-      { to: '/cod-saques',        label: 'Saques',             icon: ICONS.wallet },
-      { to: '/cod-taxas',         label: 'Taxas de entrega',   icon: ICONS.settings },
       { to: '/tpc-clientes',      label: 'Carteira Frete',     icon: ICONS.wallet },
       { to: '/tpc-transacoes',    label: 'Transações TPC',     icon: ICONS.commissions },
       { to: '/tpc-config',        label: 'Config TPC',         icon: ICONS.settings },
-      { to: '/cod-wallet-producer',   label: 'Wallet Produtor COD', icon: ICONS.wallet },
-      { to: '/cod-wallet-transactions', label: 'Transações COD', icon: ICONS.commissions },
-      { to: '/affiliates-wallet', label: 'Carteira afiliados', icon: ICONS.affiliate },
+      { to: '/affiliates-wallet', label: 'Carteira Afiliados', icon: ICONS.affiliate },
       { to: '/affiliate-rules',   label: 'Regras Afiliados',   icon: ICONS.rules },
       { to: '/audit',             label: 'Auditoria',          icon: ICONS.audit },
       { to: '/audit-log',         label: 'Log Auditoria',      icon: ICONS.logs },
     ],
   },
   {
-    kicker: 'Envios',
-    items: [
-      { to: '/labels',                label: 'Etiquetas ME',      icon: ICONS.labels },
-      { to: '/expedicao-integracoes', label: 'Markup / Integ.',   icon: ICONS.settings },
-      { to: '/expedicao-webhooks',    label: 'Webhooks Expedição', icon: ICONS.webhooks },
-    ],
-  },
-  {
     kicker: 'Notificações',
     items: [
-      { to: '/notificacoes-pwa', label: 'Templates PWA',   icon: ICONS.webhooks },
-      { to: '/push-tecnico',     label: 'Push Técnico',    icon: ICONS.cron },
+      { to: '/notificacoes-pwa', label: 'Templates PWA', icon: ICONS.webhooks },
+      { to: '/push-tecnico',     label: 'Push Técnico',  icon: ICONS.cron },
     ],
   },
   {
     kicker: 'Sistema',
     items: [
-      { to: '/settings',              label: 'Configurações',  icon: ICONS.settings },
-      { to: '/maintenance',           label: 'Manutenção',     icon: ICONS.maintenance },
-      { to: '/crons',                 label: 'Crons',          icon: ICONS.cron },
-      { to: '/onboarding-requests',   label: 'Onboarding',     icon: ICONS.onboarding },
-      { to: '/pwa-config',            label: 'PWA Config',     icon: ICONS.tools },
-      { to: '/tracking-brand',        label: 'Tracking Brand', icon: ICONS.webhooks },
-      { to: '/capabilities',          label: 'Capabilities',   icon: ICONS.tools },
-      { to: '/order-meta-normalization', label: 'Order Meta',  icon: ICONS.tools },
-      { to: '/api-docs',              label: 'API Docs',       icon: ICONS.logs },
-      { to: '/logs',                  label: 'Logs',           icon: ICONS.logs },
-      { to: '/tools',                 label: 'Ferramentas',    icon: ICONS.tools },
+      { to: '/settings',                 label: 'Configurações', icon: ICONS.settings },
+      { to: '/maintenance',              label: 'Manutenção',    icon: ICONS.maintenance },
+      { to: '/crons',                    label: 'Crons',         icon: ICONS.cron },
+      { to: '/pwa-config',               label: 'PWA Config',    icon: ICONS.tools },
+      { to: '/capabilities',             label: 'Capabilities',  icon: ICONS.tools },
+      { to: '/order-meta-normalization', label: 'Order Meta',    icon: ICONS.tools },
+      { to: '/api-docs',                 label: 'API Docs',      icon: ICONS.logs },
+      { to: '/logs',                     label: 'Logs',          icon: ICONS.logs },
+      { to: '/tools',                    label: 'Ferramentas',   icon: ICONS.tools },
     ],
   },
 ]
@@ -181,16 +196,36 @@ export default function Layout() {
   const [sidebar, setSidebar] = useState<'open' | 'collapsed'>('open')
   const [theme, setTheme] = useState<'light' | 'dark'>('light')
   const [adminName, setAdminName] = useState('Admin')
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>(() => {
+    const defaults: Record<string, boolean> = {}
+    NAV_GROUPS.forEach(g => { if (g.kicker) defaults[g.kicker] = true })
+    return defaults
+  })
 
   useEffect(() => {
     const saved = localStorage.getItem('szAdminSidebar') as 'open' | 'collapsed' | null
     if (saved) setSidebar(saved)
     const savedTheme = localStorage.getItem('szAdminTheme') as 'light' | 'dark' | null
     if (savedTheme) setTheme(savedTheme)
+    const savedOpen = localStorage.getItem('szAdminMenuOpen')
+    if (savedOpen) {
+      try {
+        const parsed = JSON.parse(savedOpen) as Record<string, boolean>
+        setOpenGroups(prev => ({ ...prev, ...parsed }))
+      } catch { /* ignore */ }
+    }
     if (getToken()) {
       api<{ nome: string }>('/me').then(r => setAdminName(r.nome?.split(' ')[0] || 'Admin')).catch(() => {})
     }
   }, [])
+
+  function toggleGroup(kicker: string) {
+    setOpenGroups(prev => {
+      const next = { ...prev, [kicker]: !prev[kicker] }
+      try { localStorage.setItem('szAdminMenuOpen', JSON.stringify(next)) } catch { /* ignore */ }
+      return next
+    })
+  }
 
   function toggleSidebar() {
     const next = sidebar === 'open' ? 'collapsed' : 'open'
@@ -225,23 +260,49 @@ export default function Layout() {
         </div>
 
         <nav className="szv2-nav">
-          {NAV_GROUPS.map((g, gi) => (
-            <div key={gi} className="szv2-nav-group">
-              {g.kicker && <div className="szv2-nav-kicker">{g.kicker}</div>}
-              {g.items.map(item => (
-                <NavLink
-                  key={item.to}
-                  to={item.to}
-                  end={item.to === '/'}
-                  title={item.label}
-                  className={({ isActive }) => 'sz-ni' + (isActive ? ' sz-ni-on' : '')}
-                >
-                  <span className="szv2-ni-icon" aria-hidden="true">{item.icon}</span>
-                  <span className="szv2-ni-label">{item.label}</span>
-                </NavLink>
-              ))}
-            </div>
-          ))}
+          {NAV_GROUPS.map((g, gi) => {
+            const isOpen = g.kicker ? (openGroups[g.kicker] ?? true) : true
+            return (
+              <div key={gi} className="szv2-nav-group" data-open={isOpen ? '1' : '0'}>
+                {g.kicker && (
+                  <button
+                    type="button"
+                    className="szv2-nav-kicker szv2-nav-kicker-btn"
+                    onClick={() => toggleGroup(g.kicker)}
+                    aria-expanded={isOpen}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      width: '100%',
+                      background: 'transparent',
+                      border: 0,
+                      padding: '6px 12px',
+                      cursor: 'pointer',
+                      font: 'inherit',
+                      color: 'inherit',
+                      textAlign: 'left',
+                    }}
+                  >
+                    <span>{g.kicker}</span>
+                    <span aria-hidden="true" style={{ fontSize: '10px', opacity: 0.7 }}>{isOpen ? '▾' : '▸'}</span>
+                  </button>
+                )}
+                {isOpen && g.items.map(item => (
+                  <NavLink
+                    key={item.to}
+                    to={item.to}
+                    end={item.to === '/'}
+                    title={item.label}
+                    className={({ isActive }) => 'sz-ni' + (isActive ? ' sz-ni-on' : '')}
+                  >
+                    <span className="szv2-ni-icon" aria-hidden="true">{item.icon}</span>
+                    <span className="szv2-ni-label">{item.label}</span>
+                  </NavLink>
+                ))}
+              </div>
+            )
+          })}
         </nav>
 
         <div className="szv2-sidebar-foot">

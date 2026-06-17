@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api'
 
-type A = { id: number; user_id: number; email: string; nome: string; affiliate_code: string | null; comissao_pct: number; status: string; created_at: string }
+type A = { user_id: number; email: string; nome: string; affiliate_code: string | null; comissao_pct: number; status: string; created_at: string; vinculos: number }
 
 export default function Affiliates() {
   const [items, setItems] = useState<A[]>([])
@@ -42,14 +42,15 @@ export default function Affiliates() {
               <th>Nome</th>
               <th>Código</th>
               <th className="szv2-td-num">Comissão</th>
+              <th className="szv2-td-num">Vínculos</th>
               <th>Status</th>
               <th>Desde</th>
             </tr>
           </thead>
           <tbody>
             {items.map(a => (
-              <tr key={a.id}>
-                <td style={{ color: 'var(--szv2-text-muted)', fontSize: '12px' }}>#{a.id}</td>
+              <tr key={a.user_id}>
+                <td style={{ color: 'var(--szv2-text-muted)', fontSize: '12px' }}>#{a.user_id}</td>
                 <td style={{ fontWeight: 500 }}>{a.email}</td>
                 <td style={{ color: 'var(--szv2-text-soft)' }}>{a.nome}</td>
                 <td>
@@ -58,16 +59,17 @@ export default function Affiliates() {
                     : <span style={{ color: 'var(--szv2-text-faint)', fontSize: '12px' }}>—</span>}
                 </td>
                 <td className="szv2-td-num" style={{ color: 'var(--szv2-brand)', fontWeight: 700 }}>{a.comissao_pct}%</td>
+                <td className="szv2-td-num" style={{ color: 'var(--szv2-text-soft)', fontWeight: 600 }}>{a.vinculos}</td>
                 <td>
-                  <span className={`szv2-status-badge ${a.status === 'ativo' ? 's-confirmado' : a.status === 'pendente' ? 's-pendente' : 's-cancelado'}`}>
+                  <span className={`szv2-status-badge ${a.status === 'active' || a.status === 'ativo' ? 's-confirmado' : a.status === 'pending' || a.status === 'pendente' ? 's-pendente' : 's-cancelado'}`}>
                     {a.status}
                   </span>
                 </td>
-                <td style={{ color: 'var(--szv2-text-muted)', fontSize: '12px' }}>{a.created_at.slice(0, 10)}</td>
+                <td style={{ color: 'var(--szv2-text-muted)', fontSize: '12px' }}>{a.created_at ? a.created_at.slice(0, 10) : '—'}</td>
               </tr>
             ))}
             {items.length === 0 && (
-              <tr><td colSpan={7}><div className="szv2-empty"><h3>Nenhum afiliado</h3><p>Tente ajustar o filtro.</p></div></td></tr>
+              <tr><td colSpan={8}><div className="szv2-empty"><h3>Nenhum afiliado</h3><p>Tente ajustar o filtro.</p></div></td></tr>
             )}
           </tbody>
         </table>
