@@ -492,7 +492,7 @@ export default function NotificacoesPWA() {
                 <div>
                   <h2>Status que dispara esta notificação</h2>
                   <p className="szv2-card-sub">
-                    Cada status WooCommerce pode pertencer a apenas um evento. Status já vinculados em outros eventos aparecem como (em uso).
+                    Cada status de pedido pode pertencer a apenas um evento. Status já vinculados em outros eventos aparecem como (em uso).
                   </p>
                 </div>
               </div>

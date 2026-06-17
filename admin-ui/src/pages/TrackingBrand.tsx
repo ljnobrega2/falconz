@@ -254,7 +254,7 @@ export default function TrackingBrand() {
             <h2>Marca por Classe de Envio</h2>
             <p className="szv2-card-sub">
               Personaliza logo, cores e rodapé exibidos na página de rastreio por classe de envio.
-              Todas as classes de envio cadastradas no WooCommerce aparecem abaixo automaticamente.
+              Todas as classes de envio cadastradas no catálogo aparecem abaixo automaticamente.
             </p>
           </div>
           {/* Só mostra o seletor de adição manual quando há classes fora do catálogo carregado */}
@@ -291,7 +291,7 @@ export default function TrackingBrand() {
         </div>
       ) : items.length === 0 ? (
         <div style={{ padding: 48, textAlign: 'center', color: 'var(--szv2-text-muted)' }}>
-          Nenhuma classe de envio cadastrada no WooCommerce.
+          Nenhuma classe de envio cadastrada no catálogo.
         </div>
       ) : (
         <div

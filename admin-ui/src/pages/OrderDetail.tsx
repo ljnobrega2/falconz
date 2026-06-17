@@ -454,7 +454,7 @@ export default function OrderDetail() {
             Pedido #{order.id}
             {order.wc_order_id ? (
               <span style={{ marginLeft: 12, fontSize: 14, color: 'var(--szv2-text-muted)', fontWeight: 500 }}>
-                WC #{order.wc_order_id}
+                #{order.wc_order_id}
               </span>
             ) : null}
           </h1>

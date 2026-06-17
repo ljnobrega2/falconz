@@ -17,20 +17,24 @@ type OrdersHandler struct{ Pool *pgxpool.Pool }
 // pedido — linha da tabela sz_motoboy_pedidos enriquecida com dados de clientes,
 // produto, afiliado e sz_order_id (necessário para /audit/fix-order/{id}).
 type pedido struct {
-	ID           int64   `json:"id"`
-	WCOrderID    *int64  `json:"wc_order_id"`
-	SzOrderID    *int64  `json:"sz_order_id"`    // sz_orders.id — chave para audit-fix
-	MotoboyID    *int64  `json:"motoboy_id"`
-	Status       string  `json:"status"`
-	Valor        float64 `json:"valor"`
-	DestNome     string  `json:"dest_nome"`
-	DestCEP      string  `json:"dest_cep"`
-	DestCidade   string  `json:"dest_cidade"`
-	ClienteNome  string  `json:"cliente_nome"`
-	Produto      string  `json:"produto"`
-	AfiliadoNome string  `json:"afiliado_nome"`
-	Comissao     float64 `json:"comissao"`
-	CreatedAt    string  `json:"created_at"`
+	ID                int64   `json:"id"`
+	WCOrderID         *int64  `json:"wc_order_id"`
+	SzOrderID         *int64  `json:"sz_order_id"` // sz_orders.id — chave para audit-fix
+	MotoboyID         *int64  `json:"motoboy_id"`
+	Status            string  `json:"status"`
+	Valor             float64 `json:"valor"`
+	TaxaMotoboy       float64 `json:"taxa_motoboy"`        // mp.valor_taxa — repasse motoboy
+	TaxaFrustrado     float64 `json:"taxa_frustrado"`      // mp.valor_taxa_frustrado
+	DestNome          string  `json:"dest_nome"`
+	DestCEP           string  `json:"dest_cep"`
+	DestCidade        string  `json:"dest_cidade"`
+	DestUF            string  `json:"dest_uf"`
+	ClienteNome       string  `json:"cliente_nome"`
+	Produto           string  `json:"produto"`
+	AfiliadoNome      string  `json:"afiliado_nome"`
+	OfertaLink        string  `json:"oferta_link"` // senderzz_affiliate_links.link_token (oferta usada)
+	Comissao          float64 `json:"comissao"`
+	CreatedAt         string  `json:"created_at"`
 }
 
 func (h *OrdersHandler) tableExists(ctx context.Context, name string) bool {
@@ -78,6 +82,7 @@ func (h *OrdersHandler) ListMotoboy(w http.ResponseWriter, r *http.Request) {
 	szOrderJoin := ""
 	afiliadoSel := "''::text AS afiliado_nome"
 	produtoSel := "''::text AS produto"
+	ofertaSel := "''::text AS oferta_link"
 
 	if hasSzOrders {
 		szOrderSel = "o.id AS sz_order_id"
@@ -96,6 +101,19 @@ func (h *OrdersHandler) ListMotoboy(w http.ResponseWriter, r *http.Request) {
 			               WHERE pu.wp_user_id = o.affiliate_id OR pu.id = o.affiliate_id
 			               ORDER BY CASE WHEN pu.wp_user_id = o.affiliate_id THEN 0 ELSE 1 END
 			               LIMIT 1), '') AS afiliado_nome`
+		}
+
+		// Oferta (link_token): pega o link ativo associado ao vínculo do afiliado com o produtor.
+		// Subquery escalar para evitar fan-out (afiliado pode ter múltiplos links).
+		if h.tableExists(ctx, "senderzz_affiliate_links") && h.tableExists(ctx, "senderzz_affiliates") {
+			ofertaSel = `COALESCE((
+			              SELECT al.link_token
+			              FROM senderzz_affiliate_links al
+			              JOIN senderzz_affiliates sa ON sa.id = al.affiliate_id
+			              WHERE sa.afiliado_id = o.affiliate_id
+			                AND (o.produtor_id IS NULL OR sa.produtor_id = o.produtor_id)
+			              ORDER BY al.active DESC, al.id ASC
+			              LIMIT 1), '') AS oferta_link`
 		}
 	}
 
@@ -152,9 +170,11 @@ func (h *OrdersHandler) ListMotoboy(w http.ResponseWriter, r *http.Request) {
 
 	sqlQ := `SELECT mp.id, mp.wc_order_id, ` + szOrderSel + `,
 	                mp.motoboy_id, COALESCE(mp.status,''), COALESCE(mp.valor_pedido,0),
+	                COALESCE(mp.valor_taxa,0), COALESCE(mp.valor_taxa_frustrado,0),
 	                COALESCE(mp.dest_nome,''), COALESCE(mp.dest_cep,''),
-	                COALESCE(mp.dest_cidade,''), COALESCE(mp.dest_nome,'') AS cliente_nome,
-	                ` + produtoSel + `, ` + afiliadoSel + `, ` + comissaoSel + `,
+	                COALESCE(mp.dest_cidade,''), COALESCE(mp.dest_uf,''),
+	                COALESCE(mp.dest_nome,'') AS cliente_nome,
+	                ` + produtoSel + `, ` + afiliadoSel + `, ` + ofertaSel + `, ` + comissaoSel + `,
 	                mp.created_at::text
 	         FROM sz_motoboy_pedidos mp
 	         ` + szOrderJoin + `
@@ -175,9 +195,10 @@ func (h *OrdersHandler) ListMotoboy(w http.ResponseWriter, r *http.Request) {
 		_ = rows.Scan(
 			&p.ID, &p.WCOrderID, &szOrdID,
 			&p.MotoboyID, &p.Status, &p.Valor,
+			&p.TaxaMotoboy, &p.TaxaFrustrado,
 			&p.DestNome, &p.DestCEP,
-			&p.DestCidade, &p.ClienteNome,
-			&p.Produto, &p.AfiliadoNome, &p.Comissao,
+			&p.DestCidade, &p.DestUF, &p.ClienteNome,
+			&p.Produto, &p.AfiliadoNome, &p.OfertaLink, &p.Comissao,
 			&p.CreatedAt,
 		)
 		if szOrdID.Valid {

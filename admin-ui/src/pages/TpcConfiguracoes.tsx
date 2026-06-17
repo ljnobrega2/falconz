@@ -367,7 +367,7 @@ export default function TpcConfiguracoes() {
     <div>
       <div className="szv2-section-head">
         <div>
-          <h1>TPC · Configurações</h1>
+          <h1>Configurações de Expedição</h1>
           <p>
             Tokens, segredos, regras da carteira e parâmetros do Motor Senderzz
           </p>
@@ -789,7 +789,7 @@ export default function TpcConfiguracoes() {
         {ownersOpen && (
           <div>
             <p className="szv2-card-sub" style={{ marginBottom: 12 }}>
-              Use a classe de entrega do WooCommerce para definir qual carteira paga o frete.
+              Use a classe de entrega do catálogo para definir qual carteira paga o frete.
               A linha "Produtos sem classe" corresponde a term_id=0 (produtos sem classe atribuída).
             </p>
 

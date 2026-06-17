@@ -69,12 +69,6 @@ function fmtDateBR(iso: string | null | undefined): string {
   return iso.replace('T', ' ').slice(0, 16)
 }
 
-// URL base do WP Admin para abrir pedido WC em nova aba (espelha Orders.tsx).
-const WP_ADMIN = (import.meta.env.VITE_WP_ADMIN_BASE as string) || '/wp-admin'
-function wcAdminUrl(orderId: number): string {
-  return `${WP_ADMIN}/admin.php?page=wc-orders&action=edit&id=${orderId}`
-}
-
 // Type badge color map — espelha o enum aceito pelo backend (/types).
 const TYPE_BADGE: Record<string, string> = {
   credit:        'szv2-badge-success',
@@ -588,14 +582,9 @@ export default function CodWalletTransactions() {
                   </td>
                   <td>
                     {t.order_id ? (
-                      <a
-                        href={wcAdminUrl(t.order_id)}
-                        target="_blank"
-                        rel="noreferrer"
-                        style={{ fontWeight: 600, color: 'var(--szv2-brand)', textDecoration: 'none' }}
-                      >
+                      <span style={{ fontWeight: 600, color: 'var(--szv2-brand)' }}>
                         #{t.order_id}
-                      </a>
+                      </span>
                     ) : (
                       <span style={{ color: 'var(--szv2-text-faint)' }}>—</span>
                     )}

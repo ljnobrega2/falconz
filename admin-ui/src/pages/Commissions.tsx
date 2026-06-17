@@ -9,15 +9,22 @@ type Aff = {
   comissao_pct: number
   status: string
   created_at: string
+  link_token: string
+  link_url: string
+  link_active: boolean
 }
 
 type Commission = {
   id: number
+  order_id: number | null
   afiliado_nome: string
   produtor_nome: string
   produto_nome: string | null
+  comissao_pct: number
   valor: number
   tipo: string
+  status_tx: string
+  link_token: string
   created_at: string
 }
 
@@ -147,7 +154,7 @@ export default function Commissions() {
             <table className="szv2-table">
               <thead>
                 <tr>
-                  <th>ID</th><th>Produtor</th><th>Afiliado</th><th>Produto</th><th>Comissão %</th><th>Status</th><th>Criado</th>
+                  <th>ID</th><th>Produtor</th><th>Afiliado</th><th>Produto</th><th>Oferta (link)</th><th>Regra %</th><th>Status</th><th>Criado</th>
                 </tr>
               </thead>
               <tbody>
@@ -157,13 +164,25 @@ export default function Commissions() {
                     <td style={{ fontSize: '13px', fontWeight: 600 }}>{a.produtor_nome}</td>
                     <td style={{ fontSize: '13px' }}>{a.afiliado_nome}</td>
                     <td style={{ fontSize: '12px', color: 'var(--szv2-text-soft)' }}>{a.produto_nome ?? '—'}</td>
+                    <td style={{ fontSize: 12 }}>
+                      {a.link_token
+                        ? (
+                          <span title={a.link_url || a.link_token} style={{
+                            fontFamily: 'var(--szv2-font-mono)',
+                            background: a.link_active ? 'var(--szv2-brand-light)' : 'var(--szv2-neutral-bg)',
+                            color: a.link_active ? 'var(--szv2-brand)' : 'var(--szv2-text-muted)',
+                            padding: '2px 6px', borderRadius: 4,
+                          }}>{a.link_token}{!a.link_active && ' (inativo)'}</span>
+                        )
+                        : <span style={{ color: 'var(--szv2-text-faint)' }}>—</span>}
+                    </td>
                     <td style={{ fontFamily: 'var(--szv2-font-mono)', color: 'var(--szv2-brand)', fontWeight: 700 }}>{a.comissao_pct}%</td>
                     <td><span className={`sz-badge ${STATUS_CLS[a.status] ?? 'szv2-badge-neutral'}`}>{a.status}</span></td>
                     <td style={{ fontSize: '12px', color: 'var(--szv2-text-muted)' }}>{a.created_at.slice(0, 10)}</td>
                   </tr>
                 ))}
                 {affs.length === 0 && (
-                  <tr><td colSpan={7}><div className="szv2-empty"><h3>Sem vínculos</h3></div></td></tr>
+                  <tr><td colSpan={8}><div className="szv2-empty"><h3>Sem vínculos</h3></div></td></tr>
                 )}
               </tbody>
             </table>
@@ -258,23 +277,49 @@ export default function Commissions() {
             <table className="szv2-table">
               <thead>
                 <tr>
-                  <th>ID</th><th>Afiliado</th><th>Produtor</th><th>Produto</th><th>Valor</th><th>Tipo</th><th>Data</th>
+                  <th>ID</th>
+                  <th>Pedido</th>
+                  <th>Afiliado</th>
+                  <th>Produtor</th>
+                  <th>Produto</th>
+                  <th>Oferta</th>
+                  <th className="szv2-td-num">Regra %</th>
+                  <th className="szv2-td-num">Valor</th>
+                  <th>Tipo</th>
+                  <th>Status tx</th>
+                  <th>Data</th>
                 </tr>
               </thead>
               <tbody>
                 {comms.map(c => (
                   <tr key={c.id}>
                     <td style={{ fontSize: '12px', color: 'var(--szv2-text-muted)' }}>#{c.id}</td>
+                    <td style={{ fontSize: '12px', color: 'var(--szv2-text-muted)' }}>
+                      {c.order_id ? `#${c.order_id}` : '—'}
+                    </td>
                     <td style={{ fontSize: '13px', fontWeight: 600 }}>{c.afiliado_nome}</td>
                     <td style={{ fontSize: '13px' }}>{c.produtor_nome}</td>
                     <td style={{ fontSize: '12px', color: 'var(--szv2-text-soft)' }}>{c.produto_nome ?? '—'}</td>
-                    <td style={{ fontFamily: 'var(--szv2-font-mono)', color: 'var(--szv2-success)', fontWeight: 700 }}>R$ {Number(c.valor).toFixed(2)}</td>
+                    <td style={{ fontSize: 12 }}>
+                      {c.link_token
+                        ? <span title={c.link_token} style={{ fontFamily: 'var(--szv2-font-mono)', background: 'var(--szv2-brand-light)', color: 'var(--szv2-brand)', padding: '2px 6px', borderRadius: 4 }}>{c.link_token}</span>
+                        : <span style={{ color: 'var(--szv2-text-faint)' }}>—</span>}
+                    </td>
+                    <td className="szv2-td-num" style={{ fontFamily: 'var(--szv2-font-mono)', color: 'var(--szv2-brand)' }}>
+                      {c.comissao_pct > 0 ? `${c.comissao_pct}%` : '—'}
+                    </td>
+                    <td className="szv2-td-num" style={{ fontFamily: 'var(--szv2-font-mono)', color: 'var(--szv2-success)', fontWeight: 700 }}>R$ {Number(c.valor).toFixed(2)}</td>
                     <td><span style={{ fontFamily: 'var(--szv2-font-mono)', fontSize: '11px', background: 'var(--szv2-neutral-bg)', padding: '2px 8px', borderRadius: '6px' }}>{c.tipo}</span></td>
+                    <td>
+                      {c.status_tx
+                        ? <span className={`sz-badge ${c.status_tx === 'available' ? 'szv2-badge-success' : c.status_tx === 'pending' ? 'szv2-badge-warning' : 'szv2-badge-neutral'}`}>{c.status_tx}</span>
+                        : <span style={{ color: 'var(--szv2-text-faint)' }}>—</span>}
+                    </td>
                     <td style={{ fontSize: '12px', color: 'var(--szv2-text-muted)' }}>{c.created_at.slice(0, 10)}</td>
                   </tr>
                 ))}
                 {comms.length === 0 && (
-                  <tr><td colSpan={7}><div className="szv2-empty"><h3>Sem comissões</h3></div></td></tr>
+                  <tr><td colSpan={11}><div className="szv2-empty"><h3>Sem comissões</h3></div></td></tr>
                 )}
               </tbody>
             </table>

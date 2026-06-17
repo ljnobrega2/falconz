@@ -45,6 +45,7 @@ type VerificarPixResponse = {
 
 type TipoFilter = '' | 'credito' | 'debito'
 type StatusFilter = '' | 'pendente' | 'analise' | 'confirmado' | 'cancelado'
+type CarteiraFilter = 'expedicao' | 'cod' | 'todas'
 
 const TIPO_CHIPS: { key: TipoFilter; label: string }[] = [
   { key: '',        label: 'Todos' },
@@ -121,6 +122,8 @@ export default function TpcTransacoes() {
   // Filtros
   const [tipo, setTipo] = useState<TipoFilter>('')
   const [status, setStatus] = useState<StatusFilter>('')
+  // Filtro client-side para separar transações da Carteira Expedição (frete) vs COD
+  const [carteira, setCarteira] = useState<CarteiraFilter>('expedicao')
   const [dataIni, setDataIni] = useState('')
   const [dataFim, setDataFim] = useState('')
   const [userIdInput, setUserIdInput] = useState('')
@@ -229,11 +232,21 @@ export default function TpcTransacoes() {
   const hasAnyFilter =
     tipo !== '' || status !== '' || dataIni !== '' || dataFim !== '' || userIdApplied !== ''
 
+  // Filtra client-side por carteira (descrição contém "COD" = transação COD)
+  const visibleItems = useMemo(() => {
+    if (carteira === 'todas') return items
+    if (carteira === 'cod') {
+      return items.filter(t => /cod/i.test(t.descricao || ''))
+    }
+    // 'expedicao' (default): oculta transações COD
+    return items.filter(t => !/cod/i.test(t.descricao || ''))
+  }, [items, carteira])
+
   return (
     <div>
       <div className="szv2-section-head">
         <div>
-          <h1>TPC — Transações</h1>
+          <h1>Transações Expedição</h1>
           <p>{total} transação(ões){hasAnyFilter ? ' filtrada(s)' : ' no total'}</p>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
@@ -258,8 +271,31 @@ export default function TpcTransacoes() {
         </div>
       )}
 
+      <div className="szv2-alert" style={{ marginBottom: 16 }}>
+        Estas são transações da carteira de Expedição (frete pré-pago).
+        Para transações COD veja: Transações COD.
+      </div>
+
       {/* Filtros */}
       <div className="szv2-card" style={{ marginBottom: 16 }}>
+        {/* Carteira (client-side) */}
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ fontSize: 12, color: 'var(--szv2-text-muted)', marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+            Carteira
+          </div>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            <Chip active={carteira === 'expedicao'} onClick={() => setCarteira('expedicao')} disabled={loading}>
+              Expedição (frete)
+            </Chip>
+            <Chip active={carteira === 'cod'} onClick={() => setCarteira('cod')} disabled={loading}>
+              COD
+            </Chip>
+            <Chip active={carteira === 'todas'} onClick={() => setCarteira('todas')} disabled={loading}>
+              Todas
+            </Chip>
+          </div>
+        </div>
+
         {/* Tipo */}
         <div style={{ marginBottom: 12 }}>
           <div style={{ fontSize: 12, color: 'var(--szv2-text-muted)', marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0.5 }}>
@@ -384,16 +420,16 @@ export default function TpcTransacoes() {
                   <div className="szv2-empty"><h3>Carregando…</h3></div>
                 </td>
               </tr>
-            ) : items.length === 0 ? (
+            ) : visibleItems.length === 0 ? (
               <tr>
                 <td colSpan={9}>
                   <div className="szv2-empty">
                     <h3>Nenhuma transação encontrada</h3>
-                    {hasAnyFilter && <p>Tente ajustar os filtros acima.</p>}
+                    {(hasAnyFilter || carteira !== 'todas') && <p>Tente ajustar os filtros acima.</p>}
                   </div>
                 </td>
               </tr>
-            ) : items.map(t => {
+            ) : visibleItems.map(t => {
               const isCredito = t.tipo === 'credito'
               const isDebito  = t.tipo === 'debito'
               const tipoBadgeCls =

@@ -148,7 +148,7 @@ export default function TpcClientes() {
     <div>
       <div className="szv2-section-head">
         <div>
-          <h1>TPC — Clientes</h1>
+          <h1>Carteira Expedição</h1>
           <p>{total} cliente(s) com carteira</p>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>

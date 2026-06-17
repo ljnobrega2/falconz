@@ -366,16 +366,7 @@ export default function ExpedicaoIntegracoes() {
                   marginTop: 8,
                 }}
               >
-                ⚠️ Nenhuma classe de entrega encontrada. Crie classes em{' '}
-                <a
-                  href="/wp-admin/admin.php?page=wc-settings&tab=shipping&section=classes"
-                  target="_blank"
-                  rel="noreferrer"
-                  style={{ color: 'var(--szv2-brand)', textDecoration: 'underline' }}
-                >
-                  WooCommerce → Configurações → Entrega → Classes de entrega
-                </a>
-                .
+                ⚠️ Nenhuma classe de entrega encontrada. Cadastre classes de entrega no painel para vincular integrações.
               </div>
             ) : (
               <div style={{ overflowX: 'auto', marginTop: 8 }}>

@@ -124,7 +124,7 @@ export default function Labels() {
           <thead>
             <tr>
               <th>ID</th>
-              <th>Pedido WC</th>
+              <th>Pedido</th>
               <th>Shipment ID</th>
               <th>Serviço</th>
               <th>Rastreio</th>

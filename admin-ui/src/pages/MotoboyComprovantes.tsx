@@ -509,7 +509,7 @@ export default function MotoboyComprovantes() {
             />
           </div>
           <div className="szv2-field" style={{ minWidth: 140 }}>
-            <label className="szv2-label">Pedido (#WC)</label>
+            <label className="szv2-label">Nº do pedido</label>
             <input
               type="number"
               className="szv2-input"

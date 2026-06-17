@@ -158,8 +158,8 @@ func (h *AffiliateWalletHandler) List(w http.ResponseWriter, r *http.Request) {
 	sql := `
 		SELECT
 			a.id,
-			COALESCE(a.nome, '')  AS nome,
-			COALESCE(a.email, '') AS email,
+			COALESCE(u.nome, '')  AS nome,
+			COALESCE(u.email, '') AS email,
 			COALESCE(w.pending_balance, 0) AS pending_balance,
 			COALESCE(w.balance, 0)         AS balance,
 			COALESCE(w.debt_amount, 0)     AS debt_amount,
@@ -167,10 +167,11 @@ func (h *AffiliateWalletHandler) List(w http.ResponseWriter, r *http.Request) {
 			` + penaSQL + `    AS penalidades_total,
 			` + pedidosSQL + ` AS pedidos_validos
 		FROM senderzz_affiliates a
+		LEFT JOIN senderzz_portal_users u   ON u.id = a.afiliado_id
 		LEFT JOIN senderzz_affiliate_wallet w ON w.affiliate_id = a.id
 		WHERE ($1 = ''
-		       OR a.email ILIKE '%' || $1 || '%'
-		       OR a.nome  ILIKE '%' || $1 || '%')
+		       OR u.email ILIKE '%' || $1 || '%'
+		       OR u.nome  ILIKE '%' || $1 || '%')
 		ORDER BY COALESCE(w.balance, 0) DESC, a.id DESC
 		LIMIT $2`
 

@@ -1,10 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '../api'
 
-// URL base do WP Admin para link "Abrir WC".
-// Configurável via variável de ambiente; padrão assume mesma origem com /wp-admin.
-const WP_ADMIN = (import.meta.env.VITE_WP_ADMIN_BASE as string) || '/wp-admin'
-
 type P = {
   id: number
   wc_order_id?: number | null
@@ -12,12 +8,16 @@ type P = {
   motoboy_id?: number | null
   status: string
   valor: number
+  taxa_motoboy: number
+  taxa_frustrado: number
   dest_nome: string
   dest_cep: string
   dest_cidade: string
+  dest_uf: string
   cliente_nome: string
   produto: string
   afiliado_nome: string
+  oferta_link: string
   comissao: number
   created_at: string
 }
@@ -33,10 +33,6 @@ const STATUS_CLS: Record<string, string> = {
 }
 
 const fmt = (v: number) => 'R$ ' + v.toLocaleString('pt-BR', { minimumFractionDigits: 2 })
-
-function wcAdminUrl(wcOrderId: number): string {
-  return `${WP_ADMIN}/admin.php?page=wc-orders&action=edit&id=${wcOrderId}`
-}
 
 function defaultRange() {
   const today = new Date()
@@ -96,7 +92,7 @@ export default function Orders() {
   }
 
   async function handleAuditFix(p: P) {
-    if (!window.confirm(`Auditar e corrigir pedido motoboy #${p.id} (WC #${p.wc_order_id ?? '—'})?\n\nCorrege comissão de afiliado e carteira COD do produtor caso haja divergência.`)) return
+    if (!window.confirm(`Auditar e corrigir pedido motoboy #${p.id} (#${p.wc_order_id ?? '—'})?\n\nCorrege comissão de afiliado e carteira COD do produtor caso haja divergência.`)) return
     setBusyId(p.id)
     try {
       await api(`/orders/motoboy/${p.id}/audit-fix`, { method: 'POST' })
@@ -212,10 +208,13 @@ export default function Orders() {
             <tr>
               <th>Pedido</th>
               <th>Cliente</th>
-              <th>Cidade</th>
+              <th>Destino</th>
               <th>Status</th>
               <th>Produto</th>
               <th>Afiliado</th>
+              <th>Oferta</th>
+              <th className="szv2-td-num">Valor</th>
+              <th className="szv2-td-num">Taxa motoboy</th>
               <th className="szv2-td-num">Comissão</th>
               <th>Criado</th>
               <th>Ações</th>
@@ -224,12 +223,12 @@ export default function Orders() {
           <tbody>
             {items.map(p => (
               <tr key={p.id}>
-                {/* Pedido — mostra ID motoboy e WC Order */}
+                {/* Pedido — mostra ID motoboy e ID do pedido */}
                 <td style={{ color: 'var(--szv2-text-muted)', fontSize: '12px' }}>
                   <div>#{p.id}</div>
                   {p.wc_order_id && (
                     <div style={{ color: 'var(--szv2-text-faint)', fontSize: 11 }}>
-                      WC #{p.wc_order_id}
+                      #{p.wc_order_id}
                     </div>
                   )}
                 </td>
@@ -237,9 +236,14 @@ export default function Orders() {
                 <td style={{ fontWeight: 500 }}>
                   {p.cliente_nome || p.dest_nome || '—'}
                 </td>
-                {/* Cidade */}
+                {/* Destino — cidade/UF + CEP */}
                 <td style={{ fontSize: 13 }}>
-                  {p.dest_cidade || '—'}
+                  <div>{p.dest_cidade || '—'}{p.dest_uf ? `/${p.dest_uf}` : ''}</div>
+                  {p.dest_cep && (
+                    <div style={{ color: 'var(--szv2-text-faint)', fontSize: 11, fontFamily: 'var(--szv2-font-mono)' }}>
+                      CEP {p.dest_cep}
+                    </div>
+                  )}
                 </td>
                 {/* Status */}
                 <td>
@@ -255,6 +259,22 @@ export default function Orders() {
                 <td style={{ fontSize: 13 }}>
                   {p.afiliado_nome || '—'}
                 </td>
+                {/* Oferta (link_token do afiliado para esse produtor) */}
+                <td style={{ fontSize: 12 }}>
+                  {p.oferta_link
+                    ? <span style={{ fontFamily: 'var(--szv2-font-mono)', background: 'var(--szv2-brand-light)', color: 'var(--szv2-brand)', padding: '2px 6px', borderRadius: 4 }} title={p.oferta_link}>{p.oferta_link}</span>
+                    : <span style={{ color: 'var(--szv2-text-faint)' }}>—</span>}
+                </td>
+                {/* Valor do pedido */}
+                <td className="szv2-td-num" style={{ fontWeight: 600 }}>
+                  {p.valor > 0 ? fmt(p.valor) : '—'}
+                </td>
+                {/* Taxa motoboy */}
+                <td className="szv2-td-num" style={{ fontSize: 13 }}>
+                  {p.status === 'frustrado' && p.taxa_frustrado > 0
+                    ? <span title="Taxa frustrado" style={{ color: 'var(--szv2-warning)' }}>{fmt(p.taxa_frustrado)}</span>
+                    : p.taxa_motoboy > 0 ? fmt(p.taxa_motoboy) : '—'}
+                </td>
                 {/* Comissão */}
                 <td className="szv2-td-num" style={{ fontWeight: 600 }}>
                   {p.comissao > 0 ? fmt(p.comissao) : '—'}
@@ -266,19 +286,6 @@ export default function Orders() {
                 {/* Ações */}
                 <td>
                   <div style={{ display: 'flex', gap: 6, flexWrap: 'nowrap' }}>
-                    {p.wc_order_id ? (
-                      <a
-                        href={wcAdminUrl(p.wc_order_id)}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="szv2-btn-secondary"
-                        style={{ fontSize: 12, padding: '3px 8px', textDecoration: 'none' }}
-                      >
-                        Abrir WC
-                      </a>
-                    ) : (
-                      <span style={{ color: 'var(--szv2-text-faint)', fontSize: 12 }}>sem WC</span>
-                    )}
                     <button
                       type="button"
                       className="szv2-btn-secondary"
@@ -294,7 +301,7 @@ export default function Orders() {
             ))}
             {items.length === 0 && (
               <tr>
-                <td colSpan={9}>
+                <td colSpan={12}>
                   <div className="szv2-empty">
                     <h3>Sem pedidos</h3>
                     <p>Tente outro filtro ou remova os filtros aplicados.</p>
