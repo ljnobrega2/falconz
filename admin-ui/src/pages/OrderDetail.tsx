@@ -956,7 +956,7 @@ function MetaInline({ meta }: { meta: unknown }) {
     try {
       meta = JSON.parse(meta)
     } catch {
-      return <span>{meta}</span>
+      return <span>{String(meta)}</span>
     }
   }
   if (typeof meta !== 'object') return <span>{String(meta)}</span>
