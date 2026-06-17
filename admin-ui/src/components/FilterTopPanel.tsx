@@ -1,5 +1,6 @@
-// Painel de filtros que desce do topo (slide-down from top).
-// Substitui o FilterDrawer lateral por um painel horizontal estilo Logzz.
+// Painel de filtros lateral direito (slide-in from right).
+// Reverted de top-slide para lateral em 2026-06-17 a pedido do usuário.
+// Mantém API + helpers (FilterField, ActiveFilterChips, filterInputStyle).
 //
 // Uso:
 //   <FilterTopPanel
@@ -66,7 +67,7 @@ export default function FilterTopPanel({
         />
       )}
 
-      {/* Painel — sempre no DOM para animar via transform. */}
+      {/* Painel lateral direito — sempre no DOM para animar via transform. */}
       <div
         role="dialog"
         aria-modal="true"
@@ -74,21 +75,19 @@ export default function FilterTopPanel({
         style={{
           position: 'fixed',
           top: 0,
-          left: 0,
           right: 0,
-          maxWidth: 1100,
-          margin: '0 auto',
+          height: '100vh',
+          width: 360,
+          maxWidth: '92vw',
           background: 'var(--szv2-surface)',
-          border: '1px solid var(--szv2-divider)',
-          borderTop: 0,
-          borderRadius: '0 0 16px 16px',
-          boxShadow: '0 12px 32px rgba(0,0,0,.18)',
+          borderLeft: '1px solid var(--szv2-divider)',
+          boxShadow: '-12px 0 32px rgba(0,0,0,.18)',
           zIndex: 502,
           display: 'flex',
           flexDirection: 'column',
           overflow: 'hidden',
           transition: 'transform .25s ease',
-          transform: open ? 'translateY(0)' : 'translateY(-100%)',
+          transform: open ? 'translateX(0)' : 'translateX(100%)',
           pointerEvents: open ? 'auto' : 'none',
         }}
       >
@@ -128,14 +127,14 @@ export default function FilterTopPanel({
           </button>
         </div>
 
-        {/* Body — grid responsivo de blocos de filtro. */}
+        {/* Body — coluna vertical de blocos de filtro (lateral direito). */}
         <div
           style={{
+            flex: 1,
             padding: '20px',
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+            display: 'flex',
+            flexDirection: 'column',
             gap: 16,
-            maxHeight: '70vh',
             overflowY: 'auto',
           }}
         >
