@@ -23,16 +23,46 @@ type OrderAddress = {
   bairro: string; cidade: string; uf: string; cep: string
 }
 type OrderItem = { produto: string; qty: number; preco_unit: number; subtotal: number }
+type OrderItemFull = {
+  id: number
+  produto_id: number
+  nome: string
+  sku: string
+  quantidade: number
+  preco_unit: number
+  subtotal: number
+  meta: unknown
+}
 type OrderTotals = { subtotal: number; shipping: number; discount: number; total: number }
+type OrderFullAddress = {
+  exists: boolean
+  nome: string; email: string; telefone: string
+  cep: string; logradouro: string; numero: string; complemento: string
+  bairro: string; cidade: string; uf: string; pais: string
+}
+type OrderProducer = { id: number | null; nome: string; email: string }
+type OrderFees = {
+  senderzz_fee: number
+  shipping: number
+  producer_net: number
+  gross: number
+  affiliate_amount: number
+}
 
 type OrderHead = {
   id: number
   wc_order_id: number | null
+  order_number?: string
   status: string
   created_at: string
   customer: OrderCustomer
   address: OrderAddress
   items: OrderItem[]
+  items_full?: OrderItemFull[]
+  endereco_envio?: OrderFullAddress
+  endereco_cobranca?: OrderFullAddress
+  produtor?: OrderProducer
+  taxas?: OrderFees
   totals: OrderTotals
 }
 
@@ -502,15 +532,26 @@ export default function OrderDetail() {
         </div>
       </div>
 
+      {/* ── Endereço de entrega ───────────────────────────────────── */}
+      <FullAddressCard title="📦 Endereço de entrega" addr={order.endereco_envio} />
+
+      {/* ── Endereço de cobrança ──────────────────────────────────── */}
+      <FullAddressCard title="🧾 Endereço de cobrança" addr={order.endereco_cobranca} />
+
       {/* ── Itens ──────────────────────────────────────────────────── */}
+      {(() => {
+        const itemsFull = order.items_full ?? []
+        const useFull = itemsFull.length > 0
+        const rowCount = useFull ? itemsFull.length : order.items.length
+        return (
       <div className="szv2-card" style={{ marginBottom: 16 }}>
         <div className="szv2-card-head">
           <div>
             <h2>📦 Itens do pedido</h2>
-            <p className="szv2-card-sub">{order.items.length} item(ns)</p>
+            <p className="szv2-card-sub">{rowCount} item(ns)</p>
           </div>
         </div>
-        {order.items.length === 0 ? (
+        {rowCount === 0 ? (
           <div className="szv2-empty"><h3>Sem itens</h3><p>Pedido sem itens registrados em sz_order_items.</p></div>
         ) : (
           <div className="szv2-table-wrap" style={{ marginTop: 12 }}>
@@ -518,32 +559,105 @@ export default function OrderDetail() {
               <thead>
                 <tr>
                   <th>Produto</th>
+                  {useFull ? <th style={{ width: 110 }}>SKU</th> : null}
                   <th style={{ textAlign: 'right', width: 80 }}>Qty</th>
                   <th style={{ textAlign: 'right', width: 140 }}>Preço unit</th>
                   <th style={{ textAlign: 'right', width: 140 }}>Subtotal</th>
                 </tr>
               </thead>
               <tbody>
-                {order.items.map((it, i) => (
-                  <tr key={i}>
-                    <td>{it.produto || '—'}</td>
-                    <td className="szv2-td-num">{it.qty}</td>
-                    <td className="szv2-td-num">R$ {fmtBRL(it.preco_unit)}</td>
-                    <td className="szv2-td-num">R$ {fmtBRL(it.subtotal)}</td>
-                  </tr>
-                ))}
+                {useFull
+                  ? itemsFull.map(it => (
+                    <tr key={it.id}>
+                      <td>
+                        <div style={{ fontWeight: 600 }}>{it.nome || '—'}</div>
+                        {it.produto_id ? (
+                          <div style={{ fontSize: 11, color: 'var(--szv2-text-muted)', fontFamily: 'var(--szv2-font-mono)' }}>
+                            #{it.produto_id}
+                          </div>
+                        ) : null}
+                        <MetaItemInline meta={it.meta} />
+                      </td>
+                      <td style={{ fontFamily: 'var(--szv2-font-mono)', fontSize: 12 }}>{it.sku || '—'}</td>
+                      <td className="szv2-td-num">{it.quantidade}</td>
+                      <td className="szv2-td-num">R$ {fmtBRL(it.preco_unit)}</td>
+                      <td className="szv2-td-num">R$ {fmtBRL(it.subtotal)}</td>
+                    </tr>
+                  ))
+                  : order.items.map((it, i) => (
+                    <tr key={i}>
+                      <td>{it.produto || '—'}</td>
+                      <td className="szv2-td-num">{it.qty}</td>
+                      <td className="szv2-td-num">R$ {fmtBRL(it.preco_unit)}</td>
+                      <td className="szv2-td-num">R$ {fmtBRL(it.subtotal)}</td>
+                    </tr>
+                  ))
+                }
               </tbody>
               <tfoot>
-                <tr><td colSpan={3} style={{ textAlign: 'right', color: 'var(--szv2-text-muted)' }}>Subtotal</td><td className="szv2-td-num">R$ {fmtBRL(order.totals.subtotal)}</td></tr>
-                <tr><td colSpan={3} style={{ textAlign: 'right', color: 'var(--szv2-text-muted)' }}>Frete</td><td className="szv2-td-num">R$ {fmtBRL(order.totals.shipping)}</td></tr>
+                <tr><td colSpan={useFull ? 4 : 3} style={{ textAlign: 'right', color: 'var(--szv2-text-muted)' }}>Subtotal</td><td className="szv2-td-num">R$ {fmtBRL(order.totals.subtotal)}</td></tr>
+                <tr><td colSpan={useFull ? 4 : 3} style={{ textAlign: 'right', color: 'var(--szv2-text-muted)' }}>Frete</td><td className="szv2-td-num">R$ {fmtBRL(order.totals.shipping)}</td></tr>
                 {order.totals.discount > 0 && (
-                  <tr><td colSpan={3} style={{ textAlign: 'right', color: 'var(--szv2-text-muted)' }}>Desconto</td><td className="szv2-td-num">- R$ {fmtBRL(order.totals.discount)}</td></tr>
+                  <tr><td colSpan={useFull ? 4 : 3} style={{ textAlign: 'right', color: 'var(--szv2-text-muted)' }}>Desconto</td><td className="szv2-td-num">- R$ {fmtBRL(order.totals.discount)}</td></tr>
                 )}
-                <tr><td colSpan={3} style={{ textAlign: 'right', fontWeight: 700 }}>Total</td><td className="szv2-td-num" style={{ fontWeight: 700, fontSize: 16, color: 'var(--szv2-brand)' }}>R$ {fmtBRL(order.totals.total)}</td></tr>
+                <tr><td colSpan={useFull ? 4 : 3} style={{ textAlign: 'right', fontWeight: 700 }}>Total</td><td className="szv2-td-num" style={{ fontWeight: 700, fontSize: 16, color: 'var(--szv2-brand)' }}>R$ {fmtBRL(order.totals.total)}</td></tr>
               </tfoot>
             </table>
           </div>
         )}
+      </div>
+        )
+      })()}
+
+      {/* ── Produtor ────────────────────────────────────────────────── */}
+      <div className="szv2-card" style={{ marginBottom: 16 }}>
+        <div className="szv2-card-head">
+          <div>
+            <h2>🏢 Produtor</h2>
+            <p className="szv2-card-sub">Lojista dono do pedido</p>
+          </div>
+        </div>
+        {order.produtor && (order.produtor.id || order.produtor.nome) ? (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12, marginTop: 8 }}>
+            <KV label="Nome"  value={order.produtor.nome || `#${order.produtor.id ?? '—'}`} />
+            <KV label="E-mail" value={order.produtor.email || '—'} mono />
+            <KV label="ID WP" value={order.produtor.id ? `#${order.produtor.id}` : '—'} mono />
+          </div>
+        ) : (
+          <div className="szv2-empty"><h3>Sem dados</h3><p>Produtor não vinculado ao pedido.</p></div>
+        )}
+      </div>
+
+      {/* ── Resumo financeiro ────────────────────────────────────── */}
+      <div className="szv2-card" style={{ marginBottom: 16 }}>
+        <div className="szv2-card-head">
+          <div>
+            <h2>💰 Resumo financeiro</h2>
+            <p className="szv2-card-sub">Bruto · frete · taxas · líquido produtor</p>
+          </div>
+        </div>
+        {(() => {
+          const t = order.taxas
+          const gross = t?.gross ?? order.totals.total
+          const ship = t?.shipping ?? order.totals.shipping
+          const fee = t?.senderzz_fee ?? 0
+          const aff = t?.affiliate_amount ?? affiliate.commission_amount ?? 0
+          const net = t?.producer_net ?? 0
+          return (
+            <div className="szv2-table-wrap" style={{ marginTop: 12 }}>
+              <table className="szv2-table">
+                <tbody>
+                  <tr><td>Subtotal</td><td className="szv2-td-num">R$ {fmtBRL(order.totals.subtotal)}</td></tr>
+                  <tr><td>Frete</td><td className="szv2-td-num">R$ {fmtBRL(ship)}</td></tr>
+                  <tr><td>Taxa Senderzz</td><td className="szv2-td-num" style={{ color: 'var(--szv2-danger)' }}>- R$ {fmtBRL(fee)}</td></tr>
+                  <tr><td>Comissão de afiliado</td><td className="szv2-td-num" style={{ color: 'var(--szv2-danger)' }}>- R$ {fmtBRL(aff)}</td></tr>
+                  <tr><td style={{ fontWeight: 700 }}>Líquido produtor</td><td className="szv2-td-num" style={{ fontWeight: 700, color: 'var(--szv2-brand)' }}>R$ {fmtBRL(net)}</td></tr>
+                  <tr><td style={{ fontWeight: 700 }}>Total (bruto)</td><td className="szv2-td-num" style={{ fontWeight: 700, fontSize: 16 }}>R$ {fmtBRL(gross)}</td></tr>
+                </tbody>
+              </table>
+            </div>
+          )
+        })()}
       </div>
 
       {/* ── Motoboy detail ─────────────────────────────────────────── */}
@@ -949,6 +1063,30 @@ function CopyText({ text }: { text: string }) {
   )
 }
 
+// MetaItemInline — mostra variações/atributos do item (sz_order_items.meta).
+// Renderiza inline em fonte miúda; oculta se meta for nulo/vazio.
+function MetaItemInline({ meta }: { meta: unknown }) {
+  let m: unknown = meta
+  if (m == null) return null
+  if (typeof m === 'string') {
+    if (!m || m === 'null') return null
+    try { m = JSON.parse(m) } catch { return <div style={{ fontSize: 11, color: 'var(--szv2-text-muted)' }}>{String(m)}</div> }
+  }
+  if (typeof m !== 'object' || m === null) return null
+  const entries = Object.entries(m as Record<string, unknown>)
+  if (entries.length === 0) return null
+  return (
+    <div style={{ fontSize: 11, color: 'var(--szv2-text-muted)', marginTop: 4 }}>
+      {entries.map(([k, v], i) => (
+        <span key={k}>
+          {i > 0 && ' · '}
+          <span>{k}:</span> <span style={{ fontWeight: 600 }}>{typeof v === 'object' ? JSON.stringify(v) : String(v ?? '—')}</span>
+        </span>
+      ))}
+    </div>
+  )
+}
+
 function MetaInline({ meta }: { meta: unknown }) {
   if (meta == null) return <span>—</span>
   if (typeof meta === 'string') {
@@ -985,6 +1123,42 @@ function addrLine(a: OrderAddress) {
     a.cep ? `CEP ${a.cep}` : '',
   ].filter(Boolean)
   return parts.join(', ')
+}
+
+// formatFullAddress — bloco multi-linha para o card "Endereço".
+function FullAddressCard({ title, addr }: { title: string; addr: OrderFullAddress | undefined }) {
+  if (!addr || !addr.exists) {
+    return (
+      <div className="szv2-card" style={{ marginBottom: 16 }}>
+        <div className="szv2-card-head">
+          <div><h2>{title}</h2><p className="szv2-card-sub">Sem dados</p></div>
+        </div>
+        <div className="szv2-empty"><h3>Sem endereço</h3><p>Nenhum endereço registrado para este pedido.</p></div>
+      </div>
+    )
+  }
+  const linhaRua = [addr.logradouro ?? '—', addr.numero ?? ''].filter(Boolean).join(', ')
+  const linhaBairro = addr.bairro ?? '—'
+  const linhaCidade = [addr.cidade ?? '—', addr.uf ?? ''].filter(Boolean).join('/')
+  return (
+    <div className="szv2-card" style={{ marginBottom: 16 }}>
+      <div className="szv2-card-head">
+        <div><h2>{title}</h2><p className="szv2-card-sub">Destinatário e localização</p></div>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12, marginTop: 8 }}>
+        <KV label="Nome"     value={addr.nome || '—'} />
+        <KV label="E-mail"   value={addr.email || '—'} mono />
+        <KV label="Telefone" value={addr.telefone || '—'} mono />
+        <KV label="CEP"      value={addr.cep || '—'} mono />
+      </div>
+      <div style={{ marginTop: 12, padding: 12, background: 'var(--szv2-bg, #f9fafb)', borderRadius: 8, border: '1px solid var(--szv2-border)' }}>
+        <div style={{ fontSize: 14, fontWeight: 600 }}>{linhaRua || '—'}</div>
+        {addr.complemento ? <div style={{ fontSize: 13, color: 'var(--szv2-text-muted)' }}>Compl.: {addr.complemento}</div> : null}
+        <div style={{ fontSize: 13, color: 'var(--szv2-text-muted)' }}>{linhaBairro}</div>
+        <div style={{ fontSize: 13, color: 'var(--szv2-text-muted)' }}>{linhaCidade} {addr.pais ? `· ${addr.pais}` : ''}</div>
+      </div>
+    </div>
+  )
 }
 
 function actorBadgeCls(t: string) {

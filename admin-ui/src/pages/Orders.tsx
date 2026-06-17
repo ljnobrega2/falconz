@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { api } from '../api'
 
 // URL base do WP Admin para link "Abrir WC".
@@ -38,10 +38,20 @@ function wcAdminUrl(wcOrderId: number): string {
   return `${WP_ADMIN}/admin.php?page=wc-orders&action=edit&id=${wcOrderId}`
 }
 
+function defaultRange() {
+  const today = new Date()
+  const past = new Date(today)
+  past.setDate(past.getDate() - 30)
+  const fmt = (d: Date) => d.toISOString().slice(0, 10)
+  return { ini: fmt(past), fim: fmt(today) }
+}
+
 export default function Orders() {
+  const init = useMemo(defaultRange, [])
   const [items, setItems] = useState<P[]>([])
   const [status, setStatus] = useState('')
-  const [date, setDate] = useState('')
+  const [dataIni, setDataIni] = useState(init.ini)
+  const [dataFim, setDataFim] = useState(init.fim)
   const [cidade, setCidade] = useState('')
   const [search, setSearch] = useState('')
   const [stopped, setStopped] = useState(false)
@@ -57,7 +67,8 @@ export default function Orders() {
   function buildQS() {
     const p = new URLSearchParams()
     if (status) p.set('status', status)
-    if (date) p.set('date', date)
+    if (dataIni) p.set('data_ini', dataIni)
+    if (dataFim) p.set('data_fim', dataFim)
     if (cidade) p.set('cidade', cidade)
     if (search) p.set('s', search)
     if (stopped) p.set('stopped', '1')
@@ -72,7 +83,17 @@ export default function Orders() {
       .catch(e => setErr(e.message))
   }
 
-  useEffect(() => { load() }, [status, date, cidade, search, stopped])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { load() }, [status, dataIni, dataFim, cidade, search, stopped])
+
+  function limpar() {
+    setStatus('')
+    setDataIni(init.ini)
+    setDataFim(init.fim)
+    setCidade('')
+    setSearch('')
+    setStopped(false)
+  }
 
   async function handleAuditFix(p: P) {
     if (!window.confirm(`Auditar e corrigir pedido motoboy #${p.id} (WC #${p.wc_order_id ?? '—'})?\n\nCorrege comissão de afiliado e carteira COD do produtor caso haja divergência.`)) return
@@ -96,46 +117,70 @@ export default function Orders() {
           <h1>Pedidos Motoboy</h1>
           <p>{items.length} pedido(s) encontrado(s){stopped ? ' — parados 24h+' : ''}</p>
         </div>
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-          {/* Data */}
-          <input
-            type="date"
-            className="szv2-input"
-            style={{ width: 150 }}
-            value={date}
-            onChange={e => setDate(e.target.value)}
-            title="Filtrar por data de criação"
-          />
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+          {/* Data inicial */}
+          <div className="szv2-field">
+            <label className="szv2-label">De</label>
+            <input
+              type="date"
+              className="szv2-input"
+              style={{ width: 150 }}
+              value={dataIni}
+              onChange={e => setDataIni(e.target.value)}
+              max={dataFim}
+            />
+          </div>
+          {/* Data final */}
+          <div className="szv2-field">
+            <label className="szv2-label">Até</label>
+            <input
+              type="date"
+              className="szv2-input"
+              style={{ width: 150 }}
+              value={dataFim}
+              onChange={e => setDataFim(e.target.value)}
+              min={dataIni}
+            />
+          </div>
           {/* Status */}
-          <select
-            className="szv2-select"
-            style={{ width: 160 }}
-            value={status}
-            onChange={e => setStatus(e.target.value)}
-          >
-            <option value="">Todos status</option>
-            {Object.keys(STATUS_CLS).map(s => <option key={s} value={s}>{s}</option>)}
-          </select>
+          <div className="szv2-field">
+            <label className="szv2-label">Status</label>
+            <select
+              className="szv2-select"
+              style={{ width: 160 }}
+              value={status}
+              onChange={e => setStatus(e.target.value)}
+            >
+              <option value="">Todos status</option>
+              {Object.keys(STATUS_CLS).map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </div>
           {/* Cidade */}
-          <input
-            type="text"
-            className="szv2-input"
-            style={{ width: 140 }}
-            placeholder="Cidade"
-            value={cidade}
-            onChange={e => setCidade(e.target.value)}
-          />
+          <div className="szv2-field">
+            <label className="szv2-label">Cidade</label>
+            <input
+              type="text"
+              className="szv2-input"
+              style={{ width: 140 }}
+              placeholder="Cidade"
+              value={cidade}
+              onChange={e => setCidade(e.target.value)}
+            />
+          </div>
           {/* Busca por pedido / nome */}
-          <input
-            type="search"
-            className="szv2-input"
-            style={{ width: 180 }}
-            placeholder="Pedido / nome"
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-          />
+          <div className="szv2-field">
+            <label className="szv2-label">Busca</label>
+            <input
+              type="search"
+              className="szv2-input"
+              style={{ width: 180 }}
+              placeholder="Pedido / nome"
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+            />
+          </div>
           {/* Parados 24h+ */}
-          <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 13, cursor: 'pointer' }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 13, cursor: 'pointer', paddingBottom: 6 }}>
             <input
               type="checkbox"
               checked={stopped}
@@ -143,6 +188,9 @@ export default function Orders() {
             />
             <span>Parados 24h+</span>
           </label>
+          <button className="szv2-btn szv2-btn-secondary" onClick={limpar}>
+            Limpar filtros
+          </button>
         </div>
       </div>
 

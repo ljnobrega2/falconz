@@ -53,6 +53,11 @@ export default function Motoboys() {
   const [showForm, setShowForm] = useState(false)
   const [saving, setSaving] = useState(false)
 
+  // Filtros
+  const [q, setQ] = useState('')
+  const [filterCdId, setFilterCdId] = useState<string>('')
+  const [filterAtivo, setFilterAtivo] = useState<string>('') // '' | 'sim' | 'nao'
+
   async function load() {
     try {
       const [r, rCds, rZonas] = await Promise.all([
@@ -160,12 +165,31 @@ export default function Motoboys() {
     zonasPorCD[z.cd_id].push(z)
   }
 
+  // Aplica filtros client-side
+  const qNorm = q.trim().toLowerCase()
+  const filtered = items.filter(m => {
+    if (qNorm) {
+      const hay = `${m.nome} ${m.email} ${m.telefone} ${m.cpf}`.toLowerCase()
+      if (!hay.includes(qNorm)) return false
+    }
+    if (filterCdId && String(m.cd_id ?? '') !== filterCdId) return false
+    if (filterAtivo === 'sim' && !m.ativo) return false
+    if (filterAtivo === 'nao' && m.ativo) return false
+    return true
+  })
+
+  function limparFiltros() {
+    setQ('')
+    setFilterCdId('')
+    setFilterAtivo('')
+  }
+
   return (
     <div>
       <div className="szv2-section-head">
         <div>
           <h1>Motoboys</h1>
-          <p>{items.length} motoboys ativos</p>
+          <p>{filtered.length} de {items.length} motoboy(s)</p>
         </div>
         <button
           className="szv2-btn szv2-btn-brand"
@@ -173,6 +197,53 @@ export default function Motoboys() {
         >
           + Novo Motoboy
         </button>
+      </div>
+
+      {/* Filtros */}
+      <div className="szv2-card" style={{ marginBottom: 16 }}>
+        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+          <div className="szv2-field">
+            <label className="szv2-label">Busca</label>
+            <input
+              type="search"
+              className="szv2-input"
+              placeholder="nome, email, telefone, CPF"
+              style={{ width: 240 }}
+              value={q}
+              onChange={e => setQ(e.target.value)}
+            />
+          </div>
+          <div className="szv2-field">
+            <label className="szv2-label">CD</label>
+            <select
+              className="szv2-select"
+              style={{ width: 200 }}
+              value={filterCdId}
+              onChange={e => setFilterCdId(e.target.value)}
+            >
+              <option value="">Todos CDs</option>
+              {cds.map(c => <option key={c.id} value={c.id}>{c.nome}</option>)}
+            </select>
+          </div>
+          <div className="szv2-field">
+            <label className="szv2-label">Ativo</label>
+            <select
+              className="szv2-select"
+              style={{ width: 140 }}
+              value={filterAtivo}
+              onChange={e => setFilterAtivo(e.target.value)}
+            >
+              <option value="">Todos</option>
+              <option value="sim">Sim</option>
+              <option value="nao">Não</option>
+            </select>
+          </div>
+          {(q || filterCdId || filterAtivo) && (
+            <button className="szv2-btn szv2-btn-secondary" onClick={limparFiltros}>
+              Limpar filtros
+            </button>
+          )}
+        </div>
       </div>
 
       {err && <div className="sz-alert-danger">{err}</div>}
@@ -383,7 +454,7 @@ export default function Motoboys() {
             </tr>
           </thead>
           <tbody>
-            {items.map(m => (
+            {filtered.map(m => (
               <tr key={m.id}>
                 <td style={{ color: 'var(--szv2-text-muted)', fontSize: '12px' }}>#{m.id}</td>
                 <td style={{ fontWeight: 600 }}>{m.nome}</td>
@@ -421,12 +492,12 @@ export default function Motoboys() {
                 </td>
               </tr>
             ))}
-            {items.length === 0 && (
+            {filtered.length === 0 && (
               <tr>
                 <td colSpan={9}>
                   <div className="szv2-empty">
-                    <h3>Nenhum motoboy ativo</h3>
-                    <p>Clique em "Novo Motoboy" para adicionar.</p>
+                    <h3>Nenhum motoboy encontrado</h3>
+                    <p>{items.length === 0 ? 'Clique em "Novo Motoboy" para adicionar.' : 'Tente ajustar os filtros.'}</p>
                   </div>
                 </td>
               </tr>

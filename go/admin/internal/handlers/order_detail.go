@@ -72,6 +72,49 @@ type orderItem struct {
 	Subtotal  float64 `json:"subtotal"`
 }
 
+// orderItemFull — dump completo de sz_order_items para a UI consolidada.
+type orderItemFull struct {
+	ID        int64           `json:"id"`
+	ProdutoID int64           `json:"produto_id"`
+	Nome      string          `json:"nome"`
+	SKU       string          `json:"sku"`
+	Qty       int             `json:"quantidade"`
+	PrecoUnit float64         `json:"preco_unit"`
+	Subtotal  float64         `json:"subtotal"`
+	Meta      json.RawMessage `json:"meta"`
+}
+
+// orderFullAddress — endereço completo (nome/email/telefone + logradouro etc.).
+// Distinto de orderAddress (legado, sem identificação do destinatário).
+type orderFullAddress struct {
+	Exists      bool   `json:"exists"`
+	Nome        string `json:"nome"`
+	Email       string `json:"email"`
+	Telefone    string `json:"telefone"`
+	CEP         string `json:"cep"`
+	Logradouro  string `json:"logradouro"`
+	Numero      string `json:"numero"`
+	Complemento string `json:"complemento"`
+	Bairro      string `json:"bairro"`
+	Cidade      string `json:"cidade"`
+	UF          string `json:"uf"`
+	Pais        string `json:"pais"`
+}
+
+type orderProducer struct {
+	ID    *int64 `json:"id"`
+	Nome  string `json:"nome"`
+	Email string `json:"email"`
+}
+
+type orderFees struct {
+	SenderzzFee  float64 `json:"senderzz_fee"`
+	Shipping     float64 `json:"shipping"`
+	ProducerNet  float64 `json:"producer_net"`
+	Gross        float64 `json:"gross"`
+	AffiliateAmt float64 `json:"affiliate_amount"`
+}
+
 type orderTotals struct {
 	Subtotal float64 `json:"subtotal"`
 	Shipping float64 `json:"shipping"`
@@ -80,14 +123,20 @@ type orderTotals struct {
 }
 
 type orderHead struct {
-	ID        int64         `json:"id"`
-	WCOrderID *int64        `json:"wc_order_id"`
-	Status    string        `json:"status"`
-	CreatedAt string        `json:"created_at"`
-	Customer  orderCustomer `json:"customer"`
-	Address   orderAddress  `json:"address"`
-	Items     []orderItem   `json:"items"`
-	Totals    orderTotals   `json:"totals"`
+	ID              int64            `json:"id"`
+	WCOrderID       *int64           `json:"wc_order_id"`
+	OrderNumber     string           `json:"order_number"`
+	Status          string           `json:"status"`
+	CreatedAt       string           `json:"created_at"`
+	Customer        orderCustomer    `json:"customer"`
+	Address         orderAddress     `json:"address"`
+	Items           []orderItem      `json:"items"`
+	ItemsFull       []orderItemFull  `json:"items_full"`
+	EnderecoEnvio   orderFullAddress `json:"endereco_envio"`
+	EnderecoCobranca orderFullAddress `json:"endereco_cobranca"`
+	Produtor        orderProducer    `json:"produtor"`
+	Taxas           orderFees        `json:"taxas"`
+	Totals          orderTotals      `json:"totals"`
 }
 
 type comprovante struct {
@@ -213,8 +262,11 @@ func (h *OrderDetailHandler) Get(w http.ResponseWriter, r *http.Request) {
 
 	// 2) Itens e address. Falha silenciosa caso as tabelas sejam opcionais.
 	head.Items = h.loadOrderItems(ctx, id)
+	head.ItemsFull = h.loadOrderItemsFull(ctx, id)
 	head.Address = h.loadOrderAddress(ctx, id)
 	head.Customer = h.loadOrderCustomer(ctx, id)
+	head.EnderecoEnvio = h.loadFullAddress(ctx, id, "shipping")
+	head.EnderecoCobranca = h.loadFullAddress(ctx, id, "billing")
 
 	// 3) Seções secundárias — todas opcionais.
 	// Para JOINs com tabelas que ainda chaveiam por WC order id (sz_motoboy_pedidos
@@ -238,18 +290,23 @@ func (h *OrderDetailHandler) Get(w http.ResponseWriter, r *http.Request) {
 }
 
 // loadOrderHead — cabeçalho a partir de sz_orders. Retorna ErrNoRows se ausente.
+// Lê também produtor_id + colunas financeiras (affiliate_amount, senderzz_fee,
+// producer_net) — adicionadas via schema-fixes-v460.
 func (h *OrderDetailHandler) loadOrderHead(ctx context.Context, id int64) (orderHead, *int64, error) {
 	var head orderHead
-	var wpOrderID sql.NullInt64
+	var wpOrderID, produtorID sql.NullInt64
 	var sub, ship, total sql.NullFloat64
-	var status sql.NullString
-	var createdAt sql.NullString
+	var affAmt, fee, net sql.NullFloat64
+	var status, createdAt, orderNumber sql.NullString
 
 	err := h.Pool.QueryRow(ctx,
-		`SELECT id, wp_order_id, status, created_at::text,
-		        COALESCE(subtotal,0), COALESCE(shipping,0), COALESCE(total,0)
+		`SELECT id, wp_order_id, COALESCE(order_number,''),
+		        produtor_id, status, created_at::text,
+		        COALESCE(subtotal,0), COALESCE(shipping,0), COALESCE(total,0),
+		        COALESCE(affiliate_amount,0), COALESCE(senderzz_fee,0), COALESCE(producer_net,0)
 		 FROM sz_orders WHERE id = $1`, id,
-	).Scan(&head.ID, &wpOrderID, &status, &createdAt, &sub, &ship, &total)
+	).Scan(&head.ID, &wpOrderID, &orderNumber, &produtorID, &status, &createdAt,
+		&sub, &ship, &total, &affAmt, &fee, &net)
 	if err != nil {
 		return head, nil, err
 	}
@@ -258,6 +315,9 @@ func (h *OrderDetailHandler) loadOrderHead(ctx context.Context, id int64) (order
 	}
 	if createdAt.Valid {
 		head.CreatedAt = createdAt.String
+	}
+	if orderNumber.Valid {
+		head.OrderNumber = orderNumber.String
 	}
 	// discount: sz_orders não possui coluna discount — deriva aritméticamente.
 	// Se subtotal+shipping > total, a diferença é desconto aplicado.
@@ -271,12 +331,95 @@ func (h *OrderDetailHandler) loadOrderHead(ctx context.Context, id int64) (order
 		Discount: computedDiscount,
 		Total:    total.Float64,
 	}
+	head.Taxas = orderFees{
+		SenderzzFee:  fee.Float64,
+		Shipping:     ship.Float64,
+		ProducerNet:  net.Float64,
+		Gross:        total.Float64,
+		AffiliateAmt: affAmt.Float64,
+	}
+	// Produtor — wp_user_id em produtor_id. Resolve nome/email via portal_users.
+	if produtorID.Valid && produtorID.Int64 > 0 {
+		v := produtorID.Int64
+		head.Produtor.ID = &v
+		if h.tableExists(ctx, "senderzz_portal_users") {
+			_ = h.Pool.QueryRow(ctx,
+				`SELECT COALESCE(nome,''), COALESCE(email,'')
+				 FROM senderzz_portal_users
+				 WHERE wp_user_id = $1 OR id = $1
+				 ORDER BY CASE WHEN wp_user_id = $1 THEN 0 ELSE 1 END
+				 LIMIT 1`, produtorID.Int64,
+			).Scan(&head.Produtor.Nome, &head.Produtor.Email)
+		}
+	}
 	if wpOrderID.Valid {
 		v := wpOrderID.Int64
 		head.WCOrderID = &v
 		return head, head.WCOrderID, nil
 	}
 	return head, nil, nil
+}
+
+// loadOrderItemsFull — itens completos com produto_id, sku, meta JSONB.
+// Usado pela seção "Itens do pedido" da UI consolidada.
+func (h *OrderDetailHandler) loadOrderItemsFull(ctx context.Context, orderID int64) []orderItemFull {
+	items := []orderItemFull{}
+	if !h.tableExists(ctx, "sz_order_items") {
+		return items
+	}
+	rows, err := h.Pool.Query(ctx,
+		`SELECT id, COALESCE(produto_id,0), COALESCE(nome,''), COALESCE(sku,''),
+		        COALESCE(quantidade,0), COALESCE(preco_unit,0), COALESCE(subtotal,0),
+		        COALESCE(meta::text, '')
+		 FROM sz_order_items
+		 WHERE order_id = $1
+		 ORDER BY id ASC`, orderID)
+	if err != nil {
+		return items
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var it orderItemFull
+		var metaStr string
+		if err := rows.Scan(&it.ID, &it.ProdutoID, &it.Nome, &it.SKU,
+			&it.Qty, &it.PrecoUnit, &it.Subtotal, &metaStr); err == nil {
+			if metaStr != "" {
+				it.Meta = json.RawMessage(metaStr)
+			} else {
+				it.Meta = json.RawMessage(`null`)
+			}
+			items = append(items, it)
+		}
+	}
+	return items
+}
+
+// loadFullAddress — busca endereço completo para um tipo ('shipping' ou 'billing').
+// Inclui nome/email/telefone — para as seções "Endereço de entrega/cobrança".
+func (h *OrderDetailHandler) loadFullAddress(ctx context.Context, orderID int64, tipo string) orderFullAddress {
+	addr := orderFullAddress{Pais: "BR"}
+	if !h.tableExists(ctx, "sz_order_addresses") {
+		return addr
+	}
+	var nome, email, tel, cep, log, num, comp, bairro, cid, uf, pais sql.NullString
+	err := h.Pool.QueryRow(ctx,
+		`SELECT COALESCE(nome,''), COALESCE(email,''), COALESCE(telefone,''),
+		        COALESCE(cep,''), COALESCE(logradouro,''), COALESCE(numero,''),
+		        COALESCE(complemento,''), COALESCE(bairro,''), COALESCE(cidade,''),
+		        COALESCE(uf,''), COALESCE(pais,'BR')
+		 FROM sz_order_addresses
+		 WHERE order_id = $1 AND tipo = $2
+		 LIMIT 1`, orderID, tipo,
+	).Scan(&nome, &email, &tel, &cep, &log, &num, &comp, &bairro, &cid, &uf, &pais)
+	if err != nil {
+		return addr
+	}
+	addr.Exists = true
+	addr.Nome, addr.Email, addr.Telefone = nome.String, email.String, tel.String
+	addr.CEP, addr.Logradouro, addr.Numero = cep.String, log.String, num.String
+	addr.Complemento, addr.Bairro, addr.Cidade = comp.String, bairro.String, cid.String
+	addr.UF, addr.Pais = uf.String, pais.String
+	return addr
 }
 
 // loadOrderItems — itens de sz_order_items. Tabela ausente → slice vazio.
@@ -487,10 +630,6 @@ func (h *OrderDetailHandler) loadAffiliateSection(ctx context.Context, orderID i
 	hasAffiliates := h.tableExists(ctx, "senderzz_affiliates")
 	hasUsers := h.tableExists(ctx, "senderzz_portal_users")
 
-	if !hasAffTx && !hasAffComm {
-		return out
-	}
-
 	// Tabela base: tx se existir, senão commissions.
 	var (
 		affID  sql.NullInt64
@@ -504,13 +643,28 @@ func (h *OrderDetailHandler) loadAffiliateSection(ctx context.Context, orderID i
 			 WHERE order_id = $1 AND type = 'commission'
 			 ORDER BY id ASC LIMIT 1`, orderID,
 		).Scan(&affID, &amount, &status)
-	} else {
+	} else if hasAffComm {
 		_ = h.Pool.QueryRow(ctx,
 			`SELECT affiliate_id, COALESCE(valor,0), COALESCE(status,'')
 			 FROM senderzz_affiliate_commissions
 			 WHERE order_id = $1
 			 ORDER BY id ASC LIMIT 1`, orderID,
 		).Scan(&affID, &amount, &status)
+	}
+
+	// Fallback: ler affiliate_id + affiliate_amount direto de sz_orders
+	// caso nenhum livro razão tenha registro ainda (pedido novo).
+	if !affID.Valid || affID.Int64 <= 0 {
+		var oAffID sql.NullInt64
+		var oAmt sql.NullFloat64
+		_ = h.Pool.QueryRow(ctx,
+			`SELECT affiliate_id, COALESCE(affiliate_amount,0)
+			 FROM sz_orders WHERE id = $1`, orderID,
+		).Scan(&oAffID, &oAmt)
+		if oAffID.Valid && oAffID.Int64 > 0 {
+			affID = oAffID
+			amount = oAmt
+		}
 	}
 
 	if !affID.Valid || affID.Int64 <= 0 {

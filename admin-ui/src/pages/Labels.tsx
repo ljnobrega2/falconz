@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { api } from '../api'
 
 type L = { id: number; wc_order_id: number; me_shipment_id: string | null; status: string; service_name: string | null; tracking_code: string | null; created_at: string }
@@ -12,17 +12,47 @@ const ST_CLS: Record<string, string> = {
   cancelled:'szv2-badge-danger',
 }
 
+function defaultRange() {
+  const today = new Date()
+  const past = new Date(today)
+  past.setDate(past.getDate() - 30)
+  const fmt = (d: Date) => d.toISOString().slice(0, 10)
+  return { ini: fmt(past), fim: fmt(today) }
+}
+
 export default function Labels() {
+  const init = useMemo(defaultRange, [])
   const [items, setItems] = useState<L[]>([])
   const [total, setTotal] = useState(0)
   const [status, setStatus] = useState('')
+  const [dataIni, setDataIni] = useState(init.ini)
+  const [dataFim, setDataFim] = useState(init.fim)
+  const [q, setQ] = useState('')
   const [err, setErr] = useState('')
 
+  function buildQs() {
+    const p = new URLSearchParams()
+    if (status) p.set('status', status)
+    if (dataIni) p.set('data_ini', dataIni)
+    if (dataFim) p.set('data_fim', dataFim)
+    if (q.trim()) p.set('q', q.trim())
+    p.set('limit', '100')
+    return p.toString()
+  }
+
   useEffect(() => {
-    api<{ items: L[]; total: number }>(`/labels?status=${status}&limit=100`)
+    api<{ items: L[]; total: number }>(`/labels?${buildQs()}`)
       .then(r => { setItems(r.items || []); setTotal(r.total) })
       .catch(e => setErr(e.message))
-  }, [status])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status, dataIni, dataFim, q])
+
+  function limpar() {
+    setStatus('')
+    setDataIni(init.ini)
+    setDataFim(init.fim)
+    setQ('')
+  }
 
   return (
     <div>
@@ -31,10 +61,60 @@ export default function Labels() {
           <h1>Etiquetas Melhor Envio</h1>
           <p>{total} etiquetas no total</p>
         </div>
-        <select className="szv2-select" style={{ width: '200px' }} value={status} onChange={e => setStatus(e.target.value)}>
-          <option value="">Todos status</option>
-          {Object.keys(ST_CLS).map(s => <option key={s} value={s}>{s}</option>)}
-        </select>
+      </div>
+
+      {/* Filtros */}
+      <div className="szv2-card" style={{ marginBottom: 16 }}>
+        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+          <div className="szv2-field">
+            <label className="szv2-label">De</label>
+            <input
+              type="date"
+              className="szv2-input"
+              value={dataIni}
+              onChange={e => setDataIni(e.target.value)}
+              max={dataFim}
+              style={{ width: 160 }}
+            />
+          </div>
+          <div className="szv2-field">
+            <label className="szv2-label">Até</label>
+            <input
+              type="date"
+              className="szv2-input"
+              value={dataFim}
+              onChange={e => setDataFim(e.target.value)}
+              min={dataIni}
+              style={{ width: 160 }}
+            />
+          </div>
+          <div className="szv2-field">
+            <label className="szv2-label">Status</label>
+            <select
+              className="szv2-select"
+              style={{ width: 180 }}
+              value={status}
+              onChange={e => setStatus(e.target.value)}
+            >
+              <option value="">Todos status</option>
+              {Object.keys(ST_CLS).map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </div>
+          <div className="szv2-field">
+            <label className="szv2-label">Busca</label>
+            <input
+              type="search"
+              className="szv2-input"
+              placeholder="pedido ou rastreio"
+              style={{ width: 200 }}
+              value={q}
+              onChange={e => setQ(e.target.value)}
+            />
+          </div>
+          <button className="szv2-btn szv2-btn-secondary" onClick={limpar}>
+            Limpar filtros
+          </button>
+        </div>
       </div>
 
       {err && <div className="sz-alert-danger">{err}</div>}

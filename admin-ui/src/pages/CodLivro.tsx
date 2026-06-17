@@ -81,7 +81,7 @@ const fmtPct = (v: number) =>
 function defaultRange(): { from: string; to: string } {
   const today = new Date()
   const past = new Date(today)
-  past.setDate(past.getDate() - 7)
+  past.setDate(past.getDate() - 30)
   const fmt = (d: Date) => d.toISOString().slice(0, 10)
   return { from: fmt(past), to: fmt(today) }
 }
