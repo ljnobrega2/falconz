@@ -1,0 +1,127 @@
+-- =============================================================================
+-- pgloader — Migração afiliados + COD de MySQL (WordPress) para Postgres 16
+-- Senderzz Strangler Fig — Fase 3: Módulo Afiliados + Carteira COD
+--
+-- Uso:
+--   export MYSQL_URL="mysql://usuario:senha@mysql-host/wordpress_db"
+--   export PG_URL="postgresql://usuario:senha@pg-host/senderzz_db"
+--   pgloader affiliates-migration.load
+--
+-- ATENÇÃO: execute ANTES de inicializar o schema Postgres com schema-affiliates.sql
+-- em ambiente de migração real (produção). Para dev, use schema-affiliates.sql
+-- com "create no tables" e "truncate" aqui.
+--
+-- Prefixo wp_: o WordPress grava as tabelas com prefixo (padrão "wp_").
+-- Este script:
+--   1. Inclui apenas tabelas com nome MATCHING ~/^wp_senderzz_affiliates/
+--      e ~/^wp_senderzz_cod_/
+--   2. Remove o prefixo "wp_" via RENAMING → nomes canônicos sem prefixo.
+--
+-- Timezone / DATETIME:
+--   Diferente do módulo Motoboy, as tabelas de afiliados/COD são criadas
+--   do zero. No MySQL legado, o PHP gravava horário de Brasília em DATETIME.
+--   O cast abaixo preserva o wall-clock sem conversão para UTC.
+--   No Postgres, as colunas são TIMESTAMPTZ — novos registros vão em UTC.
+--   Os dados migrados chegam como TIMESTAMP WITHOUT TIME ZONE interpretado
+--   como America/Sao_Paulo; o AT TIME ZONE no cast corrige o offset.
+-- =============================================================================
+
+LOAD DATABASE
+    FROM      ${MYSQL_URL}
+    INTO      ${PG_URL}
+
+-- Inclui apenas tabelas dos módulos Afiliados e COD.
+-- Tabelas de outros módulos (motoboy, tpc_carteira, etc.) ficam de fora.
+INCLUDING ONLY TABLE NAMES MATCHING
+    ~/^wp_senderzz_affiliates/,
+    ~/^wp_senderzz_cod_/
+
+-- Remove o prefixo "wp_" no destino Postgres.
+-- Resultado: wp_senderzz_affiliates → senderzz_affiliates, etc.
+RENAMING TABLES MATCHING ~/^wp_/ TO ( lambda (table-name)
+    (cl-ppcre:regex-replace "^wp_" table-name "") )
+
+WITH include no drop,
+     create tables,
+     create indexes,
+     reset sequences,
+     foreign keys,
+     workers = 4,
+     concurrency = 2
+
+SET work_mem             TO '128MB',
+    maintenance_work_mem TO '512MB'
+
+-- Casts de tipo MySQL → Postgres
+-- Ordem importa: regras mais específicas primeiro.
+CAST
+    -- TINYINT(1) → BOOLEAN
+    type tinyint with extra auto_increment to bigint drop typemod,
+    type tinyint to boolean drop default drop not null
+        using tinyint-to-boolean,
+
+    -- DATETIME sem timezone → TIMESTAMPTZ (interpreta como America/Sao_Paulo)
+    -- Zeros "0000-00-00 00:00:00" viram NULL.
+    type datetime to timestamptz
+        drop default drop not null
+        using zero-dates-to-null,
+
+    -- DECIMAL preserva precisão monetária
+    type decimal to numeric,
+
+    -- TEXT largo → TEXT (Postgres TEXT já é ilimitado)
+    type longtext   to text,
+    type mediumtext to text,
+    type text       to text,
+
+    -- INT UNSIGNED / BIGINT UNSIGNED → tipos sem unsigned
+    type int    with unsigned to integer,
+    type bigint with unsigned to bigint
+
+-- Ações após o carregamento (executadas no Postgres de destino)
+AFTER LOAD DO
+    -- Preenche updated_at NULL de registros antigos que vieram como 0000-00-00.
+    $$ UPDATE senderzz_affiliates
+          SET updated_at = created_at
+        WHERE updated_at IS NULL $$,
+
+    $$ UPDATE senderzz_affiliate_commissions
+          SET updated_at = created_at
+        WHERE updated_at IS NULL $$,
+
+    $$ UPDATE senderzz_cod_wallet
+          SET updated_at = created_at
+        WHERE updated_at IS NULL $$,
+
+    -- Recalibra sequências para que novos INSERTs não colidam com IDs migrados.
+    -- pgloader "reset sequences" já faz isso, mas os AFTER DO garantem o estado
+    -- correto mesmo que a opção falhe parcialmente.
+    $$ SELECT setval(
+           pg_get_serial_sequence('senderzz_affiliates','id'),
+           COALESCE((SELECT MAX(id) FROM senderzz_affiliates), 1)
+       ) $$,
+
+    $$ SELECT setval(
+           pg_get_serial_sequence('senderzz_affiliate_links','id'),
+           COALESCE((SELECT MAX(id) FROM senderzz_affiliate_links), 1)
+       ) $$,
+
+    $$ SELECT setval(
+           pg_get_serial_sequence('senderzz_affiliate_commissions','id'),
+           COALESCE((SELECT MAX(id) FROM senderzz_affiliate_commissions), 1)
+       ) $$,
+
+    $$ SELECT setval(
+           pg_get_serial_sequence('senderzz_affiliate_invites','id'),
+           COALESCE((SELECT MAX(id) FROM senderzz_affiliate_invites), 1)
+       ) $$,
+
+    $$ SELECT setval(
+           pg_get_serial_sequence('senderzz_cod_wallet','id'),
+           COALESCE((SELECT MAX(id) FROM senderzz_cod_wallet), 1)
+       ) $$,
+
+    $$ SELECT setval(
+           pg_get_serial_sequence('senderzz_cod_ledger','id'),
+           COALESCE((SELECT MAX(id) FROM senderzz_cod_ledger), 1)
+       ) $$;

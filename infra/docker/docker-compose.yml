@@ -1,0 +1,235 @@
+# =============================================================================
+# Senderzz — Docker Compose (todas as Fases do Strangler Fig)
+#
+# Serviços Go:
+#   motoboy-service  :8080  — Fase 1 (sz-motoboy/v1)
+#   wallet-service   :8081  — Fase 2 (tp-carteira/v1)
+#   affiliates-service :8083 — Fase 3 (senderzz/v1 affiliates)
+#   labels-service   :8084  — Fase 4 (wc-melhor-envio/v1)
+#   portal-service   :8085  — Fase 5 (senderzz/v1 portal)
+#   orders-service   :8086  — Fase 6 (senderzz/v1 orders)
+#
+# Uso:
+#   cp .env.example .env
+#   docker compose up -d
+#
+# Para Fase 1 apenas: docker compose up -d postgres redis motoboy-service
+# Para todas as Fases: docker compose up -d
+# =============================================================================
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # Postgres 16
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB:       ${POSTGRES_DB:-senderzz}
+      POSTGRES_USER:     ${POSTGRES_USER:-senderzz}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Defina POSTGRES_PASSWORD no .env}
+      TZ:   America/Sao_Paulo
+      PGTZ: America/Sao_Paulo
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      # Ordem importa — referências FK entre schemas
+      - ../postgres/schema-motoboy.sql:/docker-entrypoint-initdb.d/01-motoboy.sql:ro
+      - ../postgres/schema-wallet.sql:/docker-entrypoint-initdb.d/02-wallet.sql:ro
+      - ../postgres/schema-affiliates.sql:/docker-entrypoint-initdb.d/03-affiliates.sql:ro
+      - ../postgres/schema-labels.sql:/docker-entrypoint-initdb.d/04-labels.sql:ro
+      - ../postgres/schema-portal.sql:/docker-entrypoint-initdb.d/05-portal.sql:ro
+      - ../postgres/schema-orders.sql:/docker-entrypoint-initdb.d/06-orders.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-senderzz} -d ${POSTGRES_DB:-senderzz}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ---------------------------------------------------------------------------
+  # Redis 7 — Asynq queues + cache CEP + OTP storage
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # Fase 1: Motoboy (sz-motoboy/v1)
+  # ---------------------------------------------------------------------------
+  motoboy-service:
+    build:
+      context: ../../go/motoboy
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL:              postgresql://${POSTGRES_USER:-senderzz}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-senderzz}?sslmode=disable
+      REDIS_URL:                 redis://redis:6379/0
+      PORT:                      ${MOTOBOY_PORT:-8080}
+      WP_SALT_AUTH:              ${WP_SALT_AUTH:?}
+      JWT_SECRET:                ${JWT_SECRET:?}
+      MOTOBOY_INTERNAL_SECRET:   ${MOTOBOY_INTERNAL_SECRET:-}
+      TZ:                        America/Sao_Paulo
+      APP_ENV:                   ${APP_ENV:-development}
+    ports:
+      - "${MOTOBOY_PORT:-8080}:8080"
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis:    { condition: service_healthy }
+
+  # ---------------------------------------------------------------------------
+  # Fase 2: Wallet + PIX (tp-carteira/v1)
+  # ---------------------------------------------------------------------------
+  wallet-service:
+    build:
+      context: ../../go/wallet
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL:             postgresql://${POSTGRES_USER:-senderzz}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-senderzz}?sslmode=disable
+      REDIS_URL:                redis://redis:6379/1
+      PORT:                     ${WALLET_PORT:-8081}
+      JWT_SECRET:               ${JWT_SECRET:?}
+      WEBHOOK_SECRET:           ${WEBHOOK_SECRET:?}
+      WALLET_INTERNAL_SECRET:   ${WALLET_INTERNAL_SECRET:-}
+      ME_TOKEN:                 ${ME_TOKEN:-}
+      TZ:                       America/Sao_Paulo
+    ports:
+      - "${WALLET_PORT:-8081}:8081"
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis:    { condition: service_healthy }
+
+  # ---------------------------------------------------------------------------
+  # Fase 3: Affiliates + COD (senderzz/v1 affiliates)
+  # ---------------------------------------------------------------------------
+  affiliates-service:
+    build:
+      context: ../../go/affiliates
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL:                  postgresql://${POSTGRES_USER:-senderzz}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-senderzz}?sslmode=disable
+      REDIS_URL:                     redis://redis:6379/2
+      PORT:                          ${AFFILIATES_PORT:-8083}
+      JWT_SECRET:                    ${JWT_SECRET:?}
+      AFFILIATES_INTERNAL_SECRET:    ${AFFILIATES_INTERNAL_SECRET:-}
+      TZ:                            America/Sao_Paulo
+    ports:
+      - "${AFFILIATES_PORT:-8083}:8083"
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis:    { condition: service_healthy }
+
+  # ---------------------------------------------------------------------------
+  # Fase 4: Labels + Melhor Envio (wc-melhor-envio/v1)
+  # ---------------------------------------------------------------------------
+  labels-service:
+    build:
+      context: ../../go/labels
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL:    postgresql://${POSTGRES_USER:-senderzz}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-senderzz}?sslmode=disable
+      REDIS_URL:       redis://redis:6379/3
+      PORT:            ${LABELS_PORT:-8084}
+      JWT_SECRET:      ${JWT_SECRET:?}
+      ME_TOKEN:        ${ME_TOKEN:?}
+      ME_BASE_URL:     ${ME_BASE_URL:-https://melhorenvio.com.br/api/v2}
+      TZ:              America/Sao_Paulo
+    ports:
+      - "${LABELS_PORT:-8084}:8084"
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis:    { condition: service_healthy }
+
+  # ---------------------------------------------------------------------------
+  # Fase 5: Portal (senderzz/v1 portal)
+  # ---------------------------------------------------------------------------
+  portal-service:
+    build:
+      context: ../../go/portal
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL:    postgresql://${POSTGRES_USER:-senderzz}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-senderzz}?sslmode=disable
+      REDIS_URL:       redis://redis:6379/4
+      PORT:            ${PORTAL_PORT:-8085}
+      JWT_SECRET:      ${JWT_SECRET:?}
+      WP_SALT_AUTH:    ${WP_SALT_AUTH:?}
+      SMTP_HOST:       ${SMTP_HOST:-localhost}
+      SMTP_PORT:       ${SMTP_PORT:-587}
+      SMTP_USER:       ${SMTP_USER:-}
+      SMTP_PASS:       ${SMTP_PASS:-}
+      TZ:              America/Sao_Paulo
+    ports:
+      - "${PORTAL_PORT:-8085}:8085"
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis:    { condition: service_healthy }
+
+  # ---------------------------------------------------------------------------
+  # Fase 6: Orders (senderzz/v1 orders) — substitui WooCommerce
+  # ---------------------------------------------------------------------------
+  orders-service:
+    build:
+      context: ../../go/orders
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL:    postgresql://${POSTGRES_USER:-senderzz}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-senderzz}?sslmode=disable
+      REDIS_URL:       redis://redis:6379/5
+      PORT:            ${ORDERS_PORT:-8086}
+      JWT_SECRET:      ${JWT_SECRET:?}
+      WALLET_URL:      http://wallet-service:8081
+      MOTOBOY_URL:     http://motoboy-service:8080
+      TZ:              America/Sao_Paulo
+    ports:
+      - "${ORDERS_PORT:-8086}:8086"
+    depends_on:
+      postgres:         { condition: service_healthy }
+      redis:            { condition: service_healthy }
+      wallet-service:   { condition: service_started }
+      motoboy-service:  { condition: service_started }
+
+  # ---------------------------------------------------------------------------
+  # Admin API (senderzz/v1/admin) — painel Go
+  # ---------------------------------------------------------------------------
+  admin-service:
+    build:
+      context: ../../go/admin
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL:    postgresql://${POSTGRES_USER:-senderzz}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-senderzz}?sslmode=disable
+      ADMIN_JWT_SECRET: ${ADMIN_JWT_SECRET:?}
+      APP_BASE_URL:    ${APP_BASE_URL:-https://app.senderzz.com.br}
+      PORT:            ${ADMIN_PORT:-8087}
+      TZ:              America/Sao_Paulo
+    ports:
+      - "${ADMIN_PORT:-8087}:8087"
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  # ---------------------------------------------------------------------------
+  # Admin UI (React SPA via nginx) — serve estático na porta 8089
+  # ---------------------------------------------------------------------------
+  admin-ui:
+    build:
+      context: ../../admin-ui
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "${ADMIN_UI_PORT:-8089}:80"
+
+volumes:
+  pg_data:
+    driver: local

@@ -1,0 +1,130 @@
+@import './styles/tokens.css';
+@import './styles/layout.css';
+@import './styles/components.css';
+
+@tailwind base;
+@tailwind utilities;
+
+/* ── Overrides / admin-specific ──────────────────────────────── */
+html, body, #root { height: 100%; margin: 0; padding: 0; }
+body { font-family: var(--szv2-font-ui, system-ui, sans-serif); -webkit-font-smoothing: antialiased; }
+
+/* Login page */
+.sz-login-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #F8FAFC;
+  font-family: var(--szv2-font-ui, system-ui, sans-serif);
+}
+.sz-login-box {
+  background: #fff;
+  border: 1px solid #E6EAF0;
+  border-radius: 16px;
+  padding: 40px;
+  width: 100%;
+  max-width: 380px;
+  box-shadow: 0 4px 24px rgba(15,23,42,.07);
+}
+.sz-login-logo {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px; height: 48px;
+  border-radius: 12px;
+  background: #E8650A;
+  color: #fff;
+  font-size: 22px;
+  font-weight: 800;
+  margin: 0 auto 20px;
+}
+.sz-login-title { text-align: center; font-size: 18px; font-weight: 700; color: #111827; margin: 0 0 4px; }
+.sz-login-sub   { text-align: center; font-size: 13px; color: #64748B; margin: 0 0 24px; }
+.sz-login-label { display: block; font-size: 12px; font-weight: 600; color: #334155; margin-bottom: 6px; }
+.sz-login-input {
+  width: 100%; height: 40px; padding: 0 12px; box-sizing: border-box;
+  border: 1px solid #E6EAF0; border-radius: 10px;
+  font: inherit; font-size: 14px; color: #111827;
+  background: #FBFCFE; margin-bottom: 14px;
+}
+.sz-login-input:focus { outline: none; border-color: #E8650A; box-shadow: 0 0 0 3px rgba(232,101,10,.14); }
+.sz-login-err { background: #FDECEC; border: 1px solid #FCA5A5; border-radius: 8px; color: #DC2626; font-size: 13px; padding: 10px 14px; margin-bottom: 14px; }
+.sz-login-btn {
+  width: 100%; height: 42px; border: none; border-radius: 10px;
+  background: #E8650A; color: #fff; font: inherit; font-size: 14px; font-weight: 700;
+  cursor: pointer; transition: background 160ms;
+}
+.sz-login-btn:hover { background: #C94F06; }
+.sz-login-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* Table numeric column */
+.sz-dashboard-v2 .szv2-td-mono { font-family: var(--szv2-font-mono); font-variant-numeric: tabular-nums; font-size: 13px; }
+
+/* Sidebar foot */
+.szv2-sidebar-foot {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px;
+  border-top: 1px solid var(--szv2-divider);
+}
+.szv2-sidebar-foot-btn {
+  display: flex; align-items: center; gap: 8px;
+  width: 100%; padding: 7px 8px;
+  border: 0; border-radius: 8px; background: transparent;
+  color: var(--szv2-text-muted); font: inherit; font-size: 12.5px;
+  cursor: pointer; transition: background 160ms, color 160ms;
+  text-decoration: none;
+}
+.szv2-sidebar-foot-btn svg { width: 18px; height: 18px; fill: currentColor; flex: 0 0 18px; }
+.szv2-sidebar-foot-btn:hover { background: var(--szv2-surface-alt); color: var(--szv2-text); }
+.sz-dashboard-v2[data-sidebar="collapsed"] .szv2-sidebar-foot-btn { justify-content: center; }
+.sz-dashboard-v2[data-sidebar="collapsed"] .szv2-sidebar-foot-btn span { display: none; }
+
+/* Topbar actions */
+.szv2-topbar-actions { display: flex; align-items: center; gap: 8px; }
+.szv2-topbar-icon-btn {
+  width: 32px; height: 32px; border: 0; border-radius: 8px; background: transparent;
+  color: var(--szv2-text-muted); cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
+}
+.szv2-topbar-icon-btn:hover { background: var(--szv2-surface-alt); color: var(--szv2-text); }
+.szv2-topbar-icon-btn svg { width: 18px; height: 18px; fill: currentColor; }
+
+/* Form grid helpers */
+.sz-form-grid { display: grid; gap: 12px; }
+.sz-form-grid-2 { grid-template-columns: repeat(2, minmax(0,1fr)); }
+.sz-form-grid-3 { grid-template-columns: repeat(3, minmax(0,1fr)); }
+.sz-form-actions { display: flex; gap: 8px; padding-top: 4px; }
+
+/* Badge role helpers */
+.szv2-role-badge {
+  display: inline-block; padding: 2px 10px; border-radius: 999px;
+  font-size: 11px; font-weight: 700; white-space: nowrap;
+}
+.szv2-role-badge.role-produtor   { background: var(--szv2-brand-light); color: var(--szv2-brand); }
+.szv2-role-badge.role-affiliate  { background: var(--szv2-info-bg);     color: var(--szv2-info); }
+.szv2-role-badge.role-operator   { background: var(--szv2-warning-bg);  color: var(--szv2-warning); }
+.szv2-role-badge.role-default    { background: var(--szv2-neutral-bg);  color: var(--szv2-neutral); }
+
+/* Status badge */
+.szv2-status-badge {
+  display: inline-block; padding: 2px 10px; border-radius: 999px;
+  font-size: 11px; font-weight: 700;
+}
+.szv2-status-badge.s-pendente   { background: var(--szv2-warning-bg); color: var(--szv2-warning); }
+.szv2-status-badge.s-confirmado { background: var(--szv2-success-bg); color: var(--szv2-success); }
+.szv2-status-badge.s-expirado   { background: var(--szv2-neutral-bg); color: var(--szv2-neutral); }
+.szv2-status-badge.s-cancelado  { background: var(--szv2-danger-bg);  color: var(--szv2-danger); }
+
+/* NavLink active state mirrors aria-current="true" */
+.sz-dashboard-v2 .szv2-nav a.sz-ni { text-decoration: none; display: flex; }
+.sz-dashboard-v2 .szv2-nav a.sz-ni.sz-ni-on {
+  background: var(--szv2-brand-light);
+  border-left-color: var(--szv2-brand);
+  color: var(--szv2-brand);
+  font-weight: 700;
+}
+
+/* Error alert */
+.sz-alert-danger { background: var(--szv2-danger-bg); border: 1px solid #FCA5A5; border-radius: 10px; color: var(--szv2-danger); font-size: 13px; padding: 12px 16px; margin-bottom: 16px; }

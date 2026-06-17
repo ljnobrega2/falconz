@@ -1,0 +1,125 @@
+-- =============================================================================
+-- pgloader — Migração wp_tpc_* de MySQL (WordPress) para Postgres 16
+-- Senderzz Strangler Fig — Fase 2: Carteira + PIX
+--
+-- Uso:
+--   export MYSQL_URL="mysql://usuario:senha@mysql-host/wordpress_db"
+--   export PG_URL="postgresql://usuario:senha@pg-host/senderzz_db"
+--   pgloader wallet-migration.load
+--
+-- ATENÇÃO: execute ANTES de inicializar o schema Postgres com schema-wallet.sql
+-- EM AMBIENTE DE PRODUÇÃO. Em dev/CI, o schema-wallet.sql basta (sem dados MySQL).
+-- Se o schema já foi inicializado, substitua "create tables" por "create no tables"
+-- e adicione "truncate" para evitar conflito com tabelas existentes.
+--
+-- Prefixo wp_: o WordPress grava as tabelas com prefixo (padrão "wp_").
+-- Este script:
+--   1. Inclui apenas tabelas com nome MATCHING ~/^wp_tpc_/
+--   2. Remove o prefixo "wp_" via RENAMING:
+--        wp_tpc_carteira       → tpc_carteira
+--        wp_tpc_transacoes     → tpc_transacoes
+--        wp_tpc_recargas       → tpc_recargas
+--        wp_tpc_webhook_events → tpc_webhook_events
+--
+-- Diferenças importantes em relação a motoboy-migration.load:
+--   - Colunas financeiras (saldo, valor) usam NUMERIC(10,2) — não DECIMAL sem precisão.
+--     O pgloader mapeia DECIMAL(10,2) do MySQL para NUMERIC(10,2) no Postgres.
+--   - Campos DATETIME/TIMESTAMP usam TIMESTAMPTZ aqui (não sem timezone como no Motoboy).
+--     Justificativa: registros financeiros exigem fuso correto para auditoria.
+--     O PHP sempre gravou UTC via gmdate() / NOW() nos campos tpc_*; portanto
+--     não há desvio de 3h ao usar TIMESTAMPTZ.
+--   - wp_tpc_webhook_events.payload pode ser TEXT longo (body bruto) no MySQL.
+--     No Postgres armazenamos apenas o hash; o pgloader copia o valor original.
+-- =============================================================================
+
+LOAD DATABASE
+    FROM      ${MYSQL_URL}
+    INTO      ${PG_URL}
+
+-- Inclui apenas as tabelas da carteira/PIX (prefixo wp_tpc_).
+INCLUDING ONLY TABLE NAMES MATCHING ~/^wp_tpc_/
+
+-- Remove o prefixo "wp_" do nome da tabela no destino Postgres.
+-- Resultado: wp_tpc_carteira → tpc_carteira, etc.
+RENAMING TABLES MATCHING ~/^wp_/ TO ( lambda (table-name)
+    (cl-ppcre:regex-replace "^wp_" table-name "") )
+
+WITH include no drop,
+     -- "create tables": pgloader cria as tabelas no Postgres a partir do schema MySQL.
+     -- Se o schema já foi inicializado com schema-wallet.sql, substitua por
+     -- "create no tables" e adicione "truncate" para evitar conflito.
+     create tables,
+     create indexes,
+     reset sequences,
+     foreign keys,
+     workers = 4,
+     concurrency = 2
+
+SET work_mem             TO '128MB',
+    maintenance_work_mem TO '512MB'
+
+-- Casts de tipo MySQL → Postgres
+-- Ordem importa: regras mais específicas primeiro.
+CAST
+    -- TINYINT(1) → BOOLEAN (ex: flags ativas/inativas se existirem)
+    type tinyint with extra auto_increment to bigint drop typemod,
+    type tinyint to boolean drop default drop not null
+        using tinyint-to-boolean,
+
+    -- DECIMAL(10,2) → NUMERIC(10,2) — valores financeiros exatos
+    -- O pgloader mapeia automaticamente, mas o cast explícito garante precisão.
+    type decimal to numeric keep typemod,
+
+    -- DATETIME/TIMESTAMP → TIMESTAMPTZ
+    -- Diferente do módulo Motoboy: campos tpc_* usam TIMESTAMPTZ pois o PHP
+    -- grava UTC (gmdate/NOW()) nessas colunas. Zeros viram NULL.
+    type datetime  to timestamptz drop default drop not null
+        using zero-dates-to-null,
+    type timestamp to timestamptz drop default drop not null
+        using zero-dates-to-null,
+
+    -- TEXT largo → TEXT (Postgres TEXT já é ilimitado)
+    type longtext   to text,
+    type mediumtext to text,
+    type text       to text,
+
+    -- INT UNSIGNED / BIGINT UNSIGNED → tipos sem unsigned
+    type int    with unsigned to integer,
+    type bigint with unsigned to bigint,
+
+    -- VARCHAR mantém tamanho original
+    type varchar keep typemod
+
+-- Ações após o carregamento (executadas no Postgres de destino)
+AFTER LOAD DO
+    -- Garante que recargas sem expires_at (campo adicionado via ALTER no MySQL)
+    -- não quebrem queries do job reconcile.go.
+    $$ UPDATE tpc_recargas
+          SET expires_at = created_at + INTERVAL '24 hours'
+        WHERE expires_at IS NULL
+          AND status = 'pendente' $$,
+
+    -- Garante que transações legadas sem referencia (NULL) não quebrem
+    -- a UNIQUE constraint quando referencia é NULL (NULL != NULL no SQL).
+    -- Nenhuma ação necessária: NULL é permitido na constraint; apenas linhas
+    -- com referencia NOT NULL são verificadas na UNIQUE.
+
+    -- Recalibra sequências para que novos INSERTs no Postgres não colidam
+    -- com IDs já migrados. pgloader "reset sequences" já faz isso, mas os
+    -- AFTER DO garantem o estado correto mesmo que a opção falhe parcialmente.
+    $$ SELECT setval(
+           pg_get_serial_sequence('tpc_carteira', 'id'),
+           COALESCE((SELECT MAX(id) FROM tpc_carteira), 1)
+       ) $$,
+    $$ SELECT setval(
+           pg_get_serial_sequence('tpc_transacoes', 'id'),
+           COALESCE((SELECT MAX(id) FROM tpc_transacoes), 1)
+       ) $$,
+    $$ SELECT setval(
+           pg_get_serial_sequence('tpc_recargas', 'id'),
+           COALESCE((SELECT MAX(id) FROM tpc_recargas), 1)
+       ) $$,
+    $$ SELECT setval(
+           pg_get_serial_sequence('tpc_webhook_events', 'id'),
+           COALESCE((SELECT MAX(id) FROM tpc_webhook_events), 1)
+       ) $$;

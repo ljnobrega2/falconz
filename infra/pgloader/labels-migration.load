@@ -1,0 +1,153 @@
+-- =============================================================================
+-- pgloader — Migração de metadados de etiquetas (MySQL/WordPress) para Postgres 16
+-- Senderzz Strangler Fig — Fase 4: Serviço de Labels / Melhor Envio
+--
+-- Uso:
+--   export MYSQL_URL="mysql://usuario:senha@mysql-host/wordpress_db"
+--   export PG_URL="postgresql://usuario:senha@pg-host/senderzz_db"
+--   pgloader labels-migration.load
+--
+-- ATENÇÃO: execute schema-labels.sql ANTES deste script para garantir que as
+--          tabelas destino (wc_me_labels, wc_me_queue, wc_me_shipment_cache)
+--          existam com os tipos corretos.
+--
+-- NOTA SOBRE O ESCOPO DE MIGRAÇÃO:
+--   As tabelas wc_me_* são greenfield no Postgres — não existem no MySQL/WordPress.
+--   No PHP, dados de etiquetas vivem dispersos em wp_postmeta / wp_wc_orders_meta
+--   como meta keys _wc_melhor_envio_shipment_id, _wc_melhor_envio_tracking_code,
+--   _wc_melhor_envio_status, _wc_melhor_envio_label_url etc.
+--
+--   Este script tenta migrar qualquer tabela wp_wc_me_* que eventualmente exista
+--   (caso o plugin tenha criado tabelas dedicadas), mas na prática esse MATCHING
+--   pode retornar zero tabelas — comportamento normal e esperado. O pgloader
+--   emite aviso mas não falha quando zero tabelas são encontradas.
+--
+--   O backfill dos dados históricos de etiquetas a partir de wp_postmeta /
+--   wp_wc_orders_meta é feito pelo bloco AFTER LOAD abaixo usando uma tabela
+--   temporária que deve ser populada anteriormente (ver instrução no bloco).
+--
+-- Prefixo wp_:
+--   1. Inclui apenas tabelas MATCHING ~/^wp_wc_me_/
+--   2. Remove o prefixo "wp_" via RENAMING
+--      (ex: wp_wc_me_labels → wc_me_labels)
+--
+-- Timezone:
+--   As tabelas wc_me_* são greenfield no Postgres com TIMESTAMPTZ.
+--   O cast abaixo converte DATETIME MySQL interpretando como UTC
+--   (padrão do servidor WP na maioria dos hosts).
+-- =============================================================================
+
+LOAD DATABASE
+    FROM      ${MYSQL_URL}
+    INTO      ${PG_URL}
+
+-- Inclui apenas tabelas de etiquetas ME (se existirem).
+-- Na maioria dos ambientes este MATCHING não retorna nenhuma tabela — normal.
+INCLUDING ONLY TABLE NAMES MATCHING ~/^wp_wc_me_/
+
+-- Remove o prefixo "wp_" do nome da tabela no destino Postgres.
+-- Resultado: wp_wc_me_labels → wc_me_labels, etc.
+RENAMING TABLES MATCHING ~/^wp_/ TO ( lambda (table-name)
+    (cl-ppcre:regex-replace "^wp_" table-name "") )
+
+WITH include no drop,
+     -- "create no tables": assume que schema-labels.sql já criou as tabelas.
+     -- Trocar por "create tables" apenas se o schema não foi inicializado.
+     create no tables,
+     create no indexes,
+     reset sequences,
+     workers = 4,
+     concurrency = 2
+
+SET work_mem             TO '128MB',
+    maintenance_work_mem TO '256MB'
+
+-- Casts de tipo MySQL → Postgres
+-- Ordem importa: regras mais específicas primeiro.
+CAST
+    -- TINYINT(1) → BOOLEAN
+    type tinyint with extra auto_increment to bigint drop typemod,
+    type tinyint to boolean drop default drop not null
+        using tinyint-to-boolean,
+
+    -- DATETIME → TIMESTAMPTZ (interpreta como UTC — correto para tabelas WP)
+    -- As tabelas greenfield wc_me_* usam TIMESTAMPTZ, não TIMESTAMP WITHOUT TIME ZONE.
+    -- Ver comentário no cabeçalho de schema-labels.sql sobre a diferença com schema-motoboy.sql.
+    type datetime to timestamptz
+        drop default drop not null
+        using zero-dates-to-null,
+
+    -- DECIMAL preservado
+    type decimal to decimal,
+
+    -- TEXT largo → TEXT (Postgres TEXT já é ilimitado)
+    type longtext   to text,
+    type mediumtext to text,
+    type text       to text,
+
+    -- INT/BIGINT UNSIGNED → tipos sem unsigned (Postgres não tem UNSIGNED)
+    type int    with unsigned to integer,
+    type bigint with unsigned to bigint
+
+AFTER LOAD DO
+    -- Garante que linhas com updated_at NULL (zero-dates-to-null) usem created_at.
+    $$ UPDATE wc_me_labels
+          SET updated_at = created_at
+        WHERE updated_at IS NULL $$,
+
+    -- ─────────────────────────────────────────────────────────────────────────
+    -- BACKFILL DE ETIQUETAS HISTÓRICAS (OPCIONAL — NÃO EXECUTAR SEM PREPARAÇÃO)
+    -- ─────────────────────────────────────────────────────────────────────────
+    -- ATENÇÃO: O bloco abaixo está comentado propositalmente.
+    -- Se executado sem que wp_postmeta_tmp exista no Postgres de destino,
+    -- o pgloader retorna erro e cancela o AFTER LOAD inteiro, podendo
+    -- corromper as sequências já recalibradas acima.
+    --
+    -- PRÉ-REQUISITO para descomentar:
+    --   1. Migrar wp_postmeta do MySQL para uma tabela temporária no Postgres:
+    --      pgloader wp_postmeta_tmp_migration.load   (script separado)
+    --   2. Para HPOS (wp_wc_orders_meta): ajustar post_id → order_id.
+    --   3. Descomentar o bloco $$ INSERT ... $$ abaixo e remover esta nota.
+    --
+    -- Idempotência: ON CONFLICT (me_shipment_id) DO NOTHING — re-executável.
+    --
+    -- $$
+    -- INSERT INTO wc_me_labels
+    --        (wc_order_id, me_shipment_id, status, tracking_code, label_url, created_at, updated_at)
+    -- SELECT DISTINCT
+    --     pm_ship.post_id::BIGINT     AS wc_order_id,
+    --     pm_ship.meta_value          AS me_shipment_id,
+    --     COALESCE(pm_status.meta_value, 'released') AS status,
+    --     pm_track.meta_value         AS tracking_code,
+    --     pm_url.meta_value           AS label_url,
+    --     NOW()                       AS created_at,
+    --     NOW()                       AS updated_at
+    -- FROM wp_postmeta_tmp pm_ship
+    -- LEFT JOIN wp_postmeta_tmp pm_status
+    --      ON pm_status.post_id  = pm_ship.post_id
+    --     AND pm_status.meta_key = '_wc_melhor_envio_status'
+    -- LEFT JOIN wp_postmeta_tmp pm_track
+    --      ON pm_track.post_id   = pm_ship.post_id
+    --     AND pm_track.meta_key  = '_wc_melhor_envio_tracking_code'
+    -- LEFT JOIN wp_postmeta_tmp pm_url
+    --      ON pm_url.post_id     = pm_ship.post_id
+    --     AND pm_url.meta_key    = '_wc_melhor_envio_label_url'
+    -- WHERE pm_ship.meta_key   = '_wc_melhor_envio_shipment_id'
+    --   AND pm_ship.meta_value IS NOT NULL
+    --   AND pm_ship.meta_value <> ''
+    -- ON CONFLICT (me_shipment_id) DO NOTHING
+    -- $$,
+
+    -- Recalibra sequências para novos INSERTs não colidirem com IDs migrados.
+    $$ SELECT setval(
+           pg_get_serial_sequence('wc_me_labels', 'id'),
+           COALESCE((SELECT MAX(id) FROM wc_me_labels), 1)
+       ) $$,
+    $$ SELECT setval(
+           pg_get_serial_sequence('wc_me_queue', 'id'),
+           COALESCE((SELECT MAX(id) FROM wc_me_queue), 1)
+       ) $$,
+    $$ SELECT setval(
+           pg_get_serial_sequence('wc_me_shipment_cache', 'id'),
+           COALESCE((SELECT MAX(id) FROM wc_me_shipment_cache), 1)
+       ) $$;

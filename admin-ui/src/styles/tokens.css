@@ -1,0 +1,138 @@
+/**
+ * Senderzz Dashboard V2 — Tokens de marca (Fase 1)
+ * ------------------------------------------------------------------
+ * Escopo: TODOS os tokens vivem sob .sz-dashboard-v2. Nada vaza para
+ * a dashboard clássica e nada do legado é editado.
+ *
+ * Decisões aprovadas:
+ *  - Laranja oficial #E8650A, sólido. Sem gradiente. Sem sombra
+ *    decorativa (apenas focus ring e flutuantes discretos).
+ *  - Fontes SEM dependência externa (Fase 1 = fallback de sistema).
+ *    Se um dia houver fonte própria, será self-host woff2 aqui,
+ *    nunca CDN/Google Fonts.
+ *      brand : Space Grotesk → system-ui
+ *      ui    : Hanken Grotesk → system-ui
+ *      mono  : JetBrains Mono → ui-monospace
+ *  - Tema claro (default) e escuro via [data-theme="dark"].
+ */
+
+.sz-dashboard-v2 {
+  /* ── Marca ─────────────────────────────────────────────────── */
+  --szv2-brand:        #E8650A;
+  --szv2-brand-hover:  #C94F06;
+  --szv2-brand-ember:  #C24E06;  /* tom secundário do falcão        */
+  --szv2-brand-light:  #FFF4EC;
+  --szv2-brand-muted:  rgba(232, 101, 10, 0.12);
+  --szv2-on-brand:     #FFFFFF;
+
+  /* ── Superfícies e texto (claro) ───────────────────────────── */
+  --szv2-bg:           #F8FAFC;
+  --szv2-surface:      #FFFFFF;
+  --szv2-surface-alt:  #FBFCFE;
+  --szv2-border:       #E6EAF0;
+  --szv2-border-strong:#D7DEE8;
+  --szv2-divider:      #EEF2F7;
+  --szv2-text:         #111827;
+  --szv2-text-soft:    #334155;
+  --szv2-text-muted:   #64748B;
+  --szv2-text-faint:   #94A3B8;
+
+  /* ── Semânticas ────────────────────────────────────────────── */
+  --szv2-success:      #16A34A;
+  --szv2-success-bg:   #E8F7EE;
+  --szv2-danger:       #DC2626;
+  --szv2-danger-bg:    #FDECEC;
+  --szv2-danger-muted: #fee2e2;  /* hover suave de destrutivo — coerente com danger-bg */
+  --szv2-warning:      #D97706;
+  --szv2-warning-bg:   #FCF3E3;
+  --szv2-info:         #2563EB;
+  --szv2-info-bg:      #EAF1FE;
+  --szv2-neutral:      #64748B;
+  --szv2-neutral-bg:   #EEF2F7;
+
+  /* ── Tipografia (fallback de sistema — decisão Fase 1) ─────── */
+  --szv2-font-brand: 'Space Grotesk', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --szv2-font-ui:    'Hanken Grotesk', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --szv2-font-mono:  'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  --szv2-text-xs: 11px;
+  --szv2-text-sm: 12px;
+  --szv2-text-base: 13px;   /* entre sm e md; base para valores de campo e célula */
+  --szv2-text-md: 14px;
+  --szv2-text-lg: 15px;
+  --szv2-text-xl: 20px;
+  --szv2-text-kpi: 24px;
+
+  /* ── Geometria ─────────────────────────────────────────────── */
+  --szv2-radius-sm: 8px;
+  --szv2-radius-md: 10px;
+  --szv2-radius-lg: 16px;
+  --szv2-radius-pill: 999px;
+
+  --szv2-space-1: 4px;
+  --szv2-space-2: 8px;
+  --szv2-space-3: 12px;
+  --szv2-space-4: 16px;
+  --szv2-space-5: 20px;
+  --szv2-space-6: 24px;
+  --szv2-space-8: 32px;
+
+  /* ── Sombra (regra: quase nenhuma) ─────────────────────────── */
+  --szv2-shadow-focus: 0 0 0 3px rgba(232, 101, 10, 0.16);
+  --szv2-shadow-float: 0 12px 30px rgba(15, 23, 42, 0.10);
+
+  /* ── Layout ────────────────────────────────────────────────── */
+  --szv2-sidebar-w: 240px;
+  --szv2-sidebar-w-min: 64px;
+  --szv2-topbar-h: 56px;
+
+  --szv2-z-sidebar: 500;
+  --szv2-z-topbar: 300;
+  --szv2-z-dropdown: 600;
+  --szv2-z-modal: 900;
+  --szv2-z-toast: 1000;
+
+  --szv2-transition: 160ms ease;
+
+  /* ── Variáveis do falcão (SVG inline herda) ────────────────── */
+  --m1:  var(--szv2-brand);
+  --m2:  var(--szv2-brand-ember);
+  --eye: #0E1320;
+}
+
+/* ── Tema escuro ─────────────────────────────────────────────── */
+.sz-dashboard-v2[data-theme="dark"] {
+  --szv2-bg:           #0B1220;
+  --szv2-surface:      #111827;
+  --szv2-surface-alt:  #0F172A;
+  --szv2-border:       rgba(255, 255, 255, 0.10);
+  --szv2-border-strong:rgba(255, 255, 255, 0.16);
+  --szv2-divider:      rgba(255, 255, 255, 0.07);
+  --szv2-text:         #F8FAFC;
+  --szv2-text-soft:    #CBD5E1;
+  --szv2-text-muted:   #94A3B8;
+  --szv2-text-faint:   #64748B;
+
+  --szv2-brand-light:  rgba(232, 101, 10, 0.16);
+  --szv2-brand-muted:  rgba(232, 101, 10, 0.10);
+
+  --szv2-success-bg:   rgba(22, 163, 74, 0.16);
+  --szv2-danger-bg:    rgba(220, 38, 38, 0.16);
+  --szv2-warning-bg:   rgba(217, 119, 6, 0.16);
+  --szv2-info-bg:      rgba(37, 99, 235, 0.16);
+  --szv2-neutral-bg:   rgba(148, 163, 184, 0.14);
+
+  --szv2-shadow-float: 0 12px 30px rgba(0, 0, 0, 0.45);
+
+  --eye: #0B1220;
+}
+
+/* Acessibilidade: respeitar redução de movimento */
+@media (prefers-reduced-motion: reduce) {
+  .sz-dashboard-v2 *,
+  .sz-dashboard-v2 *::before,
+  .sz-dashboard-v2 *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}

@@ -1,0 +1,129 @@
+-- =============================================================================
+-- pgloader — Migração sz_motoboy_* de MySQL (WordPress) para Postgres 16
+-- Senderzz Strangler Fig — Fase 1: Módulo Motoboy
+--
+-- Uso:
+--   export MYSQL_URL="mysql://usuario:senha@mysql-host/wordpress_db"
+--   export PG_URL="postgresql://usuario:senha@pg-host/senderzz_db"
+--   pgloader motoboy-migration.load
+--
+-- ATENÇÃO: execute ANTES de inicializar o schema Postgres com schema-motoboy.sql.
+-- O pgloader cria as tabelas com seus tipos nativos a partir do MySQL; o schema
+-- SQL é para ambientes dev sem MySQL fonte (docker-compose / CI).
+--
+-- Prefixo wp_: o WordPress grava as tabelas com prefixo (padrão "wp_").
+-- Este script:
+--   1. Inclui apenas tabelas com nome MATCHING ~/^wp_sz_motoboy/
+--   2. Remove o prefixo "wp_" via RENAMING para que o Postgres receba os
+--      nomes canônicos sem prefixo (ex: wp_sz_motoboy_pedidos → sz_motoboy_pedidos).
+--
+-- Timezone / DATETIME:
+--   O PHP grava horário de Brasília (America/Sao_Paulo) em colunas DATETIME sem
+--   timezone. O cast abaixo usa "timestamp without time zone" para preservar a
+--   semântica wall-clock e evitar o desvio de 3h que ocorreria se pgloader
+--   interpretasse os valores como UTC ao converter para TIMESTAMPTZ.
+--   Ver sz_motoboy_now_mysql() em includes/motoboy/database.php.
+-- =============================================================================
+
+LOAD DATABASE
+    FROM      ${MYSQL_URL}
+    INTO      ${PG_URL}
+
+-- Inclui apenas as tabelas do módulo Motoboy (prefixo wp_sz_motoboy).
+-- sz_portal_tickets e sz_portal_ticket_msgs ficam de fora — pertencem ao
+-- módulo Portal, que migra em fase futura.
+INCLUDING ONLY TABLE NAMES MATCHING ~/^wp_sz_motoboy/
+
+-- Remove o prefixo "wp_" do nome da tabela no destino Postgres.
+-- Resultado: wp_sz_motoboy_pedidos → sz_motoboy_pedidos, etc.
+RENAMING TABLES MATCHING ~/^wp_/ TO ( lambda (table-name)
+    (cl-ppcre:regex-replace "^wp_" table-name "") )
+
+WITH include no drop,
+     -- "create tables": pgloader cria as tabelas no Postgres a partir do schema MySQL.
+     -- Se o schema já foi inicializado com schema-motoboy.sql, substitua por
+     -- "create no tables" e adicione "truncate" para evitar conflito.
+     create tables,
+     create indexes,
+     reset sequences,
+     foreign keys,
+     workers = 4,
+     concurrency = 2
+
+SET work_mem             TO '128MB',
+    maintenance_work_mem TO '512MB'
+
+-- Casts de tipo MySQL → Postgres
+-- Ordem importa: regras mais específicas primeiro.
+CAST
+    -- TINYINT(1) → BOOLEAN
+    type tinyint with extra auto_increment to bigint drop typemod,
+    type tinyint to boolean drop default drop not null
+        using tinyint-to-boolean,
+
+    -- DATETIME sem timezone → TIMESTAMP WITHOUT TIME ZONE
+    -- Preserva wall-clock (Brasília). Zeros "0000-00-00 00:00:00" viram NULL.
+    type datetime to timestamp without time zone
+        drop default drop not null
+        using zero-dates-to-null,
+
+    -- TEXT largo → TEXT (Postgres TEXT já é ilimitado)
+    type longtext   to text,
+    type mediumtext to text,
+    type text       to text,
+
+    -- INT UNSIGNED / BIGINT UNSIGNED → tipos sem unsigned
+    type int    with unsigned to integer,
+    type bigint with unsigned to bigint
+
+-- Ações após o carregamento (executadas no Postgres de destino)
+AFTER LOAD DO
+    -- Garante que pedidos antigos com updated_at NULL (gerado pelo zero-dates-to-null
+    -- no DATETIME) não quebrem queries do serviço Go que esperam NOT NULL.
+    $$ UPDATE sz_motoboy_pedidos
+          SET updated_at = created_at
+        WHERE updated_at IS NULL $$,
+
+    $$ UPDATE sz_motoboys
+          SET updated_at = created_at
+        WHERE updated_at IS NULL $$,
+
+    $$ UPDATE sz_motoboy_fechamento
+          SET updated_at = created_at
+        WHERE updated_at IS NULL $$,
+
+    -- Recalibra sequências para que novos INSERTs no Postgres não colidam
+    -- com IDs já migrados. pgloader "reset sequences" já faz isso, mas os
+    -- AFTER DO garantem o estado correto mesmo que a opção falhe parcialmente.
+    $$ SELECT setval(
+           pg_get_serial_sequence('sz_motoboy_pedidos',    'id'),
+           COALESCE((SELECT MAX(id) FROM sz_motoboy_pedidos),    1)
+       ) $$,
+    $$ SELECT setval(
+           pg_get_serial_sequence('sz_motoboys',           'id'),
+           COALESCE((SELECT MAX(id) FROM sz_motoboys),           1)
+       ) $$,
+    $$ SELECT setval(
+           pg_get_serial_sequence('sz_motoboy_cds',        'id'),
+           COALESCE((SELECT MAX(id) FROM sz_motoboy_cds),        1)
+       ) $$,
+    $$ SELECT setval(
+           pg_get_serial_sequence('sz_motoboy_zonas',      'id'),
+           COALESCE((SELECT MAX(id) FROM sz_motoboy_zonas),      1)
+       ) $$,
+    $$ SELECT setval(
+           pg_get_serial_sequence('sz_motoboy_cep_zonas',  'id'),
+           COALESCE((SELECT MAX(id) FROM sz_motoboy_cep_zonas),  1)
+       ) $$,
+    $$ SELECT setval(
+           pg_get_serial_sequence('sz_motoboy_comprovantes','id'),
+           COALESCE((SELECT MAX(id) FROM sz_motoboy_comprovantes),1)
+       ) $$,
+    $$ SELECT setval(
+           pg_get_serial_sequence('sz_motoboy_fechamento', 'id'),
+           COALESCE((SELECT MAX(id) FROM sz_motoboy_fechamento),  1)
+       ) $$,
+    $$ SELECT setval(
+           pg_get_serial_sequence('sz_motoboy_audit',      'id'),
+           COALESCE((SELECT MAX(id) FROM sz_motoboy_audit),       1)
+       ) $$;
