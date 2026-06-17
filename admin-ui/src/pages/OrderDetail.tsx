@@ -14,10 +14,11 @@
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { api } from '../api'
+import CopyButton from '../components/CopyButton'
 
 // ── Tipos ─────────────────────────────────────────────────────────────────────
 
-type OrderCustomer = { nome: string; email: string; telefone: string; cpf: string }
+type OrderCustomer = { nome: string; email: string; telefone: string; cpf: string; rg?: string }
 type OrderAddress = {
   endereco: string; numero: string; complemento: string
   bairro: string; cidade: string; uf: string; cep: string
@@ -89,6 +90,8 @@ type MotoboySection = {
   exists: boolean
   motoboy_id: number | null
   motoboy_nome: string
+  motoboy_telefone?: string
+  motoboy_placa?: string
   cd_nome: string
   zona_nome: string
   status: string
@@ -152,11 +155,38 @@ type OrderNote = {
   created_at: string
 }
 
+type OrderMarketing = {
+  utm_source: string
+  utm_medium: string
+  utm_campaign: string
+  utm_term: string
+  utm_content: string
+  referrer: string
+  landing_page: string
+}
+
+type OrderFiscal = {
+  nfe_chave: string
+  nfe_numero: string
+  nfe_serie: string
+  nfe_url: string
+  nfe_status: string
+}
+
+type OrderTracking = {
+  code: string
+  url: string
+  carrier: string
+}
+
 type OrderDetailPayload = {
   order: OrderHead
   motoboy: MotoboySection
   affiliate: AffiliateSection
   label: LabelSection
+  marketing?: OrderMarketing
+  fiscal?: OrderFiscal
+  tracking?: OrderTracking
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -521,8 +551,27 @@ export default function OrderDetail() {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12, marginTop: 8 }}>
           <KV label="Nome"     value={order.customer.nome} />
           <KV label="E-mail"   value={order.customer.email} mono />
-          <KV label="Telefone" value={order.customer.telefone} mono />
-          <KV label="CPF"      value={order.customer.cpf} mono />
+          <KV label="Telefone" value={
+            order.customer.telefone
+              ? <a href={`tel:${order.customer.telefone.replace(/\D/g, '')}`} style={{ color: 'var(--szv2-brand)', textDecoration: 'none' }}>{order.customer.telefone}</a>
+              : '—'
+          } mono />
+          <KV label="CPF"      value={
+            order.customer.cpf
+              ? <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                  <span>{order.customer.cpf}</span>
+                  <CopyButton text={order.customer.cpf} variant="icon" />
+                </span>
+              : '—'
+          } mono />
+          {order.customer.rg ? (
+            <KV label="RG" value={
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                <span>{order.customer.rg}</span>
+                <CopyButton text={order.customer.rg} variant="icon" />
+              </span>
+            } mono />
+          ) : null}
         </div>
         <div style={{ marginTop: 16, paddingTop: 12, borderTop: '1px solid var(--szv2-divider)' }}>
           <div style={{ fontSize: 12, color: 'var(--szv2-text-muted)', marginBottom: 6 }}>📍 Endereço de entrega</div>
@@ -674,6 +723,12 @@ export default function OrderDetail() {
           <>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12 }}>
               <KV label="Motoboy"        value={motoboy.motoboy_nome || `#${motoboy.motoboy_id ?? '—'}`} />
+              <KV label="Telefone"       value={
+                motoboy.motoboy_telefone
+                  ? <a href={`tel:${motoboy.motoboy_telefone.replace(/\D/g, '')}`} style={{ color: 'var(--szv2-brand)', textDecoration: 'none' }}>{motoboy.motoboy_telefone}</a>
+                  : '—'
+              } mono />
+              <KV label="Placa"          value={motoboy.motoboy_placa || '—'} mono />
               <KV label="CD"             value={motoboy.cd_nome} />
               <KV label="Zona"           value={motoboy.zona_nome} />
               <KV label="Status"         value={<StatusBadge status={motoboy.status || '—'} map={MB_STATUS_BADGE} />} />
@@ -900,6 +955,15 @@ export default function OrderDetail() {
         )}
       </div>
 
+      {/* ── Rastreio ───────────────────────────────────────────────── */}
+      <TrackingCard tracking={data.tracking} />
+
+      {/* ── Nota Fiscal ────────────────────────────────────────────── */}
+      <FiscalCard fiscal={data.fiscal} />
+
+      {/* ── Marketing / UTM ────────────────────────────────────────── */}
+      <MarketingCard marketing={data.marketing} />
+
       {/* ── Auditoria ──────────────────────────────────────────────── */}
       <div className="szv2-card" style={{ marginBottom: 16 }}>
         <div className="szv2-card-head">
@@ -1039,28 +1103,10 @@ function KV({ label, value, mono }: { label: string; value: ReactNode; mono?: bo
   )
 }
 
+// CopyText — wrapper de compat. para o CopyButton (variante inline).
+// Mantido para minimizar churn nos usos espalhados pelo arquivo.
 function CopyText({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false)
-  return (
-    <button
-      type="button"
-      style={{
-        background: 'transparent', border: 'none', padding: 0, cursor: 'pointer',
-        color: 'var(--szv2-brand)', fontFamily: 'var(--szv2-font-mono)',
-        fontSize: 13, fontWeight: 600,
-      }}
-      onClick={async () => {
-        try {
-          await navigator.clipboard.writeText(text)
-          setCopied(true)
-          window.setTimeout(() => setCopied(false), 1500)
-        } catch { /* ignore */ }
-      }}
-      title="Copiar"
-    >
-      {copied ? '✓ copiado' : text}
-    </button>
-  )
+  return <CopyButton text={text} />
 }
 
 // MetaItemInline — mostra variações/atributos do item (sz_order_items.meta).
@@ -1169,4 +1215,122 @@ function actorBadgeCls(t: string) {
     case 'alan':     return 'szv2-badge-brand'
     default:         return 'szv2-badge-neutral'
   }
+}
+
+// ── TrackingCard ─────────────────────────────────────────────────────────────
+// Card de rastreio (consolidado de sz_order_meta + wc_me_labels).
+// Oculta o card inteiro se todos os campos vierem vazios — evita "tudo —".
+function TrackingCard({ tracking }: { tracking: OrderTracking | undefined }) {
+  if (!tracking) return null
+  const { code, url, carrier } = tracking
+  if (!code && !url && !carrier) return null
+  return (
+    <div className="szv2-card" style={{ marginBottom: 16 }}>
+      <div className="szv2-card-head">
+        <div>
+          <h2>📦 Rastreio</h2>
+          <p className="szv2-card-sub">Código consolidado de envio</p>
+        </div>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12, marginTop: 8 }}>
+        <KV label="Código" value={
+          code
+            ? <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                <span style={{ fontFamily: 'var(--szv2-font-mono)', fontWeight: 700 }}>{code}</span>
+                <CopyButton text={code} variant="icon" />
+              </span>
+            : '—'
+        } />
+        <KV label="Transportadora" value={carrier || '—'} />
+      </div>
+      {url ? (
+        <div style={{ marginTop: 12 }}>
+          <a className="szv2-btn-brand" href={url} target="_blank" rel="noreferrer">
+            Abrir rastreio
+          </a>
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+// ── FiscalCard ───────────────────────────────────────────────────────────────
+// Nota fiscal eletrônica. Chave NF-e tem 44 dígitos — exibe em mono + copy.
+function FiscalCard({ fiscal }: { fiscal: OrderFiscal | undefined }) {
+  if (!fiscal) return null
+  const { nfe_chave, nfe_numero, nfe_serie, nfe_url, nfe_status } = fiscal
+  if (!nfe_chave && !nfe_numero && !nfe_serie && !nfe_url && !nfe_status) return null
+  return (
+    <div className="szv2-card" style={{ marginBottom: 16 }}>
+      <div className="szv2-card-head">
+        <div>
+          <h2>📄 Nota Fiscal</h2>
+          <p className="szv2-card-sub">NF-e emitida para este pedido</p>
+        </div>
+        {nfe_status ? <StatusBadge status={nfe_status} /> : null}
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12, marginTop: 8 }}>
+        <KV label="Número" value={nfe_numero || '—'} mono />
+        <KV label="Série"  value={nfe_serie || '—'}  mono />
+      </div>
+      {nfe_chave ? (
+        <div style={{ marginTop: 12 }}>
+          <div style={{ fontSize: 11, color: 'var(--szv2-text-muted)', textTransform: 'uppercase', letterSpacing: '.04em', marginBottom: 4 }}>
+            Chave de acesso (44 dígitos)
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: 10, background: 'var(--szv2-bg, #f9fafb)', borderRadius: 8, border: '1px solid var(--szv2-border)' }}>
+            <code style={{ fontFamily: 'var(--szv2-font-mono)', fontSize: 13, wordBreak: 'break-all', flex: 1 }}>
+              {nfe_chave}
+            </code>
+            <CopyButton text={nfe_chave} variant="icon" />
+          </div>
+        </div>
+      ) : null}
+      {nfe_url ? (
+        <div style={{ marginTop: 12 }}>
+          <a className="szv2-btn-secondary" href={nfe_url} target="_blank" rel="noreferrer">
+            Abrir XML
+          </a>
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+// ── MarketingCard ────────────────────────────────────────────────────────────
+// UTMs + referrer + landing — atribuição da venda.
+function MarketingCard({ marketing }: { marketing: OrderMarketing | undefined }) {
+  if (!marketing) return null
+  const all = [
+    marketing.utm_source, marketing.utm_medium, marketing.utm_campaign,
+    marketing.utm_term, marketing.utm_content, marketing.referrer, marketing.landing_page,
+  ]
+  if (all.every(v => !v)) return null
+  return (
+    <div className="szv2-card" style={{ marginBottom: 16 }}>
+      <div className="szv2-card-head">
+        <div>
+          <h2>🎯 Marketing / UTM</h2>
+          <p className="szv2-card-sub">Atribuição de origem da conversão</p>
+        </div>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12, marginTop: 8 }}>
+        <KV label="utm_source"   value={marketing.utm_source   || '—'} mono />
+        <KV label="utm_medium"   value={marketing.utm_medium   || '—'} mono />
+        <KV label="utm_campaign" value={marketing.utm_campaign || '—'} mono />
+        <KV label="utm_term"     value={marketing.utm_term     || '—'} mono />
+        <KV label="utm_content"  value={marketing.utm_content  || '—'} mono />
+        <KV label="referrer"     value={
+          marketing.referrer
+            ? <a href={marketing.referrer} target="_blank" rel="noreferrer" style={{ color: 'var(--szv2-brand)', wordBreak: 'break-all' }}>{marketing.referrer}</a>
+            : '—'
+        } mono />
+        <KV label="landing_page" value={
+          marketing.landing_page
+            ? <a href={marketing.landing_page} target="_blank" rel="noreferrer" style={{ color: 'var(--szv2-brand)', wordBreak: 'break-all' }}>{marketing.landing_page}</a>
+            : '—'
+        } mono />
+      </div>
+    </div>
+  )
 }

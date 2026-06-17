@@ -1,5 +1,12 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api'
+import FilterButton from '../components/FilterButton'
+import FilterTopPanel, {
+  FilterField,
+  filterInputStyle,
+  ActiveFilterChips,
+  type ActiveChip,
+} from '../components/FilterTopPanel'
 
 type A = {
   user_id: number
@@ -18,24 +25,87 @@ type A = {
 const fmtBRL = (v: number) =>
   'R$ ' + (v ?? 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
+// Status disponíveis no select. Backend pode não filtrar todos — o filtro
+// status passa via querystring; se o handler ignorar, vira no-op gracioso.
+const STATUS_OPTS = [
+  { key: '',            label: 'Todos' },
+  { key: 'active',      label: 'Ativo' },
+  { key: 'sem_vinculo', label: 'Sem vínculo' },
+]
+
 export default function Affiliates() {
   const [items, setItems] = useState<A[]>([])
   const [total, setTotal] = useState(0)
-  const [q, setQ] = useState('')
   const [err, setErr] = useState('')
+
+  // Filtros aplicados — disparam fetch.
+  const [q, setQ] = useState('')
+  const [status, setStatus] = useState('')
+  const [dataIni, setDataIni] = useState('')
+  const [dataFim, setDataFim] = useState('')
+
+  // Drafts no painel.
+  const [draftQ, setDraftQ] = useState('')
+  const [draftStatus, setDraftStatus] = useState('')
+  const [draftIni, setDraftIni] = useState('')
+  const [draftFim, setDraftFim] = useState('')
+
+  const [filterOpen, setFilterOpen] = useState(false)
+
+  function buildQs() {
+    const p = new URLSearchParams()
+    if (q.trim()) p.set('q', q.trim())
+    if (status) p.set('status', status)
+    if (dataIni) p.set('data_ini', dataIni)
+    if (dataFim) p.set('data_fim', dataFim)
+    p.set('limit', '100')
+    return p.toString()
+  }
 
   async function load() {
     try {
-      const r = await api<{ items: A[]; total: number }>(`/affiliates?q=${encodeURIComponent(q)}&limit=100`)
-      setItems(r.items ?? []); setTotal(r.total)
-    } catch (e: any) { setErr(e.message) }
+      const r = await api<{ items: A[]; total: number }>(`/affiliates?${buildQs()}`)
+      setItems(r.items ?? [])
+      setTotal(r.total)
+    } catch (e: any) {
+      setErr(e.message)
+    }
   }
-  useEffect(() => { load() }, [])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { load() }, [q, status, dataIni, dataFim])
+
+  function openPanel() {
+    setDraftQ(q)
+    setDraftStatus(status)
+    setDraftIni(dataIni)
+    setDraftFim(dataFim)
+    setFilterOpen(true)
+  }
+  function applyFilters() {
+    setQ(draftQ)
+    setStatus(draftStatus)
+    setDataIni(draftIni)
+    setDataFim(draftFim)
+    setFilterOpen(false)
+  }
+  function clearFilters() {
+    setQ(''); setStatus(''); setDataIni(''); setDataFim('')
+    setDraftQ(''); setDraftStatus(''); setDraftIni(''); setDraftFim('')
+    setFilterOpen(false)
+  }
 
   // KPIs agregados sobre a página atual (últimos 30 dias).
   const sumVendido = items.reduce((s, a) => s + (a.total_vendido_30d || 0), 0)
   const sumComissao = items.reduce((s, a) => s + (a.total_comissao_30d || 0), 0)
   const sumPedidos = items.reduce((s, a) => s + (a.pedidos_count_30d || 0), 0)
+
+  // Chips ativos.
+  const chips: ActiveChip[] = []
+  if (q) chips.push({ key: 'q', label: `Busca: ${q}`, onRemove: () => setQ('') })
+  if (status) chips.push({ key: 'status', label: `Status: ${status}`, onRemove: () => setStatus('') })
+  if (dataIni) chips.push({ key: 'ini', label: `De: ${dataIni}`, onRemove: () => setDataIni('') })
+  if (dataFim) chips.push({ key: 'fim', label: `Até: ${dataFim}`, onRemove: () => setDataFim('') })
+  const activeCount = chips.length
 
   return (
     <div>
@@ -45,11 +115,15 @@ export default function Affiliates() {
           <p>{total} afiliados cadastrados</p>
         </div>
         <div style={{ display: 'flex', gap: '8px' }}>
-          <input className="szv2-input" style={{ width: '220px' }} placeholder="buscar…" value={q}
-            onChange={e => setQ(e.target.value)} onKeyDown={e => e.key === 'Enter' && load()} />
-          <button className="szv2-btn szv2-btn-secondary" onClick={load}>Buscar</button>
+          <FilterButton
+            active={activeCount > 0}
+            count={activeCount}
+            onClick={openPanel}
+          />
         </div>
       </div>
+
+      <ActiveFilterChips chips={chips} onClearAll={clearFilters} />
 
       {err && <div className="sz-alert-danger">{err}</div>}
 
@@ -123,6 +197,51 @@ export default function Affiliates() {
           </tbody>
         </table>
       </div>
+
+      <FilterTopPanel
+        open={filterOpen}
+        onClose={() => setFilterOpen(false)}
+        onApply={applyFilters}
+        onClear={clearFilters}
+        title="Filtros"
+      >
+        <FilterField label="Data inicial">
+          <input
+            type="date"
+            style={filterInputStyle}
+            value={draftIni}
+            max={draftFim || undefined}
+            onChange={e => setDraftIni(e.target.value)}
+          />
+        </FilterField>
+        <FilterField label="Data final">
+          <input
+            type="date"
+            style={filterInputStyle}
+            value={draftFim}
+            min={draftIni || undefined}
+            onChange={e => setDraftFim(e.target.value)}
+          />
+        </FilterField>
+        <FilterField label="Status">
+          <select
+            style={filterInputStyle}
+            value={draftStatus}
+            onChange={e => setDraftStatus(e.target.value)}
+          >
+            {STATUS_OPTS.map(s => <option key={s.key} value={s.key}>{s.label}</option>)}
+          </select>
+        </FilterField>
+        <FilterField label="Busca (email / nome)">
+          <input
+            type="search"
+            style={filterInputStyle}
+            placeholder="ex.: joao@…"
+            value={draftQ}
+            onChange={e => setDraftQ(e.target.value)}
+          />
+        </FilterField>
+      </FilterTopPanel>
     </div>
   )
 }

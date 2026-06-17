@@ -1,5 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { api } from '../api'
+import FilterButton from '../components/FilterButton'
+import FilterTopPanel, {
+  FilterField,
+  filterInputStyle,
+  ActiveFilterChips,
+  type ActiveChip,
+} from '../components/FilterTopPanel'
 
 // ── Tipos ─────────────────────────────────────────────────────────────────────
 
@@ -94,6 +101,15 @@ export default function BulkActions() {
   const [scFilter, setScFilter]         = useState('')
   const [dateFrom, setDateFrom]         = useState('')
   const [dateTo, setDateTo]             = useState('')
+  const [q, setQ]                       = useState('')
+
+  // Painel
+  const [filterOpen, setFilterOpen]     = useState(false)
+  const [draftStatus, setDraftStatus]   = useState('')
+  const [draftSc, setDraftSc]           = useState('')
+  const [draftIni, setDraftIni]         = useState('')
+  const [draftFim, setDraftFim]         = useState('')
+  const [draftQ, setDraftQ]             = useState('')
 
   // Dados
   const [orders, setOrders]           = useState<BulkOrder[]>([])
@@ -136,6 +152,7 @@ export default function BulkActions() {
       if (scFilter)     qs.set('shipping_class', scFilter)
       if (dateFrom)     qs.set('date_from', dateFrom)
       if (dateTo)       qs.set('date_to', dateTo)
+      if (q.trim())     qs.set('q', q.trim())
       qs.set('limit', '200')
       const r = await api<{ items: BulkOrder[]; count: number }>(
         `/bulk-actions/orders?${qs}`
@@ -149,7 +166,21 @@ export default function BulkActions() {
   }
 
   useEffect(() => { loadShippingClasses() }, [])
-  useEffect(() => { loadOrders() }, [statusFilter, scFilter, dateFrom, dateTo])
+  useEffect(() => { loadOrders() }, [statusFilter, scFilter, dateFrom, dateTo, q])
+
+  function openPanel() {
+    setDraftStatus(statusFilter); setDraftSc(scFilter); setDraftIni(dateFrom); setDraftFim(dateTo); setDraftQ(q)
+    setFilterOpen(true)
+  }
+  function applyFilters() {
+    setStatusFilter(draftStatus); setScFilter(draftSc); setDateFrom(draftIni); setDateTo(draftFim); setQ(draftQ)
+    setFilterOpen(false)
+  }
+  function clearFilters() {
+    setStatusFilter(''); setScFilter(''); setDateFrom(''); setDateTo(''); setQ('')
+    setDraftStatus(''); setDraftSc(''); setDraftIni(''); setDraftFim(''); setDraftQ('')
+    setFilterOpen(false)
+  }
 
   // ── Toast ────────────────────────────────────────────────────────────────────
 
@@ -270,6 +301,14 @@ export default function BulkActions() {
   const progressError = queueItems.filter(qi => qi.status === 'error').length
   const progressTotal = queueItems.length
 
+  // Chips ativos.
+  const chips: ActiveChip[] = []
+  if (statusFilter) chips.push({ key: 'status', label: `Status: ${statusFilter}`, onRemove: () => setStatusFilter('') })
+  if (scFilter) chips.push({ key: 'sc', label: `Classe: ${scFilter}`, onRemove: () => setScFilter('') })
+  if (dateFrom) chips.push({ key: 'ini', label: `De: ${dateFrom}`, onRemove: () => setDateFrom('') })
+  if (dateTo) chips.push({ key: 'fim', label: `Até: ${dateTo}`, onRemove: () => setDateTo('') })
+  if (q) chips.push({ key: 'q', label: `Busca: ${q}`, onRemove: () => setQ('') })
+
   return (
     <div>
       {/* Toast */}
@@ -286,90 +325,20 @@ export default function BulkActions() {
         <div className="sz-alert-danger" style={{ marginBottom: 16 }}>{err}</div>
       )}
 
-      {/* ── Barra de filtros ─────────────────────────────────────────────────── */}
-      <div className="szv2-card" style={{ marginBottom: 16 }}>
-        <div
-          style={{
-            display: 'flex',
-            flexWrap: 'wrap',
-            gap: 12,
-            alignItems: 'center',
-          }}
-        >
-          {/* Chips de status */}
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-            {[
-              { value: '',           label: 'Todos' },
-              { value: 'processing', label: 'Processando' },
-              { value: 'pending',    label: 'Pendente' },
-              { value: 'completed',  label: 'Concluído' },
-            ].map(opt => (
-              <button
-                key={opt.value}
-                type="button"
-                onClick={() => setStatusFilter(opt.value)}
-                style={{
-                  padding: '4px 14px',
-                  borderRadius: 99,
-                  border: '1.5px solid',
-                  borderColor: statusFilter === opt.value
-                    ? 'var(--szv2-brand)'
-                    : 'var(--szv2-border)',
-                  background: statusFilter === opt.value
-                    ? 'rgba(234,88,12,.10)'
-                    : 'transparent',
-                  color: statusFilter === opt.value
-                    ? 'var(--szv2-brand)'
-                    : 'var(--szv2-text)',
-                  fontWeight: statusFilter === opt.value ? 700 : 400,
-                  cursor: 'pointer',
-                  fontSize: 13,
-                }}
-              >
-                {opt.label}
-              </button>
-            ))}
-          </div>
-
-          {/* Classe de envio */}
-          {shippingClasses.length > 0 && (
-            <select
-              value={scFilter}
-              onChange={e => setScFilter(e.target.value)}
-              className="szv2-select"
-              style={{ minWidth: 160 }}
-            >
-              <option value="">Todas as classes</option>
-              {shippingClasses.map(sc => (
-                <option key={sc.id} value={sc.name}>{sc.name}</option>
-              ))}
-            </select>
-          )}
-
-          {/* Intervalo de data */}
-          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-            <input
-              type="date"
-              value={dateFrom}
-              onChange={e => setDateFrom(e.target.value)}
-              className="szv2-input"
-              style={{ width: 140 }}
-              placeholder="De"
-            />
-            <span style={{ color: 'var(--szv2-text-muted)' }}>–</span>
-            <input
-              type="date"
-              value={dateTo}
-              onChange={e => setDateTo(e.target.value)}
-              className="szv2-input"
-              style={{ width: 140 }}
-              placeholder="Até"
-            />
-          </div>
-
+      <div className="szv2-section-head">
+        <div>
+          <h1>Ações em lote — Etiquetas</h1>
+          <p>{orders.length} pedido(s) com filtros aplicados.</p>
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <FilterButton
+            active={chips.length > 0}
+            count={chips.length}
+            onClick={openPanel}
+          />
           <button
             type="button"
-            className="szv2-btn-secondary"
+            className="szv2-btn szv2-btn-secondary"
             onClick={loadOrders}
             disabled={loading}
           >
@@ -377,6 +346,70 @@ export default function BulkActions() {
           </button>
         </div>
       </div>
+
+      <ActiveFilterChips chips={chips} onClearAll={clearFilters} />
+
+      <FilterTopPanel
+        open={filterOpen}
+        onClose={() => setFilterOpen(false)}
+        onApply={applyFilters}
+        onClear={clearFilters}
+        title="Filtros"
+      >
+        <FilterField label="Data inicial">
+          <input
+            type="date"
+            style={filterInputStyle}
+            value={draftIni}
+            onChange={e => setDraftIni(e.target.value)}
+          />
+        </FilterField>
+        <FilterField label="Data final">
+          <input
+            type="date"
+            style={filterInputStyle}
+            value={draftFim}
+            onChange={e => setDraftFim(e.target.value)}
+          />
+        </FilterField>
+        <FilterField label="Status">
+          <select
+            style={filterInputStyle}
+            value={draftStatus}
+            onChange={e => setDraftStatus(e.target.value)}
+          >
+            <option value="">Todos</option>
+            <option value="processing">Processando</option>
+            <option value="pending">Pendente</option>
+            <option value="completed">Concluído</option>
+            <option value="on-hold">Aguardando</option>
+            <option value="cancelled">Cancelado</option>
+          </select>
+        </FilterField>
+        {shippingClasses.length > 0 && (
+          <FilterField label="Classe de envio">
+            <select
+              style={filterInputStyle}
+              value={draftSc}
+              onChange={e => setDraftSc(e.target.value)}
+            >
+              <option value="">Todas as classes</option>
+              {shippingClasses.map(sc => (
+                <option key={sc.id} value={sc.name}>{sc.name}</option>
+              ))}
+            </select>
+          </FilterField>
+        )}
+        <FilterField label="Busca">
+          <input
+            type="search"
+            style={filterInputStyle}
+            placeholder="Pedido / cliente"
+            value={draftQ}
+            onChange={e => setDraftQ(e.target.value)}
+          />
+        </FilterField>
+      </FilterTopPanel>
 
       {/* ── Tabela de seleção ────────────────────────────────────────────────── */}
       <div className="szv2-card">

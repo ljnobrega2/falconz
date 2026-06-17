@@ -1,5 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '../api'
+import FilterButton from '../components/FilterButton'
+import FilterTopPanel, {
+  FilterField,
+  filterInputStyle,
+  ActiveFilterChips,
+  type ActiveChip,
+} from '../components/FilterTopPanel'
 
 // ----- Tipos retornados pelo handler Go ---------------------------------------
 
@@ -185,6 +192,29 @@ export default function TpcTransacoes() {
     setUserIdInput('')
     setUserIdApplied('')
     setPage(1)
+    setDraftTipo(''); setDraftStatus('')
+    setDraftIni(''); setDraftFim(''); setDraftUser('')
+    setFilterOpen(false)
+  }
+
+  // Painel
+  const [filterOpen, setFilterOpen] = useState(false)
+  const [draftTipo, setDraftTipo] = useState<TipoFilter>('')
+  const [draftStatus, setDraftStatus] = useState<StatusFilter>('')
+  const [draftIni, setDraftIni] = useState('')
+  const [draftFim, setDraftFim] = useState('')
+  const [draftUser, setDraftUser] = useState('')
+
+  function openPanel() {
+    setDraftTipo(tipo); setDraftStatus(status)
+    setDraftIni(dataIni); setDraftFim(dataFim); setDraftUser(userIdInput)
+    setFilterOpen(true)
+  }
+  function applyFilters() {
+    setTipo(draftTipo); setStatus(draftStatus)
+    setDataIni(draftIni); setDataFim(draftFim)
+    setUserIdInput(draftUser); setUserIdApplied(draftUser.trim())
+    setPage(1); setFilterOpen(false)
   }
 
   async function handleDelete(id: number) {
@@ -242,6 +272,14 @@ export default function TpcTransacoes() {
     return items.filter(t => !/cod/i.test(t.descricao || ''))
   }, [items, carteira])
 
+  // Chips
+  const chips: ActiveChip[] = []
+  if (tipo) chips.push({ key: 'tipo', label: `Tipo: ${tipo}`, onRemove: () => applyTipo('') })
+  if (status) chips.push({ key: 'status', label: `Status: ${status}`, onRemove: () => applyStatus('') })
+  if (dataIni) chips.push({ key: 'ini', label: `De: ${dataIni}`, onRemove: () => applyDataIni('') })
+  if (dataFim) chips.push({ key: 'fim', label: `Até: ${dataFim}`, onRemove: () => applyDataFim('') })
+  if (userIdApplied) chips.push({ key: 'user', label: `User: #${userIdApplied}`, onRemove: () => { setUserIdInput(''); setUserIdApplied(''); setPage(1) } })
+
   return (
     <div>
       <div className="szv2-section-head">
@@ -250,6 +288,11 @@ export default function TpcTransacoes() {
           <p>{total} transação(ões){hasAnyFilter ? ' filtrada(s)' : ' no total'}</p>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
+          <FilterButton
+            active={chips.length > 0}
+            count={chips.length}
+            onClick={openPanel}
+          />
           <button
             type="button"
             className="szv2-btn szv2-btn-secondary"
@@ -260,6 +303,8 @@ export default function TpcTransacoes() {
           </button>
         </div>
       </div>
+
+      <ActiveFilterChips chips={chips} onClearAll={clearAllFilters} />
 
       {err && <div className="sz-alert-danger" style={{ marginBottom: 16 }}>{err}</div>}
       {toast && (
@@ -276,126 +321,76 @@ export default function TpcTransacoes() {
         Para transações COD veja: Transações COD.
       </div>
 
-      {/* Filtros */}
+      {/* Carteira (client-side) — mantido fora do painel pois é toggle visual */}
       <div className="szv2-card" style={{ marginBottom: 16 }}>
-        {/* Carteira (client-side) */}
-        <div style={{ marginBottom: 12 }}>
-          <div style={{ fontSize: 12, color: 'var(--szv2-text-muted)', marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0.5 }}>
-            Carteira
-          </div>
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-            <Chip active={carteira === 'expedicao'} onClick={() => setCarteira('expedicao')} disabled={loading}>
-              Expedição (frete)
-            </Chip>
-            <Chip active={carteira === 'cod'} onClick={() => setCarteira('cod')} disabled={loading}>
-              COD
-            </Chip>
-            <Chip active={carteira === 'todas'} onClick={() => setCarteira('todas')} disabled={loading}>
-              Todas
-            </Chip>
-          </div>
+        <div style={{ fontSize: 12, color: 'var(--szv2-text-muted)', marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+          Carteira
         </div>
-
-        {/* Tipo */}
-        <div style={{ marginBottom: 12 }}>
-          <div style={{ fontSize: 12, color: 'var(--szv2-text-muted)', marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0.5 }}>
-            Tipo
-          </div>
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-            {TIPO_CHIPS.map(c => (
-              <Chip
-                key={c.key || 'all-tipo'}
-                active={tipo === c.key}
-                onClick={() => applyTipo(c.key)}
-                disabled={loading}
-              >
-                {c.label}
-              </Chip>
-            ))}
-          </div>
-        </div>
-
-        {/* Status */}
-        <div style={{ marginBottom: 12 }}>
-          <div style={{ fontSize: 12, color: 'var(--szv2-text-muted)', marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0.5 }}>
-            Status
-          </div>
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-            {STATUS_CHIPS.map(c => (
-              <Chip
-                key={c.key || 'all-status'}
-                active={status === c.key}
-                onClick={() => applyStatus(c.key)}
-                disabled={loading}
-              >
-                {c.label}
-              </Chip>
-            ))}
-          </div>
-        </div>
-
-        {/* Datas + user_id */}
-        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-          <div className="szv2-field" style={{ marginBottom: 0 }}>
-            <label className="szv2-label">Data início</label>
-            <input
-              className="szv2-input"
-              type="date"
-              value={dataIni}
-              onChange={e => applyDataIni(e.target.value)}
-              disabled={loading}
-            />
-          </div>
-          <div className="szv2-field" style={{ marginBottom: 0 }}>
-            <label className="szv2-label">Data fim</label>
-            <input
-              className="szv2-input"
-              type="date"
-              value={dataFim}
-              onChange={e => applyDataFim(e.target.value)}
-              disabled={loading}
-            />
-          </div>
-
-          <form
-            onSubmit={applyUserId}
-            style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flex: 1, minWidth: 240 }}
-          >
-            <div className="szv2-field" style={{ marginBottom: 0, flex: 1 }}>
-              <label className="szv2-label">Usuário (user_id)</label>
-              <input
-                className="szv2-input"
-                type="text"
-                inputMode="numeric"
-                placeholder="ID do WordPress"
-                value={userIdInput}
-                onChange={e => setUserIdInput(e.target.value)}
-                disabled={loading}
-              />
-            </div>
-            <button
-              type="submit"
-              className="szv2-btn szv2-btn-secondary"
-              disabled={loading}
-              style={{ marginBottom: 0 }}
-            >
-              Aplicar
-            </button>
-          </form>
-
-          {hasAnyFilter && (
-            <button
-              type="button"
-              className="szv2-btn szv2-btn-secondary"
-              onClick={clearAllFilters}
-              disabled={loading}
-              style={{ marginBottom: 0 }}
-            >
-              Limpar filtros
-            </button>
-          )}
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          <Chip active={carteira === 'expedicao'} onClick={() => setCarteira('expedicao')} disabled={loading}>
+            Expedição (frete)
+          </Chip>
+          <Chip active={carteira === 'cod'} onClick={() => setCarteira('cod')} disabled={loading}>
+            COD
+          </Chip>
+          <Chip active={carteira === 'todas'} onClick={() => setCarteira('todas')} disabled={loading}>
+            Todas
+          </Chip>
         </div>
       </div>
+
+      <FilterTopPanel
+        open={filterOpen}
+        onClose={() => setFilterOpen(false)}
+        onApply={applyFilters}
+        onClear={clearAllFilters}
+        title="Filtros"
+      >
+        <FilterField label="Data inicial">
+          <input
+            type="date"
+            style={filterInputStyle}
+            value={draftIni}
+            onChange={e => setDraftIni(e.target.value)}
+          />
+        </FilterField>
+        <FilterField label="Data final">
+          <input
+            type="date"
+            style={filterInputStyle}
+            value={draftFim}
+            onChange={e => setDraftFim(e.target.value)}
+          />
+        </FilterField>
+        <FilterField label="Tipo">
+          <select
+            style={filterInputStyle}
+            value={draftTipo}
+            onChange={e => setDraftTipo(e.target.value as TipoFilter)}
+          >
+            {TIPO_CHIPS.map(c => <option key={c.key || 'all-tipo'} value={c.key}>{c.label}</option>)}
+          </select>
+        </FilterField>
+        <FilterField label="Status">
+          <select
+            style={filterInputStyle}
+            value={draftStatus}
+            onChange={e => setDraftStatus(e.target.value as StatusFilter)}
+          >
+            {STATUS_CHIPS.map(c => <option key={c.key || 'all-status'} value={c.key}>{c.label}</option>)}
+          </select>
+        </FilterField>
+        <FilterField label="Busca (user_id)">
+          <input
+            type="search"
+            inputMode="numeric"
+            style={filterInputStyle}
+            placeholder="ID do WordPress"
+            value={draftUser}
+            onChange={e => setDraftUser(e.target.value)}
+          />
+        </FilterField>
+      </FilterTopPanel>
 
       {/* Tabela */}
       <div className="szv2-table-wrap">

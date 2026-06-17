@@ -1,5 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '../api'
+import FilterButton from '../components/FilterButton'
+import FilterTopPanel, {
+  FilterField,
+  filterInputStyle,
+  ActiveFilterChips,
+  type ActiveChip,
+} from '../components/FilterTopPanel'
 
 // ----- Tipos do handler Go ---------------------------------------------------
 
@@ -120,6 +127,14 @@ export default function AuditLogViewer() {
   const [err, setErr] = useState('')
   const [detail, setDetail] = useState<AuditRow | null>(null)
 
+  // Painel de filtros
+  const [filterOpen, setFilterOpen] = useState(false)
+  const [draftFrom, setDraftFrom] = useState(defaults.from)
+  const [draftTo, setDraftTo] = useState(defaults.to)
+  const [draftAction, setDraftAction] = useState('')
+  const [draftOrderID, setDraftOrderID] = useState('')
+  const [draftPortalUserID, setDraftPortalUserID] = useState('')
+
   // ── Carrega lista de actions (filtro) — uma única vez ─────────────────
   useEffect(() => {
     api<{ items: string[] }>('/audit-log/actions')
@@ -172,12 +187,6 @@ export default function AuditLogViewer() {
   // Recarrega stats quando o range muda.
   useEffect(() => { loadStats() }, [dateFrom, dateTo])
 
-  // Helper — qualquer mudança de filtro deve voltar pra página 1.
-  // Quando page já é 1, a mudança não causa fetch extra (mesmo valor).
-  function withResetPage<T>(setter: (v: T) => void) {
-    return (v: T) => { setter(v); setPage(1) }
-  }
-
   function clearFilters() {
     const d = defaultDateRange()
     setDateFrom(d.from)
@@ -186,7 +195,40 @@ export default function AuditLogViewer() {
     setOrderID('')
     setPortalUserID('')
     setPage(1)
+    // Reseta drafts também para refletir no painel ao reabrir.
+    setDraftFrom(d.from)
+    setDraftTo(d.to)
+    setDraftAction('')
+    setDraftOrderID('')
+    setDraftPortalUserID('')
+    setFilterOpen(false)
   }
+
+  function openPanel() {
+    setDraftFrom(dateFrom)
+    setDraftTo(dateTo)
+    setDraftAction(action)
+    setDraftOrderID(orderID)
+    setDraftPortalUserID(portalUserID)
+    setFilterOpen(true)
+  }
+  function applyFilters() {
+    setDateFrom(draftFrom)
+    setDateTo(draftTo)
+    setAction(draftAction)
+    setOrderID(draftOrderID)
+    setPortalUserID(draftPortalUserID)
+    setPage(1)
+    setFilterOpen(false)
+  }
+
+  // Chips ativos.
+  const chips: ActiveChip[] = []
+  if (dateFrom !== defaults.from) chips.push({ key: 'from', label: `De: ${dateFrom}`, onRemove: () => { setDateFrom(defaults.from); setPage(1) } })
+  if (dateTo !== defaults.to) chips.push({ key: 'to', label: `Até: ${dateTo}`, onRemove: () => { setDateTo(defaults.to); setPage(1) } })
+  if (action) chips.push({ key: 'action', label: `Ação: ${actionLabel(action)}`, onRemove: () => { setAction(''); setPage(1) } })
+  if (orderID) chips.push({ key: 'order', label: `Order: #${orderID}`, onRemove: () => { setOrderID(''); setPage(1) } })
+  if (portalUserID) chips.push({ key: 'user', label: `User: #${portalUserID}`, onRemove: () => { setPortalUserID(''); setPage(1) } })
 
   const totalPages = Math.max(1, Math.ceil(total / perPage))
   const topStats = stats.slice(0, 5)
@@ -198,81 +240,73 @@ export default function AuditLogViewer() {
           <h1>Auditoria do Portal</h1>
           <p>{total} registro(s) — ações de usuários do portal</p>
         </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <FilterButton
+            active={chips.length > 0}
+            count={chips.length}
+            onClick={openPanel}
+          />
+        </div>
       </div>
+
+      <ActiveFilterChips chips={chips} onClearAll={clearFilters} />
 
       {err && <div className="sz-alert-danger" style={{ marginBottom: 16 }}>{err}</div>}
 
-      {/* ── Top bar: filtros ─────────────────────────────────────────── */}
-      <div className="szv2-card" style={{ marginBottom: 16 }}>
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(6, minmax(120px, 1fr)) auto',
-            gap: 12,
-            alignItems: 'end',
-          }}
-        >
-          <div className="szv2-field">
-            <label className="szv2-label">De</label>
-            <input
-              type="date"
-              className="szv2-input"
-              value={dateFrom}
-              onChange={e => withResetPage(setDateFrom)(e.target.value)}
-            />
-          </div>
-          <div className="szv2-field">
-            <label className="szv2-label">Até</label>
-            <input
-              type="date"
-              className="szv2-input"
-              value={dateTo}
-              onChange={e => withResetPage(setDateTo)(e.target.value)}
-            />
-          </div>
-          <div className="szv2-field">
-            <label className="szv2-label">Action</label>
-            <select
-              className="szv2-select"
-              value={action}
-              onChange={e => withResetPage(setAction)(e.target.value)}
-            >
-              <option value="">Todas</option>
-              {actionOpts.map(a => (
-                <option key={a} value={a}>{actionLabel(a)}</option>
-              ))}
-            </select>
-          </div>
-          <div className="szv2-field">
-            <label className="szv2-label">Order ID</label>
-            <input
-              type="number"
-              className="szv2-input"
-              value={orderID}
-              onChange={e => withResetPage(setOrderID)(e.target.value)}
-              placeholder="ex.: 1234"
-            />
-          </div>
-          <div className="szv2-field">
-            <label className="szv2-label">Portal user ID</label>
-            <input
-              type="number"
-              className="szv2-input"
-              value={portalUserID}
-              onChange={e => withResetPage(setPortalUserID)(e.target.value)}
-              placeholder="ex.: 42"
-            />
-          </div>
-          <div />
-          <button
-            type="button"
-            className="szv2-btn szv2-btn-secondary"
-            onClick={clearFilters}
+      <FilterTopPanel
+        open={filterOpen}
+        onClose={() => setFilterOpen(false)}
+        onApply={applyFilters}
+        onClear={clearFilters}
+        title="Filtros"
+      >
+        <FilterField label="Data inicial">
+          <input
+            type="date"
+            style={filterInputStyle}
+            value={draftFrom}
+            onChange={e => setDraftFrom(e.target.value)}
+          />
+        </FilterField>
+        <FilterField label="Data final">
+          <input
+            type="date"
+            style={filterInputStyle}
+            value={draftTo}
+            onChange={e => setDraftTo(e.target.value)}
+          />
+        </FilterField>
+        <FilterField label="Ação">
+          <select
+            style={filterInputStyle}
+            value={draftAction}
+            onChange={e => setDraftAction(e.target.value)}
           >
-            Limpar filtros
-          </button>
-        </div>
-      </div>
+            <option value="">Todas</option>
+            {actionOpts.map(a => (
+              <option key={a} value={a}>{actionLabel(a)}</option>
+            ))}
+          </select>
+        </FilterField>
+        <FilterField label="Order ID">
+          <input
+            type="number"
+            style={filterInputStyle}
+            value={draftOrderID}
+            onChange={e => setDraftOrderID(e.target.value)}
+            placeholder="ex.: 1234"
+          />
+        </FilterField>
+        <FilterField label="Portal user ID (ator)">
+          <input
+            type="number"
+            style={filterInputStyle}
+            value={draftPortalUserID}
+            onChange={e => setDraftPortalUserID(e.target.value)}
+            placeholder="ex.: 42"
+          />
+        </FilterField>
+      </FilterTopPanel>
 
       {/* ── Stats banner (top 5 actions) ─────────────────────────────── */}
       {topStats.length > 0 && (

@@ -53,6 +53,38 @@ type orderCustomer struct {
 	Email    string `json:"email"`
 	Telefone string `json:"telefone"`
 	CPF      string `json:"cpf"`
+	RG       string `json:"rg"`
+}
+
+// orderMarketing — bloco UTM / referrer / landing extraído de sz_order_meta.
+// Tipicamente populado pelo plugin WP a partir dos cookies/sessão na conversão.
+type orderMarketing struct {
+	UTMSource   string `json:"utm_source"`
+	UTMMedium   string `json:"utm_medium"`
+	UTMCampaign string `json:"utm_campaign"`
+	UTMTerm     string `json:"utm_term"`
+	UTMContent  string `json:"utm_content"`
+	Referrer    string `json:"referrer"`
+	Landing     string `json:"landing_page"`
+}
+
+// orderFiscal — bloco NF-e a partir de sz_order_meta (chave/numero/serie/status/url).
+// Não expõe _nfe_xml nem _cfe_id (estes são lidos só pra validar presença, se necessário).
+type orderFiscal struct {
+	NFeChave  string `json:"nfe_chave"`
+	NFeNumero string `json:"nfe_numero"`
+	NFeSerie  string `json:"nfe_serie"`
+	NFeURL    string `json:"nfe_url"`
+	NFeStatus string `json:"nfe_status"`
+}
+
+// orderTracking — código de rastreio consolidado.
+// Regra: sz_order_meta._tracking_code vence (permite override manual no portal),
+// só cai pra wc_me_labels.tracking_code se meta vier vazio.
+type orderTracking struct {
+	Code    string `json:"code"`
+	URL     string `json:"url"`
+	Carrier string `json:"carrier"`
 }
 
 type orderAddress struct {
@@ -162,6 +194,8 @@ type motoboySection struct {
 	Exists              bool           `json:"exists"`
 	MotoboyID           *int64         `json:"motoboy_id"`
 	MotoboyNome         string         `json:"motoboy_nome"`
+	MotoboyTelefone     string         `json:"motoboy_telefone"`
+	MotoboyPlaca        string         `json:"motoboy_placa"`
 	CDNome              string         `json:"cd_nome"`
 	ZonaNome            string         `json:"zona_nome"`
 	Status              string         `json:"status"`
@@ -229,6 +263,9 @@ type orderDetailPayload struct {
 	Motoboy   motoboySection   `json:"motoboy"`
 	Affiliate affiliateSection `json:"affiliate"`
 	Label     labelSection     `json:"label"`
+	Marketing orderMarketing   `json:"marketing"`
+	Fiscal    orderFiscal      `json:"fiscal"`
+	Tracking  orderTracking    `json:"tracking"`
 }
 
 // ── GET /orders/{id} ──────────────────────────────────────────────────────────
@@ -281,12 +318,104 @@ func (h *OrderDetailHandler) Get(w http.ResponseWriter, r *http.Request) {
 	aff := h.loadAffiliateSection(ctx, id)
 	lab := h.loadLabelSection(ctx, wcOrderID)
 
+	// 4) Blocos sz_order_meta — marketing, fiscal, tracking. Tudo opcional.
+	mk := h.loadMarketingSection(ctx, id)
+	fs := h.loadFiscalSection(ctx, id)
+	// Tracking: meta wins, label-fallback. Recebe TrackingCode da label como fallback.
+	var labelTC string
+	if lab.TrackingCode != nil {
+		labelTC = *lab.TrackingCode
+	}
+	tr := h.loadTrackingSection(ctx, id, labelTC)
+
 	httpx.JSON(w, 200, orderDetailPayload{
 		Order:     head,
 		Motoboy:   mot,
 		Affiliate: aff,
 		Label:     lab,
+		Marketing: mk,
+		Fiscal:    fs,
+		Tracking:  tr,
 	})
+}
+
+// loadOrderMetaMap — lê várias chaves de sz_order_meta em UMA query.
+// Retorna map[meta_key]meta_value; chaves ausentes simplesmente não aparecem.
+// pgx/v5 aceita []string nativo pra ANY($2::text[]) — sem wrapper necessário.
+func (h *OrderDetailHandler) loadOrderMetaMap(ctx context.Context, orderID int64, keys []string) map[string]string {
+	out := map[string]string{}
+	if !h.tableExists(ctx, "sz_order_meta") || len(keys) == 0 {
+		return out
+	}
+	rows, err := h.Pool.Query(ctx,
+		`SELECT meta_key, COALESCE(meta_value,'')
+		 FROM sz_order_meta
+		 WHERE order_id = $1 AND meta_key = ANY($2::text[])`,
+		orderID, keys)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err == nil {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// loadMarketingSection — UTM + referrer + landing.
+func (h *OrderDetailHandler) loadMarketingSection(ctx context.Context, orderID int64) orderMarketing {
+	keys := []string{
+		"_utm_source", "_utm_medium", "_utm_campaign",
+		"_utm_term", "_utm_content", "_referrer", "_landing_page",
+	}
+	m := h.loadOrderMetaMap(ctx, orderID, keys)
+	return orderMarketing{
+		UTMSource:   m["_utm_source"],
+		UTMMedium:   m["_utm_medium"],
+		UTMCampaign: m["_utm_campaign"],
+		UTMTerm:     m["_utm_term"],
+		UTMContent:  m["_utm_content"],
+		Referrer:    m["_referrer"],
+		Landing:     m["_landing_page"],
+	}
+}
+
+// loadFiscalSection — NF-e (chave, número, série, URL, status). _nfe_xml e _cfe_id
+// estão na lista de keys só para detecção futura — não são expostos no payload.
+func (h *OrderDetailHandler) loadFiscalSection(ctx context.Context, orderID int64) orderFiscal {
+	keys := []string{
+		"_nfe_chave", "_nfe_numero", "_nfe_serie",
+		"_nfe_url", "_nfe_xml", "_nfe_status", "_cfe_id",
+	}
+	m := h.loadOrderMetaMap(ctx, orderID, keys)
+	return orderFiscal{
+		NFeChave:  m["_nfe_chave"],
+		NFeNumero: m["_nfe_numero"],
+		NFeSerie:  m["_nfe_serie"],
+		NFeURL:    m["_nfe_url"],
+		NFeStatus: m["_nfe_status"],
+	}
+}
+
+// loadTrackingSection — código, URL e transportadora do rastreio consolidado.
+// Regra de precedência: sz_order_meta vence wc_me_labels (permite override manual
+// no portal V2 sem regerar etiqueta). labelTC é fallback recebido do caller.
+func (h *OrderDetailHandler) loadTrackingSection(ctx context.Context, orderID int64, labelTC string) orderTracking {
+	keys := []string{"_tracking_code", "_tracking_url", "_tracking_carrier"}
+	m := h.loadOrderMetaMap(ctx, orderID, keys)
+	tr := orderTracking{
+		Code:    m["_tracking_code"],
+		URL:     m["_tracking_url"],
+		Carrier: m["_tracking_carrier"],
+	}
+	// Fallback no code se meta vier vazia.
+	if tr.Code == "" && labelTC != "" {
+		tr.Code = labelTC
+	}
+	return tr
 }
 
 // loadOrderHead — cabeçalho a partir de sz_orders. Retorna ErrNoRows se ausente.
@@ -480,15 +609,24 @@ func (h *OrderDetailHandler) loadOrderCustomer(ctx context.Context, orderID int6
 			 LIMIT 1`, orderID,
 		).Scan(&c.Nome, &c.Email, &c.Telefone)
 	}
-	// CPF é opcional — busca em sz_order_meta se existir (legacy _billing_cpf).
+	// CPF e RG são opcionais — busca em sz_order_meta. Uma query só, retorna mapa.
 	if h.tableExists(ctx, "sz_order_meta") {
-		_ = h.Pool.QueryRow(ctx,
-			`SELECT COALESCE(meta_value,'')
-			 FROM sz_order_meta
-			 WHERE order_id = $1
-			   AND meta_key IN ('_billing_cpf','_billing_doc','cpf','document')
-			 ORDER BY id ASC LIMIT 1`, orderID,
-		).Scan(&c.CPF)
+		keys := []string{"_billing_cpf", "_billing_doc", "cpf", "document", "_billing_rg", "rg"}
+		m := h.loadOrderMetaMap(ctx, orderID, keys)
+		// CPF: primeira chave não-vazia segue a ordem original (cpf canonical).
+		for _, k := range []string{"_billing_cpf", "_billing_doc", "cpf", "document"} {
+			if v := m[k]; v != "" {
+				c.CPF = v
+				break
+			}
+		}
+		// RG: chaves diretas.
+		for _, k := range []string{"_billing_rg", "rg"} {
+			if v := m[k]; v != "" {
+				c.RG = v
+				break
+			}
+		}
 	}
 	return c
 }
@@ -506,10 +644,12 @@ func (h *OrderDetailHandler) loadMotoboySection(ctx context.Context, wcOrderID i
 	hasCDs := h.tableExists(ctx, "sz_motoboy_cds")
 	hasZonas := h.tableExists(ctx, "sz_motoboy_zonas")
 
-	motNome := `''::text AS motoboy_nome`
+	motNome := `''::text AS motoboy_nome, ''::text AS motoboy_tel, ''::text AS motoboy_placa`
 	motJoin := ""
 	if hasMotoboys {
-		motNome = `COALESCE(m.nome,'') AS motoboy_nome`
+		motNome = `COALESCE(m.nome,'') AS motoboy_nome,
+		           COALESCE(m.telefone,'') AS motoboy_tel,
+		           COALESCE(m.placa,'') AS motoboy_placa`
 		motJoin = `LEFT JOIN sz_motoboys m ON m.id = mp.motoboy_id`
 	}
 	cdNome := `''::text AS cd_nome`
@@ -554,7 +694,8 @@ func (h *OrderDetailHandler) loadMotoboySection(ctx context.Context, wcOrderID i
 		 WHERE mp.wc_order_id = $1
 		 LIMIT 1`, wcOrderID,
 	).Scan(
-		&pedidoID, &out.MotoboyID, &out.MotoboyNome, &out.CDNome, &out.ZonaNome,
+		&pedidoID, &out.MotoboyID, &out.MotoboyNome, &out.MotoboyTelefone, &out.MotoboyPlaca,
+		&out.CDNome, &out.ZonaNome,
 		&out.Status, &out.DestProduto,
 		&out.ValorPedido, &out.PgtoDinheiro, &out.PgtoPix, &out.PgtoCartao,
 		&out.RecebedorNome, &out.RecebedorTipo, &out.RecebedorCPF,

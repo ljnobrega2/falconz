@@ -1,5 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '../api'
+import FilterButton from '../components/FilterButton'
+import FilterTopPanel, {
+  FilterField,
+  filterInputStyle,
+  ActiveFilterChips,
+  type ActiveChip,
+} from '../components/FilterTopPanel'
 
 type L = { id: number; wc_order_id: number; me_shipment_id: string | null; status: string; service_name: string | null; tracking_code: string | null; created_at: string }
 
@@ -24,11 +31,20 @@ export default function Labels() {
   const init = useMemo(defaultRange, [])
   const [items, setItems] = useState<L[]>([])
   const [total, setTotal] = useState(0)
+
+  // Filtros aplicados.
   const [status, setStatus] = useState('')
   const [dataIni, setDataIni] = useState(init.ini)
   const [dataFim, setDataFim] = useState(init.fim)
   const [q, setQ] = useState('')
   const [err, setErr] = useState('')
+
+  // Drafts dentro do painel.
+  const [draftStatus, setDraftStatus] = useState('')
+  const [draftIni, setDraftIni] = useState(init.ini)
+  const [draftFim, setDraftFim] = useState(init.fim)
+  const [draftQ, setDraftQ] = useState('')
+  const [filterOpen, setFilterOpen] = useState(false)
 
   function buildQs() {
     const p = new URLSearchParams()
@@ -47,12 +63,25 @@ export default function Labels() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status, dataIni, dataFim, q])
 
-  function limpar() {
-    setStatus('')
-    setDataIni(init.ini)
-    setDataFim(init.fim)
-    setQ('')
+  function openPanel() {
+    setDraftStatus(status); setDraftIni(dataIni); setDraftFim(dataFim); setDraftQ(q)
+    setFilterOpen(true)
   }
+  function applyFilters() {
+    setStatus(draftStatus); setDataIni(draftIni); setDataFim(draftFim); setQ(draftQ)
+    setFilterOpen(false)
+  }
+  function clearFilters() {
+    setStatus(''); setDataIni(init.ini); setDataFim(init.fim); setQ('')
+    setDraftStatus(''); setDraftIni(init.ini); setDraftFim(init.fim); setDraftQ('')
+    setFilterOpen(false)
+  }
+
+  const chips: ActiveChip[] = []
+  if (status) chips.push({ key: 'status', label: `Status: ${status}`, onRemove: () => setStatus('') })
+  if (dataIni !== init.ini) chips.push({ key: 'ini', label: `De: ${dataIni}`, onRemove: () => setDataIni(init.ini) })
+  if (dataFim !== init.fim) chips.push({ key: 'fim', label: `Até: ${dataFim}`, onRemove: () => setDataFim(init.fim) })
+  if (q) chips.push({ key: 'q', label: `Busca: ${q}`, onRemove: () => setQ('') })
 
   return (
     <div>
@@ -61,61 +90,16 @@ export default function Labels() {
           <h1>Etiquetas Melhor Envio</h1>
           <p>{total} etiquetas no total</p>
         </div>
-      </div>
-
-      {/* Filtros */}
-      <div className="szv2-card" style={{ marginBottom: 16 }}>
-        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-          <div className="szv2-field">
-            <label className="szv2-label">De</label>
-            <input
-              type="date"
-              className="szv2-input"
-              value={dataIni}
-              onChange={e => setDataIni(e.target.value)}
-              max={dataFim}
-              style={{ width: 160 }}
-            />
-          </div>
-          <div className="szv2-field">
-            <label className="szv2-label">Até</label>
-            <input
-              type="date"
-              className="szv2-input"
-              value={dataFim}
-              onChange={e => setDataFim(e.target.value)}
-              min={dataIni}
-              style={{ width: 160 }}
-            />
-          </div>
-          <div className="szv2-field">
-            <label className="szv2-label">Status</label>
-            <select
-              className="szv2-select"
-              style={{ width: 180 }}
-              value={status}
-              onChange={e => setStatus(e.target.value)}
-            >
-              <option value="">Todos status</option>
-              {Object.keys(ST_CLS).map(s => <option key={s} value={s}>{s}</option>)}
-            </select>
-          </div>
-          <div className="szv2-field">
-            <label className="szv2-label">Busca</label>
-            <input
-              type="search"
-              className="szv2-input"
-              placeholder="pedido ou rastreio"
-              style={{ width: 200 }}
-              value={q}
-              onChange={e => setQ(e.target.value)}
-            />
-          </div>
-          <button className="szv2-btn szv2-btn-secondary" onClick={limpar}>
-            Limpar filtros
-          </button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <FilterButton
+            active={chips.length > 0}
+            count={chips.length}
+            onClick={openPanel}
+          />
         </div>
       </div>
+
+      <ActiveFilterChips chips={chips} onClearAll={clearFilters} />
 
       {err && <div className="sz-alert-danger">{err}</div>}
 
@@ -154,6 +138,52 @@ export default function Labels() {
           </tbody>
         </table>
       </div>
+
+      <FilterTopPanel
+        open={filterOpen}
+        onClose={() => setFilterOpen(false)}
+        onApply={applyFilters}
+        onClear={clearFilters}
+        title="Filtros"
+      >
+        <FilterField label="Data inicial">
+          <input
+            type="date"
+            style={filterInputStyle}
+            value={draftIni}
+            max={draftFim}
+            onChange={e => setDraftIni(e.target.value)}
+          />
+        </FilterField>
+        <FilterField label="Data final">
+          <input
+            type="date"
+            style={filterInputStyle}
+            value={draftFim}
+            min={draftIni}
+            onChange={e => setDraftFim(e.target.value)}
+          />
+        </FilterField>
+        <FilterField label="Status">
+          <select
+            style={filterInputStyle}
+            value={draftStatus}
+            onChange={e => setDraftStatus(e.target.value)}
+          >
+            <option value="">Todos status</option>
+            {Object.keys(ST_CLS).map(s => <option key={s} value={s}>{s}</option>)}
+          </select>
+        </FilterField>
+        <FilterField label="Busca">
+          <input
+            type="search"
+            style={filterInputStyle}
+            placeholder="Pedido ou rastreio"
+            value={draftQ}
+            onChange={e => setDraftQ(e.target.value)}
+          />
+        </FilterField>
+      </FilterTopPanel>
     </div>
   )
 }

@@ -7,6 +7,13 @@
 
 import { useEffect, useState } from 'react'
 import { api } from '../api'
+import FilterButton from '../components/FilterButton'
+import FilterTopPanel, {
+  FilterField,
+  filterInputStyle,
+  ActiveFilterChips,
+  type ActiveChip,
+} from '../components/FilterTopPanel'
 
 // ─── Tipos ────────────────────────────────────────────────────────────────
 
@@ -103,6 +110,13 @@ export default function MotoboySaques() {
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState('')
 
+  // Painel
+  const [filterOpen, setFilterOpen] = useState(false)
+  const [draftFrom, setDraftFrom] = useState(from)
+  const [draftTo, setDraftTo] = useState(to)
+  const [draftStatus, setDraftStatus] = useState<StatusFiltro>(status)
+  const [draftMotoboyID, setDraftMotoboyID] = useState(motoboyID)
+
   async function load() {
     setLoading(true)
     setErr('')
@@ -134,6 +148,26 @@ export default function MotoboySaques() {
     load()
   }
 
+  function openPanel() {
+    setDraftFrom(from); setDraftTo(to); setDraftStatus(status); setDraftMotoboyID(motoboyID)
+    setFilterOpen(true)
+  }
+  function applyFilters() {
+    setFrom(draftFrom); setTo(draftTo); setStatus(draftStatus); setMotoboyID(draftMotoboyID)
+    setFilterOpen(false)
+  }
+  function clearFilters() {
+    const def_from = daysAgoISO(30); const def_to = todayISO()
+    setFrom(def_from); setTo(def_to); setStatus(''); setMotoboyID('')
+    setDraftFrom(def_from); setDraftTo(def_to); setDraftStatus(''); setDraftMotoboyID('')
+    setFilterOpen(false)
+  }
+  const chips: ActiveChip[] = []
+  if (from !== daysAgoISO(30)) chips.push({ key: 'from', label: `De: ${from}`, onRemove: () => setFrom(daysAgoISO(30)) })
+  if (to !== todayISO()) chips.push({ key: 'to', label: `Até: ${to}`, onRemove: () => setTo(todayISO()) })
+  if (status) chips.push({ key: 'status', label: `Status: ${status}`, onRemove: () => setStatus('') })
+  if (motoboyID) chips.push({ key: 'mb', label: `Motoboy: #${motoboyID}`, onRemove: () => setMotoboyID('') })
+
   const kpis = summary ?? {
     total_pago: 0,
     total_aguardando: 0,
@@ -143,6 +177,22 @@ export default function MotoboySaques() {
 
   return (
     <div>
+      <div className="szv2-section-head">
+        <div>
+          <h1>Saques / pagamentos</h1>
+          <p>Fila de pedidos de saque dos motoboys. Solicitações criadas pelo PWA aparecem como aguardando.</p>
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <FilterButton
+            active={chips.length > 0}
+            count={chips.length}
+            onClick={openPanel}
+          />
+        </div>
+      </div>
+
+      <ActiveFilterChips chips={chips} onClearAll={clearFilters} />
+
       {err && <div className="sz-alert-danger" style={{ marginBottom: 16 }}>{err}</div>}
 
       {/* 4 KPI cards */}
@@ -181,83 +231,48 @@ export default function MotoboySaques() {
         />
       </div>
 
-      {/* Top bar */}
-      <div className="szv2-card" style={{ marginBottom: 16 }}>
-        <div className="szv2-card-head" style={{ flexWrap: 'wrap', gap: 12 }}>
-          <div>
-            <h2>Saques / pagamentos</h2>
-            <p className="szv2-card-sub">
-              Fila de pedidos de saque dos motoboys. Solicitações criadas pelo PWA aparecem como aguardando.
-            </p>
-          </div>
-        </div>
-
-        <form
-          onSubmit={handleApply}
-          style={{
-            display: 'flex',
-            flexWrap: 'wrap',
-            gap: 12,
-            alignItems: 'flex-end',
-            padding: '12px 0 4px',
-          }}
-        >
-          <div className="szv2-field" style={{ minWidth: 150 }}>
-            <label className="szv2-label">De</label>
-            <input
-              type="date"
-              className="szv2-input"
-              value={from}
-              onChange={(e) => setFrom(e.target.value)}
-              disabled={loading}
-            />
-          </div>
-          <div className="szv2-field" style={{ minWidth: 150 }}>
-            <label className="szv2-label">Até</label>
-            <input
-              type="date"
-              className="szv2-input"
-              value={to}
-              onChange={(e) => setTo(e.target.value)}
-              disabled={loading}
-            />
-          </div>
-          <div className="szv2-field" style={{ minWidth: 140 }}>
-            <label className="szv2-label">Motoboy (ID)</label>
-            <input
-              type="number"
-              className="szv2-input"
-              placeholder="ID do motoboy"
-              value={motoboyID}
-              onChange={(e) => setMotoboyID(e.target.value)}
-              disabled={loading}
-            />
-          </div>
-          <button
-            type="submit"
-            className="szv2-btn szv2-btn-brand"
-            disabled={loading}
-            style={{ marginLeft: 'auto' }}
+      <FilterTopPanel
+        open={filterOpen}
+        onClose={() => setFilterOpen(false)}
+        onApply={applyFilters}
+        onClear={clearFilters}
+        title="Filtros"
+      >
+        <FilterField label="Data inicial">
+          <input
+            type="date"
+            style={filterInputStyle}
+            value={draftFrom}
+            onChange={e => setDraftFrom(e.target.value)}
+          />
+        </FilterField>
+        <FilterField label="Data final">
+          <input
+            type="date"
+            style={filterInputStyle}
+            value={draftTo}
+            onChange={e => setDraftTo(e.target.value)}
+          />
+        </FilterField>
+        <FilterField label="Status">
+          <select
+            style={filterInputStyle}
+            value={draftStatus}
+            onChange={e => setDraftStatus(e.target.value as StatusFiltro)}
           >
-            Filtrar
-          </button>
-        </form>
-
-        <div className="szv2-chip-group" style={{ marginTop: 12 }}>
-          {STATUS_FILTERS.map(f => (
-            <button
-              key={f.key || 'all'}
-              type="button"
-              className="szv2-chip"
-              aria-pressed={status === f.key}
-              onClick={() => setStatus(f.key)}
-              disabled={loading}
-            >
-              {f.label}
-            </button>
-          ))}
-        </div>
-      </div>
+            {STATUS_FILTERS.map(f => <option key={f.key || 'all'} value={f.key}>{f.label}</option>)}
+          </select>
+        </FilterField>
+        <FilterField label="Motoboy (ID) / Busca">
+          <input
+            type="search"
+            style={filterInputStyle}
+            placeholder="ID do motoboy"
+            value={draftMotoboyID}
+            onChange={e => setDraftMotoboyID(e.target.value)}
+          />
+        </FilterField>
+      </FilterTopPanel>
 
       {/* Tabela */}
       <div className="szv2-card">

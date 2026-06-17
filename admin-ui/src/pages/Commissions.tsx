@@ -1,5 +1,12 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api'
+import FilterButton from '../components/FilterButton'
+import FilterTopPanel, {
+  FilterField,
+  filterInputStyle,
+  ActiveFilterChips,
+  type ActiveChip,
+} from '../components/FilterTopPanel'
 
 type Aff = {
   id: number
@@ -58,6 +65,18 @@ export default function Commissions() {
   const [commsDataFim, setCommsDataFim] = useState('')
   const [commsQ, setCommsQ] = useState('')
 
+  // --- Painéis ---
+  const [vincOpen, setVincOpen] = useState(false)
+  const [commsOpen, setCommsOpen] = useState(false)
+
+  // Drafts (aplicados só ao confirmar).
+  const [draftAffsStatus, setDraftAffsStatus] = useState('')
+  const [draftAffsQ, setDraftAffsQ] = useState('')
+  const [draftCommsTipo, setDraftCommsTipo] = useState('')
+  const [draftCommsDataIni, setDraftCommsDataIni] = useState('')
+  const [draftCommsDataFim, setDraftCommsDataFim] = useState('')
+  const [draftCommsQ, setDraftCommsQ] = useState('')
+
   // Carrega vínculos sempre que filtros ou página mudam
   useEffect(() => {
     if (tab !== 'vinculos') return
@@ -89,12 +108,59 @@ export default function Commissions() {
   const affsTotalPages = Math.max(1, Math.ceil(affsTotal / PER_PAGE))
   const commsTotalPages = Math.max(1, Math.ceil(commsTotal / PER_PAGE))
 
+  // ── Helpers de abertura/aplicação/limpeza por aba ───────────────────
+  function openVincPanel() {
+    setDraftAffsStatus(affsStatus); setDraftAffsQ(affsQ)
+    setVincOpen(true)
+  }
+  function applyVinc() {
+    setAffsStatus(draftAffsStatus); setAffsQ(draftAffsQ); setAffsPage(1)
+    setVincOpen(false)
+  }
+  function clearVinc() {
+    setAffsStatus(''); setAffsQ(''); setAffsPage(1)
+    setDraftAffsStatus(''); setDraftAffsQ('')
+    setVincOpen(false)
+  }
+
+  function openCommsPanel() {
+    setDraftCommsTipo(commsTipo); setDraftCommsDataIni(commsDataIni)
+    setDraftCommsDataFim(commsDataFim); setDraftCommsQ(commsQ)
+    setCommsOpen(true)
+  }
+  function applyComms() {
+    setCommsTipo(draftCommsTipo); setCommsDataIni(draftCommsDataIni)
+    setCommsDataFim(draftCommsDataFim); setCommsQ(draftCommsQ); setCommsPage(1)
+    setCommsOpen(false)
+  }
+  function clearComms() {
+    setCommsTipo(''); setCommsDataIni(''); setCommsDataFim(''); setCommsQ(''); setCommsPage(1)
+    setDraftCommsTipo(''); setDraftCommsDataIni(''); setDraftCommsDataFim(''); setDraftCommsQ('')
+    setCommsOpen(false)
+  }
+
+  // Chips ativos por aba.
+  const vincChips: ActiveChip[] = []
+  if (affsStatus) vincChips.push({ key: 'status', label: `Status: ${affsStatus}`, onRemove: () => { setAffsStatus(''); setAffsPage(1) } })
+  if (affsQ) vincChips.push({ key: 'q', label: `Busca: ${affsQ}`, onRemove: () => { setAffsQ(''); setAffsPage(1) } })
+
+  const commsChips: ActiveChip[] = []
+  if (commsTipo) commsChips.push({ key: 'tipo', label: `Tipo: ${commsTipo}`, onRemove: () => { setCommsTipo(''); setCommsPage(1) } })
+  if (commsDataIni) commsChips.push({ key: 'ini', label: `De: ${commsDataIni}`, onRemove: () => { setCommsDataIni(''); setCommsPage(1) } })
+  if (commsDataFim) commsChips.push({ key: 'fim', label: `Até: ${commsDataFim}`, onRemove: () => { setCommsDataFim(''); setCommsPage(1) } })
+  if (commsQ) commsChips.push({ key: 'q', label: `Busca: ${commsQ}`, onRemove: () => { setCommsQ(''); setCommsPage(1) } })
+
   return (
     <div>
       <div className="szv2-section-head">
         <div>
           <h1>Afiliados &amp; Comissões</h1>
           <p>Vínculos e histórico de comissões</p>
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          {tab === 'vinculos'
+            ? <FilterButton active={vincChips.length > 0} count={vincChips.length} onClick={openVincPanel} />
+            : <FilterButton active={commsChips.length > 0} count={commsChips.length} onClick={openCommsPanel} />}
         </div>
       </div>
 
@@ -113,42 +179,7 @@ export default function Commissions() {
       {/* -------- ABA VÍNCULOS -------- */}
       {tab === 'vinculos' && (
         <>
-          {/* Filtros */}
-          <div className="szv2-card" style={{ marginBottom: 16 }}>
-            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-              <div>
-                <label className="szv2-label" style={{ display: 'block', marginBottom: 4 }}>Status</label>
-                <select
-                  className="szv2-select"
-                  style={{ minWidth: 160 }}
-                  value={affsStatus}
-                  onChange={e => { setAffsStatus(e.target.value); setAffsPage(1) }}
-                >
-                  <option value="">Todos status</option>
-                  {VINCULOS_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
-                </select>
-              </div>
-              <div>
-                <label className="szv2-label" style={{ display: 'block', marginBottom: 4 }}>Buscar afiliado / produtor</label>
-                <input
-                  type="text"
-                  className="szv2-input"
-                  placeholder="Nome…"
-                  style={{ minWidth: 200 }}
-                  value={affsQ}
-                  onChange={e => { setAffsQ(e.target.value); setAffsPage(1) }}
-                />
-              </div>
-              {(affsStatus || affsQ) && (
-                <button
-                  className="szv2-btn szv2-btn-sm"
-                  onClick={() => { setAffsStatus(''); setAffsQ(''); setAffsPage(1) }}
-                >
-                  Limpar filtros
-                </button>
-              )}
-            </div>
-          </div>
+          <ActiveFilterChips chips={vincChips} onClearAll={clearVinc} />
 
           <div className="szv2-table-wrap">
             <table className="szv2-table">
@@ -216,62 +247,7 @@ export default function Commissions() {
       {/* -------- ABA COMISSÕES -------- */}
       {tab === 'comissoes' && (
         <>
-          {/* Filtros */}
-          <div className="szv2-card" style={{ marginBottom: 16 }}>
-            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-              <div>
-                <label className="szv2-label" style={{ display: 'block', marginBottom: 4 }}>Tipo</label>
-                <select
-                  className="szv2-select"
-                  style={{ minWidth: 160 }}
-                  value={commsTipo}
-                  onChange={e => { setCommsTipo(e.target.value); setCommsPage(1) }}
-                >
-                  <option value="">Todos os tipos</option>
-                  <option value="commission">commission</option>
-                  <option value="penalty">penalty</option>
-                  <option value="approval">approval</option>
-                </select>
-              </div>
-              <div>
-                <label className="szv2-label" style={{ display: 'block', marginBottom: 4 }}>De</label>
-                <input
-                  type="date"
-                  className="szv2-input"
-                  value={commsDataIni}
-                  onChange={e => { setCommsDataIni(e.target.value); setCommsPage(1) }}
-                />
-              </div>
-              <div>
-                <label className="szv2-label" style={{ display: 'block', marginBottom: 4 }}>Até</label>
-                <input
-                  type="date"
-                  className="szv2-input"
-                  value={commsDataFim}
-                  onChange={e => { setCommsDataFim(e.target.value); setCommsPage(1) }}
-                />
-              </div>
-              <div>
-                <label className="szv2-label" style={{ display: 'block', marginBottom: 4 }}>Buscar afiliado / produtor</label>
-                <input
-                  type="text"
-                  className="szv2-input"
-                  placeholder="Nome…"
-                  style={{ minWidth: 200 }}
-                  value={commsQ}
-                  onChange={e => { setCommsQ(e.target.value); setCommsPage(1) }}
-                />
-              </div>
-              {(commsTipo || commsDataIni || commsDataFim || commsQ) && (
-                <button
-                  className="szv2-btn szv2-btn-sm"
-                  onClick={() => { setCommsTipo(''); setCommsDataIni(''); setCommsDataFim(''); setCommsQ(''); setCommsPage(1) }}
-                >
-                  Limpar filtros
-                </button>
-              )}
-            </div>
-          </div>
+          <ActiveFilterChips chips={commsChips} onClearAll={clearComms} />
 
           <div className="szv2-table-wrap">
             <table className="szv2-table">
@@ -349,6 +325,82 @@ export default function Commissions() {
           </div>
         </>
       )}
+
+      {/* Painel — Vínculos */}
+      <FilterTopPanel
+        open={vincOpen}
+        onClose={() => setVincOpen(false)}
+        onApply={applyVinc}
+        onClear={clearVinc}
+        title="Filtros — Vínculos"
+      >
+        <FilterField label="Status">
+          <select
+            style={filterInputStyle}
+            value={draftAffsStatus}
+            onChange={e => setDraftAffsStatus(e.target.value)}
+          >
+            <option value="">Todos status</option>
+            {VINCULOS_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
+          </select>
+        </FilterField>
+        <FilterField label="Busca (afiliado / produtor)">
+          <input
+            type="search"
+            style={filterInputStyle}
+            placeholder="Nome…"
+            value={draftAffsQ}
+            onChange={e => setDraftAffsQ(e.target.value)}
+          />
+        </FilterField>
+      </FilterTopPanel>
+
+      {/* Painel — Comissões */}
+      <FilterTopPanel
+        open={commsOpen}
+        onClose={() => setCommsOpen(false)}
+        onApply={applyComms}
+        onClear={clearComms}
+        title="Filtros — Comissões"
+      >
+        <FilterField label="Data inicial">
+          <input
+            type="date"
+            style={filterInputStyle}
+            value={draftCommsDataIni}
+            onChange={e => setDraftCommsDataIni(e.target.value)}
+          />
+        </FilterField>
+        <FilterField label="Data final">
+          <input
+            type="date"
+            style={filterInputStyle}
+            value={draftCommsDataFim}
+            onChange={e => setDraftCommsDataFim(e.target.value)}
+          />
+        </FilterField>
+        <FilterField label="Tipo">
+          <select
+            style={filterInputStyle}
+            value={draftCommsTipo}
+            onChange={e => setDraftCommsTipo(e.target.value)}
+          >
+            <option value="">Todos os tipos</option>
+            <option value="commission">commission</option>
+            <option value="penalty">penalty</option>
+            <option value="approval">approval</option>
+          </select>
+        </FilterField>
+        <FilterField label="Busca (afiliado / produtor)">
+          <input
+            type="search"
+            style={filterInputStyle}
+            placeholder="Nome…"
+            value={draftCommsQ}
+            onChange={e => setDraftCommsQ(e.target.value)}
+          />
+        </FilterField>
+      </FilterTopPanel>
     </div>
   )
 }

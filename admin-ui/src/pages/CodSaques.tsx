@@ -6,6 +6,13 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api'
+import FilterButton from '../components/FilterButton'
+import FilterTopPanel, {
+  FilterField,
+  filterInputStyle,
+  ActiveFilterChips,
+  type ActiveChip,
+} from '../components/FilterTopPanel'
 
 // ─── Tipos ────────────────────────────────────────────────────────────────
 
@@ -241,6 +248,18 @@ export default function CodSaques() {
   const [toast, setToast] = useState<{ kind: 'ok' | 'err'; msg: string } | null>(null)
   const [modal, setModal] = useState<ActionTarget>({ id: 0, kind: null })
 
+  // Filtros adicionais (data + busca) — aplicados client-side sobre prodItems/affItems.
+  const [dateFrom, setDateFrom] = useState('')
+  const [dateTo, setDateTo] = useState('')
+  const [q, setQ] = useState('')
+
+  // Painel
+  const [filterOpen, setFilterOpen] = useState(false)
+  const [draftFilter, setDraftFilter] = useState<FilterKey>('')
+  const [draftFrom, setDraftFrom] = useState('')
+  const [draftTo, setDraftTo] = useState('')
+  const [draftQ, setDraftQ] = useState('')
+
   // Toast com timeout único.
   function showToast(kind: 'ok' | 'err', msg: string) {
     setToast({ kind, msg })
@@ -388,6 +407,52 @@ export default function CodSaques() {
     return null
   }, [tab, prodItems, affItems])
 
+  // Aplica filtros client-side de data + busca por nome/email.
+  function inRange(created: string): boolean {
+    if (!dateFrom && !dateTo) return true
+    const d = created.slice(0, 10)
+    if (dateFrom && d < dateFrom) return false
+    if (dateTo && d > dateTo) return false
+    return true
+  }
+  function matchProd(p: ProducerWithdrawal): boolean {
+    if (!inRange(p.created_at)) return false
+    if (!q) return true
+    const needle = q.toLowerCase()
+    return [p.user_email, p.holder_name, p.holder_cpf].some(s => (s || '').toLowerCase().includes(needle))
+  }
+  function matchAff(a: AffiliateWithdrawal): boolean {
+    if (!inRange(a.created_at)) return false
+    if (!q) return true
+    const needle = q.toLowerCase()
+    return (a.affiliate_name || '').toLowerCase().includes(needle)
+  }
+  const visibleProd = prodItems.filter(matchProd)
+  const visibleAff = affItems.filter(matchAff)
+
+  function openPanel() {
+    setDraftFilter(filter); setDraftFrom(dateFrom); setDraftTo(dateTo); setDraftQ(q)
+    setFilterOpen(true)
+  }
+  function applyFilters() {
+    setFilter(draftFilter); setDateFrom(draftFrom); setDateTo(draftTo); setQ(draftQ)
+    setFilterOpen(false)
+  }
+  function clearFilters() {
+    setFilter(''); setDateFrom(''); setDateTo(''); setQ('')
+    setDraftFilter(''); setDraftFrom(''); setDraftTo(''); setDraftQ('')
+    setFilterOpen(false)
+  }
+
+  // Chips ativos (só aparecem nas abas que filtram).
+  const chips: ActiveChip[] = []
+  if (tab !== 'rules') {
+    if (filter) chips.push({ key: 'status', label: `Status: ${FILTER_LABEL[filter]}`, onRemove: () => setFilter('') })
+    if (dateFrom) chips.push({ key: 'from', label: `De: ${dateFrom}`, onRemove: () => setDateFrom('') })
+    if (dateTo) chips.push({ key: 'to', label: `Até: ${dateTo}`, onRemove: () => setDateTo('') })
+    if (q) chips.push({ key: 'q', label: `Busca: ${q}`, onRemove: () => setQ('') })
+  }
+
   // ─── Render ──────────────────────────────────────────────────────────────
 
   return (
@@ -466,7 +531,13 @@ export default function CodSaques() {
         </div>
       )}
 
-      {/* Filtro chips (somente nas abas de lista) */}
+      {/* Filtros (somente nas abas de lista) */}
+      {tab !== 'rules' && (
+        <>
+          <ActiveFilterChips chips={chips} onClearAll={clearFilters} />
+        </>
+      )}
+
       {tab !== 'rules' && (
         <div className="szv2-card" style={{ marginBottom: 16 }}>
           <div className="szv2-card-head">
@@ -478,27 +549,18 @@ export default function CodSaques() {
                   : 'Aprovar debita a carteira do afiliado e cria uma transação de saída.'}
               </p>
             </div>
-            <div className="szv2-chip-group">
-              {FILTER_ORDER.map(k => (
-                <button
-                  key={k}
-                  type="button"
-                  className="szv2-chip"
-                  aria-pressed={filter === k}
-                  onClick={() => setFilter(k)}
-                  disabled={busy || loading}
-                >
-                  {FILTER_LABEL[k]}
-                </button>
-              ))}
-            </div>
+            <FilterButton
+              active={chips.length > 0}
+              count={chips.length}
+              onClick={openPanel}
+            />
           </div>
 
           {loading ? (
             <div style={{ padding: 48, textAlign: 'center', color: 'var(--szv2-text-muted)' }}>
               Carregando…
             </div>
-          ) : (tab === 'producer' ? prodItems.length : affItems.length) === 0 ? (
+          ) : (tab === 'producer' ? visibleProd.length : visibleAff.length) === 0 ? (
             <div style={{ padding: 48, textAlign: 'center', color: 'var(--szv2-text-muted)' }}>
               Nenhum saque encontrado para este filtro.
             </div>
@@ -519,7 +581,7 @@ export default function CodSaques() {
                   </tr>
                 </thead>
                 <tbody>
-                  {prodItems.map(p => (
+                  {visibleProd.map(p => (
                     <tr key={p.id}>
                       <td><strong>#{p.id}</strong></td>
                       <td>
@@ -597,7 +659,7 @@ export default function CodSaques() {
                   </tr>
                 </thead>
                 <tbody>
-                  {affItems.map(a => (
+                  {visibleAff.map(a => (
                     <tr key={a.id}>
                       <td><strong>#{a.id}</strong></td>
                       <td style={{ fontWeight: 500 }}>{a.affiliate_name || `#${a.affiliate_id}`}</td>
@@ -782,6 +844,49 @@ export default function CodSaques() {
         onClose={closeModal}
         onConfirm={confirmAction}
       />
+
+      <FilterTopPanel
+        open={filterOpen}
+        onClose={() => setFilterOpen(false)}
+        onApply={applyFilters}
+        onClear={clearFilters}
+        title="Filtros"
+      >
+        <FilterField label="Data inicial">
+          <input
+            type="date"
+            style={filterInputStyle}
+            value={draftFrom}
+            onChange={e => setDraftFrom(e.target.value)}
+          />
+        </FilterField>
+        <FilterField label="Data final">
+          <input
+            type="date"
+            style={filterInputStyle}
+            value={draftTo}
+            onChange={e => setDraftTo(e.target.value)}
+          />
+        </FilterField>
+        <FilterField label="Status">
+          <select
+            style={filterInputStyle}
+            value={draftFilter}
+            onChange={e => setDraftFilter(e.target.value as FilterKey)}
+          >
+            {FILTER_ORDER.map(k => <option key={k} value={k}>{FILTER_LABEL[k]}</option>)}
+          </select>
+        </FilterField>
+        <FilterField label="Busca">
+          <input
+            type="search"
+            style={filterInputStyle}
+            placeholder="afiliado / produtor / e-mail"
+            value={draftQ}
+            onChange={e => setDraftQ(e.target.value)}
+          />
+        </FilterField>
+      </FilterTopPanel>
     </div>
   )
 }

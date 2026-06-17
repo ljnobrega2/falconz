@@ -13,6 +13,13 @@
 
 import { useEffect, useState } from 'react'
 import { api, getToken } from '../api'
+import FilterButton from '../components/FilterButton'
+import FilterTopPanel, {
+  FilterField,
+  filterInputStyle,
+  ActiveFilterChips,
+  type ActiveChip,
+} from '../components/FilterTopPanel'
 
 // ─── Tipos ────────────────────────────────────────────────────────────────
 
@@ -122,6 +129,17 @@ export default function MotoboyComprovantes() {
   const [err, setErr]                 = useState('')
   const [toast, setToast]             = useState<{ kind: 'ok' | 'err'; msg: string } | null>(null)
   const [modal, setModal]             = useState<Comprovante | null>(null)
+
+  // Painel de filtros
+  const [filterOpen, setFilterOpen]   = useState(false)
+  const [draftFrom, setDraftFrom]     = useState(from)
+  const [draftTo, setDraftTo]         = useState(to)
+  const [draftTipo, setDraftTipo]     = useState<TipoFiltro>('')
+  const [draftBaixa, setDraftBaixa]   = useState<BaixaPorFiltro>('')
+  const [draftStatusF, setDraftStatusF] = useState<StatusFiltro>('')
+  const [draftZona, setDraftZona]     = useState('')
+  const [draftMotoboyID, setDraftMotoboyID] = useState('')
+  const [draftPedidoBusca, setDraftPedidoBusca] = useState('')
 
   function showToast(kind: 'ok' | 'err', msg: string) {
     setToast({ kind, msg })
@@ -286,6 +304,48 @@ export default function MotoboyComprovantes() {
     }
   }
 
+  // ─── Painel de filtros ────────────────────────────────────────────────────
+  function openPanel() {
+    setDraftFrom(from); setDraftTo(to)
+    setDraftTipo(tipo); setDraftBaixa(baixaPor); setDraftStatusF(statusFiltro)
+    setDraftZona(zonaID); setDraftMotoboyID(motoboyID); setDraftPedidoBusca(pedidoBusca)
+    setFilterOpen(true)
+  }
+  function applyFilters() {
+    setFrom(draftFrom); setTo(draftTo)
+    setTipo(draftTipo); setBaixaPor(draftBaixa); setStatusFiltro(draftStatusF)
+    setZonaID(draftZona); setMotoboyID(draftMotoboyID); setPedidoBusca(draftPedidoBusca)
+    setFilterOpen(false)
+    // useEffect [from, to] dispara reload; reloadGallery direto cobre demais
+    setTimeout(() => { loadStats(); loadGallery() }, 0)
+  }
+  function clearFilters() {
+    const def_from = daysAgoISO(7)
+    const def_to = todayISO()
+    setFrom(def_from); setTo(def_to)
+    setTipo(''); setBaixaPor(''); setStatusFiltro('')
+    setZonaID(''); setMotoboyID(''); setPedidoBusca('')
+    setDraftFrom(def_from); setDraftTo(def_to)
+    setDraftTipo(''); setDraftBaixa(''); setDraftStatusF('')
+    setDraftZona(''); setDraftMotoboyID(''); setDraftPedidoBusca('')
+    setFilterOpen(false)
+  }
+
+  // Helper: ao remover chip, dispara reload já que useEffect só observa [from, to].
+  function triggerReload() {
+    setTimeout(() => { loadStats(); loadGallery() }, 0)
+  }
+  // Chips ativos.
+  const chips: ActiveChip[] = []
+  if (from && from !== daysAgoISO(7)) chips.push({ key: 'from', label: `De: ${from}`, onRemove: () => setFrom(daysAgoISO(7)) })
+  if (to && to !== todayISO()) chips.push({ key: 'to', label: `Até: ${to}`, onRemove: () => setTo(todayISO()) })
+  if (tipo) chips.push({ key: 'tipo', label: `Tipo: ${tipo}`, onRemove: () => { setTipo(''); reloadGallery({ tipo: '' }) } })
+  if (baixaPor) chips.push({ key: 'baixa', label: `Baixa: ${baixaPor}`, onRemove: () => { setBaixaPor(''); reloadGallery({ baixaPor: '' }) } })
+  if (statusFiltro) chips.push({ key: 'status', label: `Status: ${statusFiltro}`, onRemove: () => { setStatusFiltro(''); triggerReload() } })
+  if (zonaID) chips.push({ key: 'zona', label: `Zona: ${zonas.find(z => String(z.id) === zonaID)?.nome || zonaID}`, onRemove: () => { setZonaID(''); triggerReload() } })
+  if (motoboyID) chips.push({ key: 'mb', label: `Motoboy: #${motoboyID}`, onRemove: () => { setMotoboyID(''); triggerReload() } })
+  if (pedidoBusca) chips.push({ key: 'ped', label: `Pedido: #${pedidoBusca}`, onRemove: () => { setPedidoBusca(''); triggerReload() } })
+
   // ─── KPI card helper ──────────────────────────────────────────────────────
   function KpiCard({
     label, value, bg, border, color,
@@ -449,144 +509,28 @@ export default function MotoboyComprovantes() {
       `}</style>
 
       {/* ─── Cabeçalho + filtros ─── */}
-      <div className="szv2-card" style={{ marginBottom: 16 }}>
-        <div className="szv2-card-head" style={{ flexWrap: 'wrap', gap: 12 }}>
-          <div>
-            <h2>Comprovantes Motoboy</h2>
-            <p className="szv2-card-sub">
-              Relatório COD: fotos de comprovante + KPIs de entrega por período.
-            </p>
-          </div>
+      <div className="szv2-section-head" style={{ flexWrap: 'wrap', gap: 12 }}>
+        <div>
+          <h1>Comprovantes Motoboy</h1>
+          <p>Relatório COD: fotos de comprovante + KPIs de entrega por período.</p>
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <FilterButton
+            active={chips.length > 0}
+            count={chips.length}
+            onClick={openPanel}
+          />
           <button
             type="button"
             className="szv2-btn szv2-btn-secondary"
             onClick={handleExportCSV}
-            style={{ marginLeft: 'auto' }}
           >
             ⬇ Exportar CSV
           </button>
         </div>
-
-        <form
-          onSubmit={handleApply}
-          style={{
-            display: 'flex',
-            flexWrap: 'wrap',
-            gap: 12,
-            alignItems: 'flex-end',
-            padding: '12px 0 4px',
-          }}
-        >
-          <div className="szv2-field" style={{ minWidth: 150 }}>
-            <label className="szv2-label">De</label>
-            <input
-              type="date"
-              className="szv2-input"
-              value={from}
-              onChange={(e) => setFrom(e.target.value)}
-              disabled={loading || busy}
-            />
-          </div>
-          <div className="szv2-field" style={{ minWidth: 150 }}>
-            <label className="szv2-label">Até</label>
-            <input
-              type="date"
-              className="szv2-input"
-              value={to}
-              onChange={(e) => setTo(e.target.value)}
-              disabled={loading || busy}
-            />
-          </div>
-          <div className="szv2-field" style={{ minWidth: 140 }}>
-            <label className="szv2-label">Motoboy (ID)</label>
-            <input
-              type="number"
-              className="szv2-input"
-              placeholder="ID do motoboy"
-              value={motoboyID}
-              onChange={(e) => setMotoboyID(e.target.value)}
-              disabled={loading || busy}
-            />
-          </div>
-          <div className="szv2-field" style={{ minWidth: 140 }}>
-            <label className="szv2-label">Nº do pedido</label>
-            <input
-              type="number"
-              className="szv2-input"
-              placeholder="ex: 5678"
-              value={pedidoBusca}
-              onChange={(e) => setPedidoBusca(e.target.value)}
-              disabled={loading || busy}
-            />
-          </div>
-          {/* Zona — filtro que vai para KPIs + galeria (via buildQS) */}
-          <div className="szv2-field" style={{ minWidth: 160 }}>
-            <label className="szv2-label">Zona</label>
-            <select
-              className="szv2-input"
-              value={zonaID}
-              onChange={(e) => setZonaID(e.target.value)}
-              disabled={loading || busy}
-            >
-              <option value="">Todas</option>
-              {zonas.map(z => (
-                <option key={z.id} value={String(z.id)}>{z.nome}</option>
-              ))}
-            </select>
-          </div>
-          {/* Status do pedido — filtro que vai para KPIs e CSV */}
-          <div className="szv2-field" style={{ minWidth: 150 }}>
-            <label className="szv2-label">Status do pedido</label>
-            <select
-              className="szv2-input"
-              value={statusFiltro}
-              onChange={(e) => setStatusFiltro(e.target.value as StatusFiltro)}
-              disabled={loading || busy}
-            >
-              {STATUS_OPTIONS.map(s => (
-                <option key={s.key} value={s.key}>{s.label}</option>
-              ))}
-            </select>
-          </div>
-          <button
-            type="submit"
-            className="szv2-btn szv2-btn-brand"
-            disabled={loading || busy}
-          >
-            Filtrar
-          </button>
-        </form>
-
-        {/* Chips tipo pgto */}
-        <div className="szv2-chip-group" style={{ marginTop: 12, flexWrap: 'wrap', gap: 8 }}>
-          <span style={{ fontSize: 11, color: '#9ca3af', alignSelf: 'center', marginRight: 4 }}>Tipo pgto:</span>
-          {TIPO_LABELS.map(t => (
-            <button
-              key={t.key}
-              type="button"
-              className="szv2-chip"
-              aria-pressed={tipo === t.key}
-              onClick={() => handleTipoChange(t.key)}
-              disabled={loading || busy}
-            >
-              {t.icon} {t.label}
-            </button>
-          ))}
-          <span style={{ fontSize: 11, color: '#9ca3af', alignSelf: 'center', marginLeft: 12, marginRight: 4 }}>Baixa por:</span>
-          {BAIXA_POR_LABELS.map(b => (
-            <button
-              key={b.key}
-              type="button"
-              className="szv2-chip"
-              aria-pressed={baixaPor === b.key}
-              onClick={() => handleBaixaPorChange(b.key)}
-              disabled={loading || busy}
-            >
-              {b.label}
-            </button>
-          ))}
-        </div>
       </div>
+
+      <ActiveFilterChips chips={chips} onClearAll={clearFilters} />
 
       {/* ─── KPIs ─── */}
       <div className="sz-comp-kpi-row">
@@ -742,6 +686,86 @@ export default function MotoboyComprovantes() {
           </div>
         </div>
       )}
+
+      <FilterTopPanel
+        open={filterOpen}
+        onClose={() => setFilterOpen(false)}
+        onApply={applyFilters}
+        onClear={clearFilters}
+        title="Filtros"
+      >
+        <FilterField label="Data inicial">
+          <input
+            type="date"
+            style={filterInputStyle}
+            value={draftFrom}
+            onChange={e => setDraftFrom(e.target.value)}
+          />
+        </FilterField>
+        <FilterField label="Data final">
+          <input
+            type="date"
+            style={filterInputStyle}
+            value={draftTo}
+            onChange={e => setDraftTo(e.target.value)}
+          />
+        </FilterField>
+        <FilterField label="Tipo pgto">
+          <select
+            style={filterInputStyle}
+            value={draftTipo}
+            onChange={e => setDraftTipo(e.target.value as TipoFiltro)}
+          >
+            {TIPO_LABELS.map(t => <option key={t.key} value={t.key}>{t.icon} {t.label}</option>)}
+          </select>
+        </FilterField>
+        <FilterField label="Baixa por">
+          <select
+            style={filterInputStyle}
+            value={draftBaixa}
+            onChange={e => setDraftBaixa(e.target.value as BaixaPorFiltro)}
+          >
+            {BAIXA_POR_LABELS.map(b => <option key={b.key} value={b.key}>{b.label}</option>)}
+          </select>
+        </FilterField>
+        <FilterField label="Status do pedido">
+          <select
+            style={filterInputStyle}
+            value={draftStatusF}
+            onChange={e => setDraftStatusF(e.target.value as StatusFiltro)}
+          >
+            {STATUS_OPTIONS.map(s => <option key={s.key} value={s.key}>{s.label}</option>)}
+          </select>
+        </FilterField>
+        <FilterField label="Zona">
+          <select
+            style={filterInputStyle}
+            value={draftZona}
+            onChange={e => setDraftZona(e.target.value)}
+          >
+            <option value="">Todas</option>
+            {zonas.map(z => <option key={z.id} value={String(z.id)}>{z.nome}</option>)}
+          </select>
+        </FilterField>
+        <FilterField label="Motoboy (ID)">
+          <input
+            type="number"
+            style={filterInputStyle}
+            placeholder="ID do motoboy"
+            value={draftMotoboyID}
+            onChange={e => setDraftMotoboyID(e.target.value)}
+          />
+        </FilterField>
+        <FilterField label="Nº do pedido / busca">
+          <input
+            type="search"
+            style={filterInputStyle}
+            placeholder="ex: 5678"
+            value={draftPedidoBusca}
+            onChange={e => setDraftPedidoBusca(e.target.value)}
+          />
+        </FilterField>
+      </FilterTopPanel>
     </div>
   )
 }

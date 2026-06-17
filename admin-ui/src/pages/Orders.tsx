@@ -2,6 +2,36 @@ import { useEffect, useMemo, useState } from 'react'
 import { api } from '../api'
 import FilterDrawer from '../components/FilterDrawer'
 import FilterButton from '../components/FilterButton'
+import FilterTopPanel, {
+  FilterField,
+  filterInputStyle,
+  ActiveFilterChips,
+  type ActiveChip,
+} from '../components/FilterTopPanel'
+import CopyButton from '../components/CopyButton'
+
+// ── Tipos do detalhe enriquecido (GET /orders/{id}) ──────────────────────────
+// Mantém em sync com OrderDetail.tsx — só os campos exibidos no drawer.
+type DetailMarketing = {
+  utm_source: string; utm_medium: string; utm_campaign: string
+  utm_term: string; utm_content: string; referrer: string; landing_page: string
+}
+type DetailFiscal = {
+  nfe_chave: string; nfe_numero: string; nfe_serie: string
+  nfe_url: string; nfe_status: string
+}
+type DetailTracking = { code: string; url: string; carrier: string }
+type DetailMotoboy = {
+  motoboy_nome?: string
+  motoboy_telefone?: string
+  motoboy_placa?: string
+}
+type OrderDetailLite = {
+  marketing?: DetailMarketing
+  fiscal?: DetailFiscal
+  tracking?: DetailTracking
+  motoboy?: DetailMotoboy
+}
 
 type P = {
   id: number
@@ -72,6 +102,23 @@ export default function Orders() {
   // UI
   const [filterOpen,    setFilterOpen]    = useState(false)
   const [selectedOrder, setSelectedOrder] = useState<P | null>(null)
+
+  // Detalhe enriquecido (lazy fetch GET /orders/{sz_order_id}).
+  // sz_order_id é a PK em sz_orders — NÃO confundir com selectedOrder.id (pedido motoboy).
+  const [detail, setDetail]               = useState<OrderDetailLite | null>(null)
+  const [detailLoading, setDetailLoading] = useState(false)
+
+  useEffect(() => {
+    if (!selectedOrder) { setDetail(null); return }
+    const szId = selectedOrder.sz_order_id
+    if (!szId) { setDetail(null); return }
+    setDetailLoading(true)
+    setDetail(null)
+    api<OrderDetailLite>(`/orders/${szId}`)
+      .then(r => setDetail(r))
+      .catch(() => setDetail(null))
+      .finally(() => setDetailLoading(false))
+  }, [selectedOrder])
 
   function showToast(kind: 'ok' | 'err', msg: string) {
     setToast({ kind, msg })
@@ -167,19 +214,14 @@ export default function Orders() {
     auditFix(p)
   }
 
-  // ── Label helpers ──────────────────────────────────────────────────
-  const fieldStyle: React.CSSProperties = { display: 'flex', flexDirection: 'column', gap: 6 }
-  const labelStyle: React.CSSProperties = { fontSize: 12, fontWeight: 600, color: 'var(--szv2-text-soft)' }
-  const inputStyle: React.CSSProperties = {
-    height: 38,
-    padding: '0 12px',
-    background: 'var(--szv2-surface-alt)',
-    border: '1px solid var(--szv2-border)',
-    borderRadius: 10,
-    color: 'var(--szv2-text)',
-    font: 'inherit',
-    fontSize: 13,
-  }
+  // Constrói chips ativos para exibir abaixo do header.
+  const activeChips: ActiveChip[] = []
+  if (status) activeChips.push({ key: 'status', label: `Status: ${status}`, onRemove: () => setStatus('') })
+  if (cidade) activeChips.push({ key: 'cidade', label: `Cidade: ${cidade}`, onRemove: () => setCidade('') })
+  if (search) activeChips.push({ key: 'search', label: `Busca: ${search}`, onRemove: () => setSearch('') })
+  if (stopped) activeChips.push({ key: 'stopped', label: 'Parados 24h+', onRemove: () => setStopped(false) })
+  if (dataIni !== init.ini) activeChips.push({ key: 'ini', label: `De: ${dataIni}`, onRemove: () => setDataIni(init.ini) })
+  if (dataFim !== init.fim) activeChips.push({ key: 'fim', label: `Até: ${dataFim}`, onRemove: () => setDataFim(init.fim) })
 
   return (
     <div>
@@ -201,6 +243,9 @@ export default function Orders() {
           />
         </div>
       </div>
+
+      {/* ── Chips de filtros ativos ──────────────────────────── */}
+      <ActiveFilterChips chips={activeChips} onClearAll={clearFilters} />
 
       {/* ── Alertas ──────────────────────────────────────────── */}
       {err && <div className="sz-alert-danger" style={{ marginBottom: 12 }}>{err}</div>}
@@ -326,85 +371,84 @@ export default function Orders() {
         </table>
       </div>
 
-      {/* ── Drawer de Filtros ────────────────────────────────── */}
-      <FilterDrawer
+      {/* ── Painel de Filtros (topo) ────────────────────────── */}
+      <FilterTopPanel
         open={filterOpen}
         onClose={() => setFilterOpen(false)}
         onApply={applyFilters}
         onClear={clearFilters}
         title="Filtros"
       >
-        {/* De */}
-        <div style={fieldStyle}>
-          <label style={labelStyle}>De</label>
+        <FilterField label="Data inicial">
           <input
             type="date"
-            style={inputStyle}
+            style={filterInputStyle}
             value={draftDataIni}
             max={draftDataFim}
             onChange={e => setDraftDataIni(e.target.value)}
           />
-        </div>
-
-        {/* Até */}
-        <div style={fieldStyle}>
-          <label style={labelStyle}>Até</label>
+        </FilterField>
+        <FilterField label="Data final">
           <input
             type="date"
-            style={inputStyle}
+            style={filterInputStyle}
             value={draftDataFim}
             min={draftDataIni}
             onChange={e => setDraftDataFim(e.target.value)}
           />
-        </div>
-
-        {/* Status */}
-        <div style={fieldStyle}>
-          <label style={labelStyle}>Status</label>
+        </FilterField>
+        <FilterField label="Status">
           <select
-            style={inputStyle}
+            style={filterInputStyle}
             value={draftStatus}
             onChange={e => setDraftStatus(e.target.value)}
           >
             <option value="">Todos status</option>
             {Object.keys(STATUS_CLS).map(s => <option key={s} value={s}>{s}</option>)}
           </select>
-        </div>
-
-        {/* Cidade */}
-        <div style={fieldStyle}>
-          <label style={labelStyle}>Cidade</label>
+        </FilterField>
+        <FilterField label="Cidade">
           <input
             type="text"
-            style={inputStyle}
+            style={filterInputStyle}
             placeholder="Filtrar por cidade"
             value={draftCidade}
             onChange={e => setDraftCidade(e.target.value)}
           />
-        </div>
-
-        {/* Busca */}
-        <div style={fieldStyle}>
-          <label style={labelStyle}>Busca</label>
+        </FilterField>
+        <FilterField label="Busca">
           <input
             type="search"
-            style={inputStyle}
-            placeholder="Pedido / nome"
+            style={filterInputStyle}
+            placeholder="Pedido / produto / afiliado / nome"
             value={draftSearch}
             onChange={e => setDraftSearch(e.target.value)}
           />
-        </div>
-
-        {/* Parados 24h+ */}
-        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer' }}>
-          <input
-            type="checkbox"
-            checked={draftStopped}
-            onChange={e => setDraftStopped(e.target.checked)}
-          />
-          <span>Parados 24h+</span>
-        </label>
-      </FilterDrawer>
+        </FilterField>
+        <FilterField label="Parados 24h+">
+          <label
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              fontSize: 13,
+              cursor: 'pointer',
+              height: 38,
+              padding: '0 12px',
+              background: 'var(--szv2-surface-alt)',
+              border: '1px solid var(--szv2-border)',
+              borderRadius: 10,
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={draftStopped}
+              onChange={e => setDraftStopped(e.target.checked)}
+            />
+            <span>Apenas parados 24h+</span>
+          </label>
+        </FilterField>
+      </FilterTopPanel>
 
       {/* ── Drawer de Detalhe do Pedido ──────────────────────── */}
       <FilterDrawer
@@ -509,6 +553,178 @@ export default function Orders() {
                 )}
               </div>
             </div>
+
+            {/* ── Detalhe enriquecido (lazy fetch /orders/{sz_order_id}) ────── */}
+            {!selectedOrder.sz_order_id ? null : detailLoading ? (
+              <div style={{ borderTop: '1px solid var(--szv2-divider)', paddingTop: 16, fontSize: 12, color: 'var(--szv2-text-muted)' }}>
+                Carregando detalhes…
+              </div>
+            ) : detail ? (
+              <>
+                {/* Motoboy / entregador */}
+                {detail.motoboy && (detail.motoboy.motoboy_nome || detail.motoboy.motoboy_telefone || detail.motoboy.motoboy_placa) && (
+                  <div style={{ borderTop: '1px solid var(--szv2-divider)', paddingTop: 16 }}>
+                    <span style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', color: 'var(--szv2-text-muted)', letterSpacing: '0.05em' }}>🛵 Motoboy</span>
+                    <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 6, fontSize: 13 }}>
+                      {detail.motoboy.motoboy_nome && (
+                        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                          <span style={{ color: 'var(--szv2-text-muted)' }}>Nome</span>
+                          <span style={{ fontWeight: 600 }}>{detail.motoboy.motoboy_nome}</span>
+                        </div>
+                      )}
+                      {detail.motoboy.motoboy_telefone && (
+                        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                          <span style={{ color: 'var(--szv2-text-muted)' }}>Telefone</span>
+                          <a
+                            href={`tel:${detail.motoboy.motoboy_telefone.replace(/\D/g, '')}`}
+                            style={{ color: 'var(--szv2-brand)', fontFamily: 'var(--szv2-font-mono)', textDecoration: 'none' }}
+                          >
+                            {detail.motoboy.motoboy_telefone}
+                          </a>
+                        </div>
+                      )}
+                      {detail.motoboy.motoboy_placa && (
+                        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                          <span style={{ color: 'var(--szv2-text-muted)' }}>Placa</span>
+                          <span style={{ fontFamily: 'var(--szv2-font-mono)', fontWeight: 700, letterSpacing: '.05em' }}>{detail.motoboy.motoboy_placa}</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* Rastreio */}
+                {detail.tracking && (detail.tracking.code || detail.tracking.url || detail.tracking.carrier) && (
+                  <div style={{ borderTop: '1px solid var(--szv2-divider)', paddingTop: 16 }}>
+                    <span style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', color: 'var(--szv2-text-muted)', letterSpacing: '0.05em' }}>📦 Rastreio</span>
+                    <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 6, fontSize: 13 }}>
+                      {detail.tracking.code && (
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <span style={{ color: 'var(--szv2-text-muted)' }}>Código</span>
+                          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                            <span style={{ fontFamily: 'var(--szv2-font-mono)', fontWeight: 700 }}>{detail.tracking.code}</span>
+                            <CopyButton text={detail.tracking.code} variant="icon" />
+                          </span>
+                        </div>
+                      )}
+                      {detail.tracking.carrier && (
+                        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                          <span style={{ color: 'var(--szv2-text-muted)' }}>Transportadora</span>
+                          <span>{detail.tracking.carrier}</span>
+                        </div>
+                      )}
+                      {detail.tracking.url && (
+                        <a
+                          href={detail.tracking.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="szv2-btn-brand"
+                          style={{ marginTop: 4, textAlign: 'center', fontSize: 12 }}
+                        >
+                          Abrir rastreio
+                        </a>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* Nota Fiscal */}
+                {detail.fiscal && (detail.fiscal.nfe_chave || detail.fiscal.nfe_numero || detail.fiscal.nfe_url) && (
+                  <div style={{ borderTop: '1px solid var(--szv2-divider)', paddingTop: 16 }}>
+                    <span style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', color: 'var(--szv2-text-muted)', letterSpacing: '0.05em' }}>📄 Nota Fiscal</span>
+                    <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 6, fontSize: 13 }}>
+                      {detail.fiscal.nfe_numero && (
+                        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                          <span style={{ color: 'var(--szv2-text-muted)' }}>Número</span>
+                          <span style={{ fontFamily: 'var(--szv2-font-mono)' }}>{detail.fiscal.nfe_numero}</span>
+                        </div>
+                      )}
+                      {detail.fiscal.nfe_serie && (
+                        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                          <span style={{ color: 'var(--szv2-text-muted)' }}>Série</span>
+                          <span style={{ fontFamily: 'var(--szv2-font-mono)' }}>{detail.fiscal.nfe_serie}</span>
+                        </div>
+                      )}
+                      {detail.fiscal.nfe_status && (
+                        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                          <span style={{ color: 'var(--szv2-text-muted)' }}>Status</span>
+                          <span>{detail.fiscal.nfe_status}</span>
+                        </div>
+                      )}
+                      {detail.fiscal.nfe_chave && (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                          <span style={{ color: 'var(--szv2-text-muted)', fontSize: 11 }}>Chave (44 dígitos)</span>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 4, padding: 6, background: 'var(--szv2-surface-alt)', borderRadius: 6 }}>
+                            <code style={{ flex: 1, fontFamily: 'var(--szv2-font-mono)', fontSize: 11, wordBreak: 'break-all' }}>{detail.fiscal.nfe_chave}</code>
+                            <CopyButton text={detail.fiscal.nfe_chave} variant="icon" />
+                          </div>
+                        </div>
+                      )}
+                      {detail.fiscal.nfe_url && (
+                        <a
+                          href={detail.fiscal.nfe_url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="szv2-btn-secondary"
+                          style={{ marginTop: 4, textAlign: 'center', fontSize: 12 }}
+                        >
+                          Abrir XML
+                        </a>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* Marketing / UTM */}
+                {detail.marketing && (
+                  detail.marketing.utm_source || detail.marketing.utm_medium || detail.marketing.utm_campaign ||
+                  detail.marketing.utm_term || detail.marketing.utm_content || detail.marketing.referrer || detail.marketing.landing_page
+                ) && (
+                  <div style={{ borderTop: '1px solid var(--szv2-divider)', paddingTop: 16 }}>
+                    <span style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', color: 'var(--szv2-text-muted)', letterSpacing: '0.05em' }}>🎯 Marketing / UTM</span>
+                    <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12, fontFamily: 'var(--szv2-font-mono)' }}>
+                      {detail.marketing.utm_source && (
+                        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                          <span style={{ color: 'var(--szv2-text-muted)' }}>source</span><span>{detail.marketing.utm_source}</span>
+                        </div>
+                      )}
+                      {detail.marketing.utm_medium && (
+                        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                          <span style={{ color: 'var(--szv2-text-muted)' }}>medium</span><span>{detail.marketing.utm_medium}</span>
+                        </div>
+                      )}
+                      {detail.marketing.utm_campaign && (
+                        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                          <span style={{ color: 'var(--szv2-text-muted)' }}>campaign</span><span>{detail.marketing.utm_campaign}</span>
+                        </div>
+                      )}
+                      {detail.marketing.utm_term && (
+                        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                          <span style={{ color: 'var(--szv2-text-muted)' }}>term</span><span>{detail.marketing.utm_term}</span>
+                        </div>
+                      )}
+                      {detail.marketing.utm_content && (
+                        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                          <span style={{ color: 'var(--szv2-text-muted)' }}>content</span><span>{detail.marketing.utm_content}</span>
+                        </div>
+                      )}
+                      {detail.marketing.referrer && (
+                        <div>
+                          <span style={{ color: 'var(--szv2-text-muted)' }}>referrer: </span>
+                          <a href={detail.marketing.referrer} target="_blank" rel="noreferrer" style={{ color: 'var(--szv2-brand)', wordBreak: 'break-all' }}>{detail.marketing.referrer}</a>
+                        </div>
+                      )}
+                      {detail.marketing.landing_page && (
+                        <div>
+                          <span style={{ color: 'var(--szv2-text-muted)' }}>landing: </span>
+                          <a href={detail.marketing.landing_page} target="_blank" rel="noreferrer" style={{ color: 'var(--szv2-brand)', wordBreak: 'break-all' }}>{detail.marketing.landing_page}</a>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </>
+            ) : null}
           </>
         )}
       </FilterDrawer>

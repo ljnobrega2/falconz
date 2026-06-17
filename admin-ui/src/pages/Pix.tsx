@@ -1,5 +1,12 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api'
+import FilterButton from '../components/FilterButton'
+import FilterTopPanel, {
+  FilterField,
+  filterInputStyle,
+  ActiveFilterChips,
+  type ActiveChip,
+} from '../components/FilterTopPanel'
 
 // Linha da listagem de recargas (inclui nome/email via JOIN com portal_users)
 type R = {
@@ -91,6 +98,13 @@ export default function Pix() {
   const [detail, setDetail] = useState<Detail | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
 
+  // Painel
+  const [filterOpen, setFilterOpen] = useState(false)
+  const [draftStatus, setDraftStatus] = useState('')
+  const [draftIni, setDraftIni] = useState('')
+  const [draftFim, setDraftFim] = useState('')
+  const [draftUser, setDraftUser] = useState('')
+
   function buildQs() {
     const p = new URLSearchParams()
     if (status) p.set('status', status)
@@ -160,6 +174,25 @@ export default function Pix() {
 
   const totalPages = Math.max(1, Math.ceil(total / perPage))
 
+  function openPanel() {
+    setDraftStatus(status); setDraftIni(dataIni); setDraftFim(dataFim); setDraftUser(userSearch)
+    setFilterOpen(true)
+  }
+  function applyFilters() {
+    setStatus(draftStatus); setDataIni(draftIni); setDataFim(draftFim); setUserSearch(draftUser)
+    setPage(1); setFilterOpen(false)
+  }
+  function clearFilters() {
+    setStatus(''); setDataIni(''); setDataFim(''); setUserSearch(''); setPage(1)
+    setDraftStatus(''); setDraftIni(''); setDraftFim(''); setDraftUser('')
+    setFilterOpen(false)
+  }
+  const chips: ActiveChip[] = []
+  if (status) chips.push({ key: 'status', label: `Status: ${status}`, onRemove: () => { setStatus(''); setPage(1) } })
+  if (dataIni) chips.push({ key: 'ini', label: `De: ${dataIni}`, onRemove: () => { setDataIni(''); setPage(1) } })
+  if (dataFim) chips.push({ key: 'fim', label: `Até: ${dataFim}`, onRemove: () => { setDataFim(''); setPage(1) } })
+  if (userSearch) chips.push({ key: 'user', label: `User: #${userSearch}`, onRemove: () => { setUserSearch(''); setPage(1) } })
+
   return (
     <div>
       {/* Admin notices de reconciliação */}
@@ -218,69 +251,67 @@ export default function Pix() {
           <h1>PIX / Recargas</h1>
           <p>{total} registro(s) · página {page} de {totalPages}</p>
         </div>
-        <button
-          className="szv2-btn-brand"
-          disabled={verifying}
-          onClick={handleVerificar}
-        >
-          {verifying ? 'Verificando…' : '🔄 Verificar PIX Pendentes Agora'}
-        </button>
-      </div>
-
-      {/* Filtros */}
-      <div className="szv2-card" style={{ marginBottom: 16 }}>
-        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-          <div>
-            <label className="szv2-label" style={{ display: 'block', marginBottom: 4 }}>Status</label>
-            <select
-              className="szv2-select"
-              style={{ minWidth: 160 }}
-              value={status}
-              onChange={e => { setStatus(e.target.value); setPage(1) }}
-            >
-              <option value="">Todos status</option>
-              {ALL_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
-            </select>
-          </div>
-          <div>
-            <label className="szv2-label" style={{ display: 'block', marginBottom: 4 }}>De</label>
-            <input
-              type="date"
-              className="szv2-input"
-              value={dataIni}
-              onChange={e => { setDataIni(e.target.value); setPage(1) }}
-            />
-          </div>
-          <div>
-            <label className="szv2-label" style={{ display: 'block', marginBottom: 4 }}>Até</label>
-            <input
-              type="date"
-              className="szv2-input"
-              value={dataFim}
-              onChange={e => { setDataFim(e.target.value); setPage(1) }}
-            />
-          </div>
-          <div>
-            <label className="szv2-label" style={{ display: 'block', marginBottom: 4 }}>User ID</label>
-            <input
-              type="text"
-              className="szv2-input"
-              placeholder="ex: 42"
-              style={{ width: 100 }}
-              value={userSearch}
-              onChange={e => { setUserSearch(e.target.value); setPage(1) }}
-            />
-          </div>
-          {(status || dataIni || dataFim || userSearch) && (
-            <button
-              className="szv2-btn szv2-btn-sm"
-              onClick={() => { setStatus(''); setDataIni(''); setDataFim(''); setUserSearch(''); setPage(1) }}
-            >
-              Limpar filtros
-            </button>
-          )}
+        <div style={{ display: 'flex', gap: 8 }}>
+          <FilterButton
+            active={chips.length > 0}
+            count={chips.length}
+            onClick={openPanel}
+          />
+          <button
+            className="szv2-btn szv2-btn-brand"
+            disabled={verifying}
+            onClick={handleVerificar}
+          >
+            {verifying ? 'Verificando…' : '🔄 Verificar PIX Pendentes Agora'}
+          </button>
         </div>
       </div>
+
+      <ActiveFilterChips chips={chips} onClearAll={clearFilters} />
+
+      <FilterTopPanel
+        open={filterOpen}
+        onClose={() => setFilterOpen(false)}
+        onApply={applyFilters}
+        onClear={clearFilters}
+        title="Filtros"
+      >
+        <FilterField label="Data inicial">
+          <input
+            type="date"
+            style={filterInputStyle}
+            value={draftIni}
+            onChange={e => setDraftIni(e.target.value)}
+          />
+        </FilterField>
+        <FilterField label="Data final">
+          <input
+            type="date"
+            style={filterInputStyle}
+            value={draftFim}
+            onChange={e => setDraftFim(e.target.value)}
+          />
+        </FilterField>
+        <FilterField label="Status">
+          <select
+            style={filterInputStyle}
+            value={draftStatus}
+            onChange={e => setDraftStatus(e.target.value)}
+          >
+            <option value="">Todos status</option>
+            {ALL_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
+          </select>
+        </FilterField>
+        <FilterField label="Busca (User ID)">
+          <input
+            type="search"
+            style={filterInputStyle}
+            placeholder="ex: 42"
+            value={draftUser}
+            onChange={e => setDraftUser(e.target.value)}
+          />
+        </FilterField>
+      </FilterTopPanel>
 
       {/* Tabela */}
       <div className="szv2-table-wrap">

@@ -1,5 +1,12 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api'
+import FilterButton from '../components/FilterButton'
+import FilterTopPanel, {
+  FilterField,
+  filterInputStyle,
+  ActiveFilterChips,
+  type ActiveChip,
+} from '../components/FilterTopPanel'
 
 type CD = { id: number; nome: string; ativo: boolean }
 type Zona = { id: number; cd_id: number; nome: string; ativo: boolean }
@@ -57,11 +64,28 @@ export default function Motoboys() {
   const [q, setQ] = useState('')
   const [filterCdId, setFilterCdId] = useState<string>('')
   const [filterAtivo, setFilterAtivo] = useState<string>('') // '' | 'sim' | 'nao'
+  // Range de data de cadastro — enviado como QS (backend pode filtrar se suportar).
+  // Vazio = sem filtro (espelha a regra "empty=unfiltered" do spec).
+  const [dataIni, setDataIni] = useState('')
+  const [dataFim, setDataFim] = useState('')
+
+  // Painel
+  const [filterOpen, setFilterOpen] = useState(false)
+  const [draftQ, setDraftQ] = useState('')
+  const [draftCd, setDraftCd] = useState('')
+  const [draftAtivo, setDraftAtivo] = useState('')
+  const [draftIni, setDraftIni] = useState('')
+  const [draftFim, setDraftFim] = useState('')
 
   async function load() {
     try {
+      // QS opcional para data de cadastro — backend filtra se suportar; senão no-op.
+      const qs = new URLSearchParams()
+      if (dataIni) qs.set('data_ini', dataIni)
+      if (dataFim) qs.set('data_fim', dataFim)
+      const motoboysURL = qs.toString() ? `/motoboys?${qs}` : '/motoboys'
       const [r, rCds, rZonas] = await Promise.all([
-        api<{ items: M[] }>('/motoboys'),
+        api<{ items: M[] }>(motoboysURL),
         api<{ items: CD[] }>('/cds'),
         api<{ items: Zona[] }>('/zonas'),
       ])
@@ -73,7 +97,8 @@ export default function Motoboys() {
     }
   }
 
-  useEffect(() => { load() }, [])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { load() }, [dataIni, dataFim])
 
   async function openEdit(m: M) {
     // Carrega zonas atuais do motoboy via endpoint dedicado
@@ -182,7 +207,29 @@ export default function Motoboys() {
     setQ('')
     setFilterCdId('')
     setFilterAtivo('')
+    setDataIni(''); setDataFim('')
+    setDraftQ(''); setDraftCd(''); setDraftAtivo('')
+    setDraftIni(''); setDraftFim('')
+    setFilterOpen(false)
   }
+
+  function openPanel() {
+    setDraftQ(q); setDraftCd(filterCdId); setDraftAtivo(filterAtivo)
+    setDraftIni(dataIni); setDraftFim(dataFim)
+    setFilterOpen(true)
+  }
+  function applyFilters() {
+    setQ(draftQ); setFilterCdId(draftCd); setFilterAtivo(draftAtivo)
+    setDataIni(draftIni); setDataFim(draftFim)
+    setFilterOpen(false)
+  }
+  // Chips ativos.
+  const chips: ActiveChip[] = []
+  if (q) chips.push({ key: 'q', label: `Busca: ${q}`, onRemove: () => setQ('') })
+  if (filterCdId) chips.push({ key: 'cd', label: `CD: ${cdNome(parseInt(filterCdId, 10))}`, onRemove: () => setFilterCdId('') })
+  if (filterAtivo) chips.push({ key: 'at', label: `Ativo: ${filterAtivo}`, onRemove: () => setFilterAtivo('') })
+  if (dataIni) chips.push({ key: 'ini', label: `Cadastro ≥ ${dataIni}`, onRemove: () => setDataIni('') })
+  if (dataFim) chips.push({ key: 'fim', label: `Cadastro ≤ ${dataFim}`, onRemove: () => setDataFim('') })
 
   return (
     <div>
@@ -191,60 +238,77 @@ export default function Motoboys() {
           <h1>Motoboys</h1>
           <p>{filtered.length} de {items.length} motoboy(s)</p>
         </div>
-        <button
-          className="szv2-btn szv2-btn-brand"
-          onClick={() => { setForm(emptyForm()); setShowForm(true) }}
-        >
-          + Novo Motoboy
-        </button>
-      </div>
-
-      {/* Filtros */}
-      <div className="szv2-card" style={{ marginBottom: 16 }}>
-        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-          <div className="szv2-field">
-            <label className="szv2-label">Busca</label>
-            <input
-              type="search"
-              className="szv2-input"
-              placeholder="nome, email, telefone, CPF"
-              style={{ width: 240 }}
-              value={q}
-              onChange={e => setQ(e.target.value)}
-            />
-          </div>
-          <div className="szv2-field">
-            <label className="szv2-label">CD</label>
-            <select
-              className="szv2-select"
-              style={{ width: 200 }}
-              value={filterCdId}
-              onChange={e => setFilterCdId(e.target.value)}
-            >
-              <option value="">Todos CDs</option>
-              {cds.map(c => <option key={c.id} value={c.id}>{c.nome}</option>)}
-            </select>
-          </div>
-          <div className="szv2-field">
-            <label className="szv2-label">Ativo</label>
-            <select
-              className="szv2-select"
-              style={{ width: 140 }}
-              value={filterAtivo}
-              onChange={e => setFilterAtivo(e.target.value)}
-            >
-              <option value="">Todos</option>
-              <option value="sim">Sim</option>
-              <option value="nao">Não</option>
-            </select>
-          </div>
-          {(q || filterCdId || filterAtivo) && (
-            <button className="szv2-btn szv2-btn-secondary" onClick={limparFiltros}>
-              Limpar filtros
-            </button>
-          )}
+        <div style={{ display: 'flex', gap: 8 }}>
+          <FilterButton
+            active={chips.length > 0}
+            count={chips.length}
+            onClick={openPanel}
+          />
+          <button
+            className="szv2-btn szv2-btn-brand"
+            onClick={() => { setForm(emptyForm()); setShowForm(true) }}
+          >
+            + Novo Motoboy
+          </button>
         </div>
       </div>
+
+      <ActiveFilterChips chips={chips} onClearAll={limparFiltros} />
+
+      <FilterTopPanel
+        open={filterOpen}
+        onClose={() => setFilterOpen(false)}
+        onApply={applyFilters}
+        onClear={limparFiltros}
+        title="Filtros"
+      >
+        <FilterField label="Cadastro de" hint="Data inicial">
+          <input
+            type="date"
+            style={filterInputStyle}
+            value={draftIni}
+            onChange={e => setDraftIni(e.target.value)}
+          />
+        </FilterField>
+        <FilterField label="Cadastro até" hint="Data final">
+          <input
+            type="date"
+            style={filterInputStyle}
+            value={draftFim}
+            onChange={e => setDraftFim(e.target.value)}
+          />
+        </FilterField>
+        <FilterField label="Status (ativo)">
+          <select
+            style={filterInputStyle}
+            value={draftAtivo}
+            onChange={e => setDraftAtivo(e.target.value)}
+          >
+            <option value="">Todos</option>
+            <option value="sim">Ativo</option>
+            <option value="nao">Inativo</option>
+          </select>
+        </FilterField>
+        <FilterField label="CD">
+          <select
+            style={filterInputStyle}
+            value={draftCd}
+            onChange={e => setDraftCd(e.target.value)}
+          >
+            <option value="">Todos CDs</option>
+            {cds.map(c => <option key={c.id} value={c.id}>{c.nome}</option>)}
+          </select>
+        </FilterField>
+        <FilterField label="Busca (nome / e-mail / CPF)">
+          <input
+            type="search"
+            style={filterInputStyle}
+            placeholder="nome, email, telefone, CPF"
+            value={draftQ}
+            onChange={e => setDraftQ(e.target.value)}
+          />
+        </FilterField>
+      </FilterTopPanel>
 
       {err && <div className="sz-alert-danger">{err}</div>}
 

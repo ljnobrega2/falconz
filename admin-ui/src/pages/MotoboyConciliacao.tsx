@@ -1,5 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '../api'
+import FilterButton from '../components/FilterButton'
+import FilterTopPanel, {
+  FilterField,
+  filterInputStyle,
+  ActiveFilterChips,
+  type ActiveChip,
+} from '../components/FilterTopPanel'
 
 // MotoboyConciliacao — espelha sz_mb_tab_conciliacao() (admin.php:2064).
 // Conciliação bancária por pedido: confronta valores recebidos do cliente
@@ -130,6 +137,15 @@ export default function MotoboyConciliacao() {
   const [busyConc, setBusyConc] = useState<number | null>(null)
   const [toast, setToast] = useState<{ kind: 'ok' | 'err'; msg: string } | null>(null)
 
+  // Filtro client-side: status de conciliação (pendente/disponivel/pago).
+  const [conciliacaoStatus, setConciliacaoStatus] = useState<string>('')
+
+  // Painel
+  const [filterOpen, setFilterOpen] = useState(false)
+  const [draftFrom, setDraftFrom] = useState(daysAgoSP(7))
+  const [draftTo, setDraftTo] = useState(todayInSaoPaulo())
+  const [draftConcStatus, setDraftConcStatus] = useState('')
+
   async function load() {
     setLoading(true)
     setErr('')
@@ -223,7 +239,32 @@ export default function MotoboyConciliacao() {
   }
 
   const kpis = resp?.kpis
-  const items = resp?.items || []
+  const allItems = resp?.items || []
+  // Aplica filtro de status de conciliação no client.
+  const items = conciliacaoStatus
+    ? allItems.filter(it => it.conciliacao === conciliacaoStatus)
+    : allItems
+
+  function openPanel() {
+    setDraftFrom(dateFrom); setDraftTo(dateTo); setDraftConcStatus(conciliacaoStatus)
+    setFilterOpen(true)
+  }
+  function applyFilters() {
+    setDateFrom(draftFrom); setDateTo(draftTo); setConciliacaoStatus(draftConcStatus)
+    setFilterOpen(false)
+    setTimeout(load, 0)
+  }
+  function clearFilters() {
+    const def_from = daysAgoSP(7); const def_to = todayInSaoPaulo()
+    setDateFrom(def_from); setDateTo(def_to); setConciliacaoStatus('')
+    setDraftFrom(def_from); setDraftTo(def_to); setDraftConcStatus('')
+    setFilterOpen(false)
+  }
+
+  const chips: ActiveChip[] = []
+  if (dateFrom !== daysAgoSP(7)) chips.push({ key: 'from', label: `De: ${dateFrom}`, onRemove: () => { setDateFrom(daysAgoSP(7)); setTimeout(load, 0) } })
+  if (dateTo !== todayInSaoPaulo()) chips.push({ key: 'to', label: `Até: ${dateTo}`, onRemove: () => { setDateTo(todayInSaoPaulo()); setTimeout(load, 0) } })
+  if (conciliacaoStatus) chips.push({ key: 'cs', label: `Conciliação: ${CONC_LABEL[conciliacaoStatus] || conciliacaoStatus}`, onRemove: () => setConciliacaoStatus('') })
 
   // Total aguardando R$ — útil pra header (paridade com PHP $totais['aguardando']).
   const totalAguardando = useMemo(() => {
@@ -242,7 +283,25 @@ export default function MotoboyConciliacao() {
             frustrados validam apenas a taxa de frustrado gravada no pedido.
           </p>
         </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <FilterButton
+            active={chips.length > 0}
+            count={chips.length}
+            onClick={openPanel}
+          />
+          {items.length > 0 && (
+            <button
+              type="button"
+              className="szv2-btn szv2-btn-secondary"
+              onClick={exportCSV}
+            >
+              ↓ CSV
+            </button>
+          )}
+        </div>
       </div>
+
+      <ActiveFilterChips chips={chips} onClearAll={clearFilters} />
 
       {err && <div className="sz-alert-danger" style={{ marginBottom: 16 }}>{err}</div>}
       {toast && (
@@ -254,56 +313,42 @@ export default function MotoboyConciliacao() {
         </div>
       )}
 
-      {/* Top bar: filtros */}
-      <div className="szv2-card" style={{ marginBottom: 24 }}>
-        <form
-          onSubmit={e => { e.preventDefault(); load() }}
-          style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap' }}
-        >
-          <div className="szv2-field" style={{ flex: '0 0 auto' }}>
-            <label className="szv2-label">De:</label>
-            <input
-              className="szv2-input"
-              type="date"
-              value={dateFrom}
-              onChange={e => setDateFrom(e.target.value)}
-            />
-          </div>
-          <div className="szv2-field" style={{ flex: '0 0 auto' }}>
-            <label className="szv2-label">Até:</label>
-            <input
-              className="szv2-input"
-              type="date"
-              value={dateTo}
-              onChange={e => setDateTo(e.target.value)}
-            />
-          </div>
-          <button
-            type="submit"
-            className="szv2-btn-brand"
-            disabled={loading}
+      <FilterTopPanel
+        open={filterOpen}
+        onClose={() => setFilterOpen(false)}
+        onApply={applyFilters}
+        onClear={clearFilters}
+        title="Filtros"
+      >
+        <FilterField label="Data inicial">
+          <input
+            type="date"
+            style={filterInputStyle}
+            value={draftFrom}
+            onChange={e => setDraftFrom(e.target.value)}
+          />
+        </FilterField>
+        <FilterField label="Data final">
+          <input
+            type="date"
+            style={filterInputStyle}
+            value={draftTo}
+            onChange={e => setDraftTo(e.target.value)}
+          />
+        </FilterField>
+        <FilterField label="Status de conciliação">
+          <select
+            style={filterInputStyle}
+            value={draftConcStatus}
+            onChange={e => setDraftConcStatus(e.target.value)}
           >
-            {loading ? 'Filtrando…' : 'Filtrar'}
-          </button>
-          <button
-            type="button"
-            className="szv2-btn-secondary"
-            disabled={loading}
-            onClick={quickLast7}
-          >
-            Últimos 7 dias
-          </button>
-          {items.length > 0 && (
-            <button
-              type="button"
-              className="szv2-btn-secondary"
-              onClick={exportCSV}
-            >
-              ↓ CSV
-            </button>
-          )}
-        </form>
-      </div>
+            <option value="">Todos</option>
+            <option value="pendente">Aguardando</option>
+            <option value="disponivel">Conciliado</option>
+            <option value="pago">Pago</option>
+          </select>
+        </FilterField>
+      </FilterTopPanel>
 
       {/* 8 KPI cards (2 fileiras de 4) */}
       {kpis && (

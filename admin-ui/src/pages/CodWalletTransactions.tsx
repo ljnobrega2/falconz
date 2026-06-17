@@ -1,5 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api, getToken } from '../api'
+import FilterButton from '../components/FilterButton'
+import FilterTopPanel, {
+  FilterField,
+  filterInputStyle,
+  ActiveFilterChips,
+  type ActiveChip,
+} from '../components/FilterTopPanel'
 
 // ---------------------------------------------------------------------------
 // Tipos espelhados de internal/handlers/cod_wallet_transactions.go
@@ -224,7 +231,50 @@ export default function CodWalletTransactions() {
     setReleaseFrom('')
     setReleaseTo('')
     setPage(1)
+    setDraftUserID(''); setDraftSearch(''); setDraftOrderID('')
+    setDraftTypeF(''); setDraftStatusF('')
+    setDraftDateFrom(''); setDraftDateTo('')
+    setDraftReleaseFrom(''); setDraftReleaseTo('')
+    setFilterOpen(false)
   }
+
+  // Painel
+  const [filterOpen, setFilterOpen] = useState(false)
+  const [draftUserID, setDraftUserID] = useState('')
+  const [draftSearch, setDraftSearch] = useState('')
+  const [draftOrderID, setDraftOrderID] = useState('')
+  const [draftTypeF, setDraftTypeF] = useState('')
+  const [draftStatusF, setDraftStatusF] = useState('')
+  const [draftDateFrom, setDraftDateFrom] = useState('')
+  const [draftDateTo, setDraftDateTo] = useState('')
+  const [draftReleaseFrom, setDraftReleaseFrom] = useState('')
+  const [draftReleaseTo, setDraftReleaseTo] = useState('')
+
+  function openPanel() {
+    setDraftUserID(userID); setDraftSearch(search); setDraftOrderID(orderID)
+    setDraftTypeF(typeF); setDraftStatusF(statusF)
+    setDraftDateFrom(dateFrom); setDraftDateTo(dateTo)
+    setDraftReleaseFrom(releaseFrom); setDraftReleaseTo(releaseTo)
+    setFilterOpen(true)
+  }
+  function applyFilters() {
+    setUserID(draftUserID); setSearch(draftSearch); setOrderID(draftOrderID)
+    setTypeF(draftTypeF); setStatusF(draftStatusF)
+    setDateFrom(draftDateFrom); setDateTo(draftDateTo)
+    setReleaseFrom(draftReleaseFrom); setReleaseTo(draftReleaseTo)
+    setPage(1)
+    setFilterOpen(false)
+  }
+  const chips: ActiveChip[] = []
+  if (userID) chips.push({ key: 'uid', label: `User: #${userID}`, onRemove: () => setUserID('') })
+  if (search) chips.push({ key: 'q', label: `Busca: ${search}`, onRemove: () => setSearch('') })
+  if (orderID) chips.push({ key: 'oid', label: `Order: #${orderID}`, onRemove: () => setOrderID('') })
+  if (typeF) chips.push({ key: 'type', label: `Tipo: ${typeF}`, onRemove: () => setTypeF('') })
+  if (statusF) chips.push({ key: 'status', label: `Status: ${statusF}`, onRemove: () => setStatusF('') })
+  if (dateFrom) chips.push({ key: 'df', label: `De: ${dateFrom}`, onRemove: () => setDateFrom('') })
+  if (dateTo) chips.push({ key: 'dt', label: `Até: ${dateTo}`, onRemove: () => setDateTo('') })
+  if (releaseFrom) chips.push({ key: 'rf', label: `Liberação ≥ ${releaseFrom}`, onRemove: () => setReleaseFrom('') })
+  if (releaseTo) chips.push({ key: 'rt', label: `Liberação ≤ ${releaseTo}`, onRemove: () => setReleaseTo('') })
 
   // Export CSV — fetch direto com Bearer token, dispara download.
   async function handleExportCSV() {
@@ -262,6 +312,22 @@ export default function CodWalletTransactions() {
           <p>Livro razão completo da carteira COD (todos os produtores)</p>
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <FilterButton
+            active={chips.length > 0}
+            count={chips.length}
+            onClick={openPanel}
+          />
+          <select
+            className="szv2-select"
+            value={perPage}
+            onChange={e => { setPerPage(Number(e.target.value)); setPage(1) }}
+            style={{ height: 38 }}
+            title="Itens por página"
+          >
+            <option value={50}>50/pág</option>
+            <option value={100}>100/pág</option>
+            <option value={200}>200/pág</option>
+          </select>
           <button
             type="button"
             className="szv2-btn szv2-btn-secondary"
@@ -273,134 +339,97 @@ export default function CodWalletTransactions() {
         </div>
       </div>
 
+      <ActiveFilterChips chips={chips} onClearAll={handleClearFilters} />
+
       {err && <div className="sz-alert-danger" style={{ marginBottom: 16 }}>{err}</div>}
 
-      {/* ── Top bar: filtros ─────────────────────────────────────────── */}
-      <div className="szv2-card" style={{ marginBottom: 16 }}>
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(4, minmax(120px, 1fr))',
-            gap: 12,
-          }}
-        >
-          <div className="szv2-field">
-            <label className="szv2-label">User ID</label>
-            <input
-              type="number"
-              className="szv2-input"
-              value={userID}
-              onChange={e => withResetPage(setUserID)(e.target.value)}
-              placeholder="ex.: 1234"
-            />
-          </div>
-          <div className="szv2-field">
-            <label className="szv2-label">Nome / e-mail</label>
-            <input
-              type="text"
-              className="szv2-input"
-              value={search}
-              onChange={e => withResetPage(setSearch)(e.target.value)}
-              placeholder="buscar produtor…"
-            />
-          </div>
-          <div className="szv2-field">
-            <label className="szv2-label">Order ID</label>
-            <input
-              type="number"
-              className="szv2-input"
-              value={orderID}
-              onChange={e => withResetPage(setOrderID)(e.target.value)}
-              placeholder="ex.: 5678"
-            />
-          </div>
-          <div className="szv2-field">
-            <label className="szv2-label">Tipo</label>
-            <select
-              className="szv2-select"
-              value={typeF}
-              onChange={e => withResetPage(setTypeF)(e.target.value)}
-            >
-              <option value="">Todos</option>
-              {types.map(t => (
-                <option key={t} value={t}>{t}</option>
-              ))}
-            </select>
-          </div>
-          <div className="szv2-field">
-            <label className="szv2-label">Status</label>
-            <select
-              className="szv2-select"
-              value={statusF}
-              onChange={e => withResetPage(setStatusF)(e.target.value)}
-            >
-              <option value="">Todos</option>
-              {STATUS_LIST.map(s => (
-                <option key={s} value={s}>{s}</option>
-              ))}
-            </select>
-          </div>
-          <div className="szv2-field">
-            <label className="szv2-label">Criado de</label>
-            <input
-              type="date"
-              className="szv2-input"
-              value={dateFrom}
-              onChange={e => withResetPage(setDateFrom)(e.target.value)}
-            />
-          </div>
-          <div className="szv2-field">
-            <label className="szv2-label">Criado até</label>
-            <input
-              type="date"
-              className="szv2-input"
-              value={dateTo}
-              onChange={e => withResetPage(setDateTo)(e.target.value)}
-            />
-          </div>
-          <div className="szv2-field">
-            <label className="szv2-label">Liberação de</label>
-            <input
-              type="date"
-              className="szv2-input"
-              value={releaseFrom}
-              onChange={e => withResetPage(setReleaseFrom)(e.target.value)}
-            />
-          </div>
-          <div className="szv2-field">
-            <label className="szv2-label">Liberação até</label>
-            <input
-              type="date"
-              className="szv2-input"
-              value={releaseTo}
-              onChange={e => withResetPage(setReleaseTo)(e.target.value)}
-            />
-          </div>
-          <div className="szv2-field" style={{ display: 'flex', alignItems: 'flex-end', gap: 8 }}>
-            <div style={{ flex: 1 }}>
-              <label className="szv2-label">Por página</label>
-              <select
-                className="szv2-select"
-                value={perPage}
-                onChange={e => { setPerPage(Number(e.target.value)); setPage(1) }}
-              >
-                <option value={50}>50</option>
-                <option value={100}>100</option>
-                <option value={200}>200</option>
-              </select>
-            </div>
-            <button
-              type="button"
-              className="szv2-btn szv2-btn-secondary"
-              onClick={handleClearFilters}
-              disabled={loading}
-              style={{ marginBottom: 0 }}
-            >
-              Limpar
-            </button>
-          </div>
-        </div>
-      </div>
+      <FilterTopPanel
+        open={filterOpen}
+        onClose={() => setFilterOpen(false)}
+        onApply={applyFilters}
+        onClear={handleClearFilters}
+        title="Filtros"
+      >
+        <FilterField label="Data inicial (criado)">
+          <input
+            type="date"
+            style={filterInputStyle}
+            value={draftDateFrom}
+            onChange={e => setDraftDateFrom(e.target.value)}
+          />
+        </FilterField>
+        <FilterField label="Data final (criado)">
+          <input
+            type="date"
+            style={filterInputStyle}
+            value={draftDateTo}
+            onChange={e => setDraftDateTo(e.target.value)}
+          />
+        </FilterField>
+        <FilterField label="Liberação de">
+          <input
+            type="date"
+            style={filterInputStyle}
+            value={draftReleaseFrom}
+            onChange={e => setDraftReleaseFrom(e.target.value)}
+          />
+        </FilterField>
+        <FilterField label="Liberação até">
+          <input
+            type="date"
+            style={filterInputStyle}
+            value={draftReleaseTo}
+            onChange={e => setDraftReleaseTo(e.target.value)}
+          />
+        </FilterField>
+        <FilterField label="Tipo">
+          <select
+            style={filterInputStyle}
+            value={draftTypeF}
+            onChange={e => setDraftTypeF(e.target.value)}
+          >
+            <option value="">Todos</option>
+            {types.map(t => <option key={t} value={t}>{t}</option>)}
+          </select>
+        </FilterField>
+        <FilterField label="Status">
+          <select
+            style={filterInputStyle}
+            value={draftStatusF}
+            onChange={e => setDraftStatusF(e.target.value)}
+          >
+            <option value="">Todos</option>
+            {STATUS_LIST.map(s => <option key={s} value={s}>{s}</option>)}
+          </select>
+        </FilterField>
+        <FilterField label="User ID">
+          <input
+            type="number"
+            style={filterInputStyle}
+            value={draftUserID}
+            onChange={e => setDraftUserID(e.target.value)}
+            placeholder="ex.: 1234"
+          />
+        </FilterField>
+        <FilterField label="Order ID">
+          <input
+            type="number"
+            style={filterInputStyle}
+            value={draftOrderID}
+            onChange={e => setDraftOrderID(e.target.value)}
+            placeholder="ex.: 5678"
+          />
+        </FilterField>
+        <FilterField label="Busca (nome / e-mail)">
+          <input
+            type="search"
+            style={filterInputStyle}
+            value={draftSearch}
+            onChange={e => setDraftSearch(e.target.value)}
+            placeholder="buscar produtor…"
+          />
+        </FilterField>
+      </FilterTopPanel>
 
       {/* ── Stats: totalizador + mini KPIs por tipo + status ────────── */}
       {stats && (
