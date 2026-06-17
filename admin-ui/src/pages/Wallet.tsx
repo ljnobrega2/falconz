@@ -428,7 +428,8 @@ function TabClientes() {
   const [page, setPage] = useState(1)
   const perPage = 100
   const [q, setQ] = useState('')
-  const [searchInput, setSearchInput] = useState('')
+  const [draftQ, setDraftQ] = useState('')
+  const [filterOpen, setFilterOpen] = useState(false)
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState('')
   const [toast, setToast] = useState<{ kind: 'ok' | 'err'; msg: string } | null>(null)
@@ -451,9 +452,12 @@ function TabClientes() {
     setToast({ kind, msg }); setTimeout(() => setToast(null), 5000)
   }
 
-  function applySearch(e: React.FormEvent) {
-    e.preventDefault(); setPage(1); setQ(searchInput.trim())
-  }
+  function openPanel()   { setDraftQ(q); setFilterOpen(true) }
+  function applyFilters() { setPage(1); setQ(draftQ.trim()); setFilterOpen(false) }
+  function clearFilters() { setDraftQ(''); setQ(''); setPage(1); setFilterOpen(false) }
+
+  const chips: ActiveChip[] = []
+  if (q) chips.push({ key: 'q', label: `Busca: ${q}`, onRemove: () => { setQ(''); setPage(1) } })
 
   const totalPages = Math.max(1, Math.ceil(total / perPage))
 
@@ -461,11 +465,16 @@ function TabClientes() {
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
         <span style={{ fontSize: 14, color: 'var(--szv2-text-muted)' }}>{total} cliente(s) com carteira</span>
-        <button type="button" className="szv2-btn szv2-btn-brand"
-          onClick={() => setPixModal({} as ClienteRow)}>
-          + Recarga PIX por cliente
-        </button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <FilterButton active={chips.length > 0} count={chips.length} onClick={openPanel} />
+          <button type="button" className="szv2-btn szv2-btn-brand"
+            onClick={() => setPixModal({} as ClienteRow)}>
+            + Recarga PIX por cliente
+          </button>
+        </div>
       </div>
+
+      <ActiveFilterChips chips={chips} onClearAll={clearFilters} />
 
       {err && <div className="sz-alert-danger" style={{ marginBottom: 16 }}>{err}</div>}
       {toast && (
@@ -474,18 +483,23 @@ function TabClientes() {
         </div>
       )}
 
-      {/* Busca */}
-      <div className="szv2-card" style={{ marginBottom: 16 }}>
-        <form onSubmit={applySearch} style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
-          <input className="szv2-input" placeholder="Buscar por email, nome ou user_id…"
-            value={searchInput} onChange={e => setSearchInput(e.target.value)} style={{ flex: 1 }} />
-          <button type="submit" className="szv2-btn szv2-btn-secondary">Buscar</button>
-          {q && (
-            <button type="button" className="szv2-btn szv2-btn-secondary"
-              onClick={() => { setSearchInput(''); setQ(''); setPage(1) }}>Limpar</button>
-          )}
-        </form>
-      </div>
+      <FilterTopPanel
+        open={filterOpen}
+        onClose={() => setFilterOpen(false)}
+        onApply={applyFilters}
+        onClear={clearFilters}
+        title="Filtros — Clientes"
+      >
+        <FilterField label="Busca">
+          <input
+            type="search"
+            style={filterInputStyle}
+            placeholder="Email, nome ou user_id…"
+            value={draftQ}
+            onChange={e => setDraftQ(e.target.value)}
+          />
+        </FilterField>
+      </FilterTopPanel>
 
       {/* Tabela */}
       <div className="szv2-table-wrap">
@@ -1331,12 +1345,28 @@ function TabPixReconciliacao() {
   const [pixItems, setPixItems] = useState<PixRow[]>([])
   const [pixTotal, setPixTotal] = useState(0)
   const [pixStatus, setPixStatus] = useState('pendente')
+  const [draftPixStatus, setDraftPixStatus] = useState('pendente')
+  const [filterOpen, setFilterOpen] = useState(false)
   const [crons, setCrons] = useState<CronItem[]>([])
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState('')
   const [toast, setToast] = useState<{ kind: 'ok' | 'err'; msg: string } | null>(null)
   const [acting, setActing] = useState<number | null>(null)
   const [triggerBusy, setTriggerBusy] = useState(false)
+
+  function openPanel()    { setDraftPixStatus(pixStatus); setFilterOpen(true) }
+  function applyFilters() { setPixStatus(draftPixStatus); setFilterOpen(false) }
+  function clearFilters() { setDraftPixStatus(''); setPixStatus(''); setFilterOpen(false) }
+
+  const PIX_STATUS_LABELS: Record<string, string> = {
+    pendente: 'Pendente', confirmado: 'Confirmado', expirado: 'Expirado', cancelado: 'Cancelado',
+  }
+  const chips: ActiveChip[] = []
+  if (pixStatus) chips.push({
+    key: 'status',
+    label: `Status: ${PIX_STATUS_LABELS[pixStatus] || pixStatus}`,
+    onRemove: () => setPixStatus(''),
+  })
 
   function showToast(kind: 'ok' | 'err', msg: string) {
     setToast({ kind, msg }); setTimeout(() => setToast(null), 5000)
@@ -1393,6 +1423,34 @@ function TabPixReconciliacao() {
 
   return (
     <div>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
+        <FilterButton active={chips.length > 0} count={chips.length} onClick={openPanel} />
+      </div>
+
+      <ActiveFilterChips chips={chips} onClearAll={clearFilters} />
+
+      <FilterTopPanel
+        open={filterOpen}
+        onClose={() => setFilterOpen(false)}
+        onApply={applyFilters}
+        onClear={clearFilters}
+        title="Filtros — Recargas PIX"
+      >
+        <FilterField label="Status">
+          <select
+            style={filterInputStyle}
+            value={draftPixStatus}
+            onChange={e => setDraftPixStatus(e.target.value)}
+          >
+            <option value="">Todos status</option>
+            <option value="pendente">Pendente</option>
+            <option value="confirmado">Confirmado</option>
+            <option value="expirado">Expirado</option>
+            <option value="cancelado">Cancelado</option>
+          </select>
+        </FilterField>
+      </FilterTopPanel>
+
       {err && <div className="sz-alert-danger" style={{ marginBottom: 16 }}>{err}</div>}
       {toast && (
         <div className={toast.kind === 'ok' ? 'sz-alert-success' : 'sz-alert-danger'} style={{ marginBottom: 16 }}>
@@ -1445,13 +1503,6 @@ function TabPixReconciliacao() {
       <div className="szv2-card">
         <div className="szv2-card-head">
           <div><h2>Recargas PIX</h2><p className="szv2-card-sub">{pixTotal} registro(s)</p></div>
-          <select className="szv2-select" style={{ width: 180 }} value={pixStatus} onChange={e => setPixStatus(e.target.value)}>
-            <option value="">Todos status</option>
-            <option value="pendente">Pendente</option>
-            <option value="confirmado">Confirmado</option>
-            <option value="expirado">Expirado</option>
-            <option value="cancelado">Cancelado</option>
-          </select>
         </div>
         <div className="szv2-table-wrap">
           <table className="szv2-table">

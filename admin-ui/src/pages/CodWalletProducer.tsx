@@ -330,6 +330,9 @@ function FinancialSection() {
   const def = defaultDateRange()
   const [from, setFrom] = useState(def.from)
   const [to, setTo] = useState(def.to)
+  const [draftFrom, setDraftFrom] = useState(def.from)
+  const [draftTo, setDraftTo] = useState(def.to)
+  const [filterOpen, setFilterOpen] = useState(false)
   const [finSummary, setFinSummary] = useState<FinSummary | null>(null)
   const [finRows, setFinRows] = useState<FinProducerRow[]>([])
   const [loading, setLoading] = useState(false)
@@ -351,7 +354,18 @@ function FinancialSection() {
     }
   }
 
-  useEffect(() => { load() }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { load() }, [from, to]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  function openPanel()    { setDraftFrom(from); setDraftTo(to); setFilterOpen(true) }
+  function applyFilters() { setFrom(draftFrom); setTo(draftTo); setFilterOpen(false) }
+  function clearFilters() {
+    setDraftFrom(def.from); setDraftTo(def.to)
+    setFrom(def.from); setTo(def.to); setFilterOpen(false)
+  }
+
+  const chips: ActiveChip[] = []
+  if (from !== def.from) chips.push({ key: 'from', label: `De: ${from}`, onRemove: () => setFrom(def.from) })
+  if (to   !== def.to)   chips.push({ key: 'to',   label: `Até: ${to}`,   onRemove: () => setTo(def.to) })
 
   return (
     <div className="szv2-card" style={{ marginBottom: 24 }}>
@@ -363,37 +377,46 @@ function FinancialSection() {
             Espelha tab_fin_produtores do WP.
           </p>
         </div>
-        {/* Filtro de data */}
-        <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap' }}>
-          <label style={{ fontSize: 12, color: 'var(--szv2-text-muted)' }}>
-            De
-            <input
-              type="date"
-              className="szv2-input"
-              style={{ display: 'block', width: 140 }}
-              value={from}
-              onChange={e => setFrom(e.target.value)}
-            />
-          </label>
-          <label style={{ fontSize: 12, color: 'var(--szv2-text-muted)' }}>
-            Até
-            <input
-              type="date"
-              className="szv2-input"
-              style={{ display: 'block', width: 140 }}
-              value={to}
-              onChange={e => setTo(e.target.value)}
-            />
-          </label>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <FilterButton active={chips.length > 0} count={chips.length} onClick={openPanel} />
           <button
             className="szv2-btn szv2-btn-secondary"
             onClick={load}
             disabled={loading}
           >
-            {loading ? 'Buscando…' : 'Filtrar'}
+            {loading ? 'Buscando…' : 'Atualizar'}
           </button>
         </div>
       </div>
+
+      <div style={{ padding: '0 16px' }}>
+        <ActiveFilterChips chips={chips} onClearAll={clearFilters} />
+      </div>
+
+      <FilterTopPanel
+        open={filterOpen}
+        onClose={() => setFilterOpen(false)}
+        onApply={applyFilters}
+        onClear={clearFilters}
+        title="Filtros — Financeiro"
+      >
+        <FilterField label="Data inicial">
+          <input
+            type="date"
+            style={filterInputStyle}
+            value={draftFrom}
+            onChange={e => setDraftFrom(e.target.value)}
+          />
+        </FilterField>
+        <FilterField label="Data final">
+          <input
+            type="date"
+            style={filterInputStyle}
+            value={draftTo}
+            onChange={e => setDraftTo(e.target.value)}
+          />
+        </FilterField>
+      </FilterTopPanel>
 
       {err && <div className="sz-alert-danger" style={{ margin: '12px 0' }}>{err}</div>}
 
