@@ -489,51 +489,91 @@ Padrão: draft state local → aplica só ao confirmar; data inicial/final padr�
 
 ---
 
-## ⏳ Próximos passos — onde paramos
+## ⏳ Status deploy
 
-### 1. Deploy v463+v464 no VPS (PENDENTE — bloqueia validação)
+| Commit | Conteúdo | VPS rodou? |
+|---|---|---|
+| `4b675e5` v463 | FilterTopPanel + OrderDetail UTM/NFE/tracking + migration v463 (SQL renames + ADD cols) | ❌ NÃO |
+| `81f79c2` v464 | CheckoutLinks CRUD + Affiliates/Commissions enriquecidos + Products sync + 16 telas FilterTopPanel | ❌ NÃO |
+| `54e9187` v465 | Wallet + CodWalletProducer — inputs inline movidos p/ dentro do FilterTopPanel | ✅ SIM (só admin-ui) |
+
+**Bloqueio:** validação completa depende de rodar v463+v464 (SQL + admin-service rebuild). Sem isso, Wallet Produtor COD / Transações COD / Saques COD seguem com erro `column "user_id" does not exist`.
+
+---
+
+## 🚀 Deploy v463+v464 completo (PENDENTE)
+
 ```bash
+ssh -p 10037 administrator@93.127.141.6
+sudo -i
+
 cd /opt/senderzz-v459 && git pull origin main
-docker exec -i senderzz-postgres psql -U senderzz -d senderzz < infra/postgres/schema-fixes-v463.sql 2>&1 | tail -15
-cd infra/docker && docker compose build admin-service admin-ui 2>&1 | tail -8
+
+docker exec -i senderzz-postgres psql -U senderzz -d senderzz < infra/postgres/schema-fixes-v463.sql 2>&1 | tail -20
+
+cd infra/docker && docker compose build admin-service admin-ui 2>&1 | tail -10
+
 docker rm -f senderzz-admin senderzz-admin-ui 2>/dev/null
+
 docker run -d --name senderzz-admin --network senderzz-net --restart unless-stopped -p 8087:8087 \
-  -e DATABASE_URL='postgresql://senderzz:...@senderzz-postgres:5432/senderzz?sslmode=disable' \
-  -e ADMIN_JWT_SECRET=... -e APP_BASE_URL=https://app.senderzz.com.br -e PORT=8087 \
+  -e DATABASE_URL='postgresql://senderzz:VB76BoHhg94K16jcVnzJxvBLEp47fLnXG17YKVbu@senderzz-postgres:5432/senderzz?sslmode=disable' \
+  -e ADMIN_JWT_SECRET=98cd2c9d45c8a84b9ffbd5ca7d5fd3386ab138e5155aed7ec85e06e354e66bed \
+  -e APP_BASE_URL=https://app.senderzz.com.br -e PORT=8087 -e TZ=America/Sao_Paulo \
   docker-admin-service:latest
+
 docker run -d --name senderzz-admin-ui --network senderzz-net --restart unless-stopped -p 8089:80 docker-admin-ui:latest
-sleep 3 && docker logs senderzz-admin --tail 20
+
+sleep 3 && docker logs senderzz-admin --tail 25 && echo "---UI---" && docker logs senderzz-admin-ui --tail 10
 ```
 
-### 2. Validação em browser (após deploy)
+---
+
+## ✅ Validação em browser (após deploy)
+
 Cada tela com FilterTopPanel: confirmar abre/fecha, draft state, chips com X-to-remove, aplica só ao confirmar.
+
 Telas críticas:
 - [ ] Wallet Produtor COD — sem erro `column "user_id" does not exist`
 - [ ] Transações COD — sem erro `t.user_id`
 - [ ] Saques COD — colunas novas (`fee/net/holder_*`)
 - [ ] Carteira Afiliados — colunas `balance/pending_balance/debt_amount`
-- [ ] Products — botão sync funciona quando vazio
+- [ ] Products — botão "Sincronizar do histórico" funciona quando vazio
 - [ ] CheckoutLinks — criar link + copy URL
 - [ ] OrderDetail — UTM/NFE/tracking aparecem quando há meta gravada
+- [ ] OrderDetail — telefone motoboy clicável (tel:) + placa
+- [ ] Affiliates — Tel/CPF/PIX/links/clicks/Vendido 30d preenchidos
+- [ ] Commissions — Pedido#, emails, link checkout com copy
 
-### 3. Tarefas pendentes (próxima sessão)
+---
+
+## 📋 Próximos passos (curto prazo, após deploy)
+
 - ⏳ **Task #8** — Empty states + loading skeletons (esqueletos cinza em todas listas durante fetch)
-- ⏳ **Lote 3 FilterTopPanel**: pages que ainda não têm filtro (NotificacoesPWA, OrderMetaNormalization, AffiliateRules, CodTaxasEntrega, TrackingBrand) — avaliar se vale ou se são config-only
-- ⏳ **Drag-and-drop reorder** no sidebar (planejado)
 - ⏳ **Skeleton de OrderDetail** quando lazy fetch
+- ⏳ **DNS `app.senderzz.com.br`** — apontar via CloudFlare CNAME ao túnel nomeado persistente (hoje em URL trycloudflare temporária `pioneer-salon-domains-wheel.trycloudflare.com` — cai quando `cloudflared` reinicia)
+- ⏳ **Backup automatizado Postgres** — `pg_dump` cron + retenção 30 dias + offsite
 
-### 4. Roadmap de funcionalidades não tocadas
-- ⏳ **Portal User V2 (React)** — toda Fase B do roadmap original (templates `portal/v2/sections/*.php` ainda no PHP legado)
-- ⏳ **PWA Motoboy migração** — ainda em PHP/JS
-- ⏳ **Sincronização WP → Postgres** — atualmente só read-once via pgloader; não há CDC. Plano: substituir definitivamente por escritas Go puras quando portal user V2 estiver pronto.
-- ⏳ **Webhook bridge MELHOR ENVIO** ainda no plugin WP — migrar p/ `senderzz-labels` Go
-- ⏳ **PIX confirmation guard** — ainda PHP; migrar p/ Go com mesma fail-closed semantic
-- ⏳ **DNS `app.senderzz.com.br`** — apontar via CloudFlare CNAME ao túnel persistente (hoje em URL trycloudflare temporária)
-- ⏳ **Backup automatizado Postgres** — pg_dump cron + retenção 30 dias
+## 🗺️ Médio prazo
 
-### 5. Riscos conhecidos
-- **CDN do Vite no admin-ui Dockerfile** — precisa confirmar que build com nginx servindo `/admin/*` está estável; rebuilds frequentes geram inconsistência de hash dos assets se cache do navegador agressivo
-- **`senderzz_affiliate_transactions` não foi criada no schema-affiliates.sql** — só existe em `schema-fixes-v460.sql`. Se algum env não tiver v460 aplicado, queries falham. v463 guard com DO block protege ALTER, mas SELECT/INSERT do código não — risco baixo (todos prod já tem v460).
-- **Migração de produtos via `sync-from-orders`** não preenche descrição/categoria/imagem — só nome/sku/preço. Após sync inicial, lojista precisa completar via UI
-- **Cloudflare quick tunnel é temporário** (`pioneer-salon-domains-wheel.trycloudflare.com`) — cai quando o processo `cloudflared` reinicia. Migrar para tunnel nomeado persistente
+- ⏳ **Drag-and-drop reorder** no sidebar (planejado)
+- ⏳ **Lote 3 FilterTopPanel decidido SKIP** (NotificacoesPWA, OrderMetaNormalization, AffiliateRules, CodTaxasEntrega, TrackingBrand — config-only sem lista filtrável; validado nesta sessão)
+- ⏳ **Telas P2 restantes**: PushTecnico admin (VAPID), ApiDocs viewer
+- ⏳ **Webhook bridge MELHOR ENVIO** — migrar do plugin WP p/ `senderzz-labels` Go
+- ⏳ **PIX confirmation guard** — migrar PHP → Go com mesma fail-closed semantic
+
+## 🌐 Longo prazo (Fase B)
+
+- ⏳ **Portal User V2 (React)** — substituir templates `portal/v2/sections/*.php`
+- ⏳ **PWA Motoboy migração** — ainda em PHP/JS, mover p/ React/SW dedicado
+- ⏳ **CDC WP → Postgres** — substituir pgloader read-once por replicação contínua (debezium ou writes Go diretas)
+
+---
+
+## ⚠️ Riscos conhecidos
+
+- **CDN admin-ui** — rebuilds frequentes geram hash novo dos assets; navegador agressivo precisa hard-refresh (Ctrl+Shift+R) após cada deploy
+- **`senderzz_affiliate_transactions`** — só existe em `schema-fixes-v460.sql`. Se algum env não tiver v460 aplicado, queries falham. v463 guard com DO block protege ALTER, mas SELECT/INSERT do código não — risco baixo (todos prod já tem v460)
+- **`sync-from-orders`** — só preenche nome/sku/preço; descrição/categoria/imagem ficam vazias. Lojista completa via UI após import
+- **Cloudflare quick tunnel** — URL `trycloudflare.com` é temporária. Se `cloudflared` cair, deploy URL muda; CNAME `app.senderzz.com.br` é a solução
+- **NAT DatabaseMart** — SSH bloqueado direto do Mac; toda interação VPS via porta 10037 + tunnel cloudflare
 
