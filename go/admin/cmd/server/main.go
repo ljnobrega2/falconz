@@ -102,6 +102,7 @@ func main() {
 	zonasH := &handlers.ZonasHandler{Pool: pool}
 	settingsH := &handlers.SettingsHandler{Pool: pool}
 	prdH := &handlers.ProductsHandler{Pool: pool}
+	chkH := &handlers.CheckoutLinksHandler{Pool: pool}
 
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
@@ -430,9 +431,17 @@ func main() {
 
 			// Produtos (sz_products)
 			r.Get("/products", prdH.List)
+			r.Get("/products/stats", prdH.Stats)
 			r.Post("/products", prdH.Create)
+			r.Post("/products/sync-from-orders", prdH.SyncFromOrders)
 			r.Put("/products/{id}", prdH.Update)
 			r.Delete("/products/{id}", prdH.Delete)
+
+			// Gestão de Links de Checkout (senderzz_affiliate_links)
+			r.Get("/checkout-links", chkH.List)
+			r.Post("/checkout-links", chkH.Create)
+			r.Put("/checkout-links/{id}", chkH.Update)
+			r.Delete("/checkout-links/{id}", chkH.Delete)
 		})
 	})
 

@@ -1,5 +1,12 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api'
+import FilterButton from '../components/FilterButton'
+import FilterTopPanel, {
+  FilterField,
+  filterInputStyle,
+  ActiveFilterChips,
+  type ActiveChip,
+} from '../components/FilterTopPanel'
 
 type Counts = {
   split: number
@@ -65,9 +72,19 @@ export default function AuditEngine() {
   const [problems, setProblems] = useState<Problem[]>([])
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState('')
-  const [typeFilter, setTypeFilter] = useState<TypeFilter>('')
   const [busy, setBusy] = useState(false)
   const [toast, setToast] = useState<{ kind: 'ok' | 'err'; msg: string } | null>(null)
+
+  // Filtros aplicados.
+  const [typeFilter, setTypeFilter] = useState<TypeFilter>('')
+  const [dataIni, setDataIni] = useState('')
+  const [dataFim, setDataFim] = useState('')
+
+  // Drafts no painel.
+  const [draftType, setDraftType] = useState<TypeFilter>('')
+  const [draftIni, setDraftIni] = useState('')
+  const [draftFim, setDraftFim] = useState('')
+  const [filterOpen, setFilterOpen] = useState(false)
 
   async function load() {
     setLoading(true)
@@ -75,9 +92,13 @@ export default function AuditEngine() {
     try {
       const c = await api<Counts>('/audit/counts')
       setCounts(c)
-      const qs = typeFilter ? `?type=${typeFilter}&limit=200` : '?limit=200'
-      const p = await api<{ items: Problem[]; count: number }>(`/audit/problems${qs}`)
-      setProblems(p.items || [])
+      const p = new URLSearchParams()
+      if (typeFilter) p.set('type', typeFilter)
+      if (dataIni) p.set('data_ini', dataIni)
+      if (dataFim) p.set('data_fim', dataFim)
+      p.set('limit', '200')
+      const r = await api<{ items: Problem[]; count: number }>(`/audit/problems?${p.toString()}`)
+      setProblems(r.items || [])
     } catch (e: any) {
       setErr(e.message || 'Erro ao carregar')
     } finally {
@@ -85,7 +106,21 @@ export default function AuditEngine() {
     }
   }
 
-  useEffect(() => { load() }, [typeFilter])
+  useEffect(() => { load() /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [typeFilter, dataIni, dataFim])
+
+  function openPanel() {
+    setDraftType(typeFilter); setDraftIni(dataIni); setDraftFim(dataFim)
+    setFilterOpen(true)
+  }
+  function applyFilters() {
+    setTypeFilter(draftType); setDataIni(draftIni); setDataFim(draftFim)
+    setFilterOpen(false)
+  }
+  function clearFilters() {
+    setTypeFilter(''); setDataIni(''); setDataFim('')
+    setDraftType(''); setDraftIni(''); setDraftFim('')
+    setFilterOpen(false)
+  }
 
   function showToast(kind: 'ok' | 'err', msg: string) {
     setToast({ kind, msg })
@@ -136,6 +171,13 @@ export default function AuditEngine() {
     }
   }
 
+  // Chips ativos.
+  const chips: ActiveChip[] = []
+  if (typeFilter) chips.push({ key: 'type', label: `Tipo: ${TYPE_LABELS[typeFilter]}`, onRemove: () => setTypeFilter('') })
+  if (dataIni) chips.push({ key: 'ini', label: `De: ${dataIni}`, onRemove: () => setDataIni('') })
+  if (dataFim) chips.push({ key: 'fim', label: `Até: ${dataFim}`, onRemove: () => setDataFim('') })
+  const activeCount = chips.length
+
   return (
     <div>
       {err && <div className="sz-alert-danger" style={{ marginBottom: 16 }}>{err}</div>}
@@ -148,6 +190,18 @@ export default function AuditEngine() {
           {toast.msg}
         </div>
       )}
+
+      <div className="szv2-section-head">
+        <div>
+          <h1>Auditoria financeira</h1>
+          <p>Divergências entre pedidos, comissões e carteiras.</p>
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <FilterButton active={activeCount > 0} count={activeCount} onClick={openPanel} />
+        </div>
+      </div>
+
+      <ActiveFilterChips chips={chips} onClearAll={clearFilters} />
 
       {/* KPIs */}
       {counts && (
@@ -179,23 +233,13 @@ export default function AuditEngine() {
         </div>
       </div>
 
-      {/* Filtro tipo */}
+      {/* Lista */}
       <div className="szv2-card" style={{ marginTop: 24 }}>
         <div className="szv2-card-head">
           <div>
             <h2>Pedidos com divergência</h2>
             <p className="szv2-card-sub">{problems.length} registro(s)</p>
           </div>
-          <select
-            value={typeFilter}
-            onChange={e => setTypeFilter(e.target.value as TypeFilter)}
-            className="szv2-select"
-            disabled={busy || loading}
-          >
-            {(Object.keys(TYPE_LABELS) as TypeFilter[]).map(k => (
-              <option key={k} value={k}>{TYPE_LABELS[k]}</option>
-            ))}
-          </select>
         </div>
 
         {loading ? (
@@ -266,6 +310,44 @@ export default function AuditEngine() {
           </div>
         )}
       </div>
+
+      <FilterTopPanel
+        open={filterOpen}
+        onClose={() => setFilterOpen(false)}
+        onApply={applyFilters}
+        onClear={clearFilters}
+        title="Filtros"
+      >
+        <FilterField label="Data inicial">
+          <input
+            type="date"
+            style={filterInputStyle}
+            value={draftIni}
+            max={draftFim || undefined}
+            onChange={e => setDraftIni(e.target.value)}
+          />
+        </FilterField>
+        <FilterField label="Data final">
+          <input
+            type="date"
+            style={filterInputStyle}
+            value={draftFim}
+            min={draftIni || undefined}
+            onChange={e => setDraftFim(e.target.value)}
+          />
+        </FilterField>
+        <FilterField label="Tipo">
+          <select
+            style={filterInputStyle}
+            value={draftType}
+            onChange={e => setDraftType(e.target.value as TypeFilter)}
+          >
+            {(Object.keys(TYPE_LABELS) as TypeFilter[]).map(k => (
+              <option key={k} value={k}>{TYPE_LABELS[k]}</option>
+            ))}
+          </select>
+        </FilterField>
+      </FilterTopPanel>
     </div>
   )
 }

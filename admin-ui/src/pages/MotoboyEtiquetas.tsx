@@ -11,6 +11,13 @@
 
 import { useEffect, useState } from 'react'
 import { api } from '../api'
+import FilterButton from '../components/FilterButton'
+import FilterTopPanel, {
+  FilterField,
+  filterInputStyle,
+  ActiveFilterChips,
+  type ActiveChip,
+} from '../components/FilterTopPanel'
 
 // ─── Tipos ────────────────────────────────────────────────────────────────
 
@@ -82,6 +89,37 @@ export default function MotoboyEtiquetas() {
   const [items, setItems] = useState<Etiqueta[]>([])
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState('')
+
+  // Drafts no painel.
+  const [draftDate, setDraftDate] = useState<string>(date)
+  const [draftStatus, setDraftStatus] = useState<StatusFiltro>(status)
+  const [filterOpen, setFilterOpen] = useState(false)
+
+  function openPanel() {
+    setDraftDate(date); setDraftStatus(status)
+    setFilterOpen(true)
+  }
+  function applyFilters() {
+    if (draftDate) setDate(draftDate)
+    setStatus(draftStatus)
+    setFilterOpen(false)
+  }
+  function clearFilters() {
+    const t = todayISO()
+    setDate(t); setStatus('agendado')
+    setDraftDate(t); setDraftStatus('agendado')
+    setFilterOpen(false)
+  }
+
+  // Chips ativos.
+  const today = todayISO()
+  const chips: ActiveChip[] = []
+  if (date !== today) chips.push({ key: 'date', label: `Data: ${date}`, onRemove: () => setDate(today) })
+  if (status !== 'agendado') {
+    const lbl = STATUS_LIST.find(s => s.key === status)?.label ?? status
+    chips.push({ key: 'status', label: `Status: ${lbl}`, onRemove: () => setStatus('agendado') })
+  }
+  const activeCount = chips.length
 
   async function load() {
     setLoading(true)
@@ -239,53 +277,22 @@ export default function MotoboyEtiquetas() {
           <div>
             <h2>Etiquetas Motoboy</h2>
             <p className="szv2-card-sub">
-              Lista pedidos do dia para impressão. QR Code é validado pelo PWA do motoboy ao iniciar rota.
+              {items.length} etiqueta(s) • {dateLabel} — QR Code validado pelo PWA do motoboy ao iniciar rota.
             </p>
           </div>
-          <button
-            type="button"
-            className="szv2-btn szv2-btn-brand"
-            onClick={() => window.print()}
-            disabled={loading || items.length === 0}
-          >
-            🖨️ Imprimir etiquetas
-          </button>
-        </div>
-
-        <div style={{
-          display: 'flex',
-          flexWrap: 'wrap',
-          gap: 12,
-          alignItems: 'flex-end',
-          padding: '12px 0 4px',
-        }}>
-          <div className="szv2-field" style={{ minWidth: 160 }}>
-            <label className="szv2-label">Data</label>
-            <input
-              type="date"
-              className="szv2-input"
-              value={date}
-              onChange={(e) => setDate(e.target.value)}
-              disabled={loading}
-            />
-          </div>
-          <div className="szv2-field" style={{ minWidth: 160 }}>
-            <label className="szv2-label">Status</label>
-            <select
-              className="szv2-select"
-              value={status}
-              onChange={(e) => setStatus(e.target.value as StatusFiltro)}
-              disabled={loading}
+          <div style={{ display: 'flex', gap: 8 }}>
+            <FilterButton active={activeCount > 0} count={activeCount} onClick={openPanel} />
+            <button
+              type="button"
+              className="szv2-btn szv2-btn-brand"
+              onClick={() => window.print()}
+              disabled={loading || items.length === 0}
             >
-              {STATUS_LIST.map(s => (
-                <option key={s.key} value={s.key}>{s.label}</option>
-              ))}
-            </select>
-          </div>
-          <div style={{ marginLeft: 'auto', fontSize: 13, color: 'var(--szv2-text-muted)' }}>
-            {items.length} etiqueta(s) • {dateLabel}
+              🖨️ Imprimir etiquetas
+            </button>
           </div>
         </div>
+        <ActiveFilterChips chips={chips} onClearAll={clearFilters} />
       </div>
 
       {/* Container que sobrevive ao @media print. */}
@@ -300,7 +307,7 @@ export default function MotoboyEtiquetas() {
           </div>
         ) : (
           <div className="sz-etiq-grid">
-            {items.map(e => (
+            {items.map((e) => (
               <div key={e.pedido_id} className="sz-etiq">
                 <div className="sz-etiq-header">
                   <div className="sz-etiq-num">#{e.wc_order_id}</div>
@@ -345,6 +352,34 @@ export default function MotoboyEtiquetas() {
           </div>
         )}
       </div>
+
+      <FilterTopPanel
+        open={filterOpen}
+        onClose={() => setFilterOpen(false)}
+        onApply={applyFilters}
+        onClear={clearFilters}
+        title="Filtros"
+      >
+        <FilterField label="Data">
+          <input
+            type="date"
+            style={filterInputStyle}
+            value={draftDate}
+            onChange={ev => setDraftDate(ev.target.value)}
+          />
+        </FilterField>
+        <FilterField label="Status">
+          <select
+            style={filterInputStyle}
+            value={draftStatus}
+            onChange={ev => setDraftStatus(ev.target.value as StatusFiltro)}
+          >
+            {STATUS_LIST.map(s => (
+              <option key={s.key} value={s.key}>{s.label}</option>
+            ))}
+          </select>
+        </FilterField>
+      </FilterTopPanel>
     </div>
   )
 }

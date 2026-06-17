@@ -1,5 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '../api'
+import FilterButton from '../components/FilterButton'
+import FilterTopPanel, {
+  FilterField,
+  filterInputStyle,
+  ActiveFilterChips,
+  type ActiveChip,
+} from '../components/FilterTopPanel'
 
 // ----- Tipos retornados pelo handler Go ---------------------------------------
 
@@ -95,11 +102,20 @@ export default function TpcClientes() {
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
   const [perPage] = useState(100)
-  const [q, setQ] = useState('')
-  const [searchInput, setSearchInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState('')
   const [toast, setToast] = useState<{ kind: 'ok' | 'err'; msg: string } | null>(null)
+
+  // Filtros aplicados.
+  const [q, setQ] = useState('')
+  const [dataIni, setDataIni] = useState('')
+  const [dataFim, setDataFim] = useState('')
+
+  // Drafts no painel.
+  const [draftQ, setDraftQ] = useState('')
+  const [draftIni, setDraftIni] = useState('')
+  const [draftFim, setDraftFim] = useState('')
+  const [filterOpen, setFilterOpen] = useState(false)
 
   // Estado de modal
   const [pixModal, setPixModal] = useState<ClienteRow | null>(null)
@@ -113,13 +129,15 @@ export default function TpcClientes() {
         q,
         limit: String(perPage),
         page: String(page),
-      }).toString()
+      })
+      if (dataIni) qs.set('data_ini', dataIni)
+      if (dataFim) qs.set('data_fim', dataFim)
       const r = await api<{
         items: ClienteRow[]
         total: number
         page: number
         per_page: number
-      }>(`/tpc-clientes?${qs}`)
+      }>(`/tpc-clientes?${qs.toString()}`)
       setItems(r.items || [])
       setTotal(r.total || 0)
     } catch (e: any) {
@@ -129,20 +147,38 @@ export default function TpcClientes() {
     }
   }
 
-  useEffect(() => { load() }, [q, page])
+  useEffect(() => { load() /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [q, dataIni, dataFim, page])
 
   function showToast(kind: 'ok' | 'err', msg: string) {
     setToast({ kind, msg })
     setTimeout(() => setToast(null), 5000)
   }
 
-  function applySearch(e: React.FormEvent) {
-    e.preventDefault()
+  function openPanel() {
+    setDraftQ(q); setDraftIni(dataIni); setDraftFim(dataFim)
+    setFilterOpen(true)
+  }
+  function applyFilters() {
+    // Reset paginação ao aplicar novos filtros.
     setPage(1)
-    setQ(searchInput.trim())
+    setQ(draftQ); setDataIni(draftIni); setDataFim(draftFim)
+    setFilterOpen(false)
+  }
+  function clearFilters() {
+    setPage(1)
+    setQ(''); setDataIni(''); setDataFim('')
+    setDraftQ(''); setDraftIni(''); setDraftFim('')
+    setFilterOpen(false)
   }
 
   const totalPages = Math.max(1, Math.ceil(total / perPage))
+
+  // Chips ativos.
+  const chips: ActiveChip[] = []
+  if (q) chips.push({ key: 'q', label: `Busca: ${q}`, onRemove: () => { setPage(1); setQ('') } })
+  if (dataIni) chips.push({ key: 'ini', label: `De: ${dataIni}`, onRemove: () => { setPage(1); setDataIni('') } })
+  if (dataFim) chips.push({ key: 'fim', label: `Até: ${dataFim}`, onRemove: () => { setPage(1); setDataFim('') } })
+  const activeCount = chips.length
 
   return (
     <div>
@@ -152,6 +188,7 @@ export default function TpcClientes() {
           <p>{total} cliente(s) com carteira</p>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
+          <FilterButton active={activeCount > 0} count={activeCount} onClick={openPanel} />
           <button
             type="button"
             className="szv2-btn szv2-btn-brand"
@@ -162,6 +199,8 @@ export default function TpcClientes() {
         </div>
       </div>
 
+      <ActiveFilterChips chips={chips} onClearAll={clearFilters} />
+
       {err && <div className="sz-alert-danger" style={{ marginBottom: 16 }}>{err}</div>}
       {toast && (
         <div
@@ -171,29 +210,6 @@ export default function TpcClientes() {
           {toast.msg}
         </div>
       )}
-
-      {/* Search bar */}
-      <div className="szv2-card" style={{ marginBottom: 16 }}>
-        <form onSubmit={applySearch} style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
-          <input
-            className="szv2-input"
-            placeholder="Buscar por email, nome ou user_id…"
-            value={searchInput}
-            onChange={e => setSearchInput(e.target.value)}
-            style={{ flex: 1 }}
-          />
-          <button type="submit" className="szv2-btn szv2-btn-secondary">Buscar</button>
-          {q && (
-            <button
-              type="button"
-              className="szv2-btn szv2-btn-secondary"
-              onClick={() => { setSearchInput(''); setQ(''); setPage(1) }}
-            >
-              Limpar
-            </button>
-          )}
-        </form>
-      </div>
 
       {/* Tabela principal */}
       <div className="szv2-table-wrap">
@@ -316,6 +332,42 @@ export default function TpcClientes() {
           onCancelled={() => showToast('ok', 'Recarga cancelada')}
         />
       )}
+
+      <FilterTopPanel
+        open={filterOpen}
+        onClose={() => setFilterOpen(false)}
+        onApply={applyFilters}
+        onClear={clearFilters}
+        title="Filtros"
+      >
+        <FilterField label="Data inicial">
+          <input
+            type="date"
+            style={filterInputStyle}
+            value={draftIni}
+            max={draftFim || undefined}
+            onChange={e => setDraftIni(e.target.value)}
+          />
+        </FilterField>
+        <FilterField label="Data final">
+          <input
+            type="date"
+            style={filterInputStyle}
+            value={draftFim}
+            min={draftIni || undefined}
+            onChange={e => setDraftFim(e.target.value)}
+          />
+        </FilterField>
+        <FilterField label="Busca (email / nome / user_id)">
+          <input
+            type="search"
+            style={filterInputStyle}
+            placeholder="ex.: joao@…"
+            value={draftQ}
+            onChange={e => setDraftQ(e.target.value)}
+          />
+        </FilterField>
+      </FilterTopPanel>
     </div>
   )
 }

@@ -1,5 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { api } from '../api'
+import FilterButton from '../components/FilterButton'
+import FilterTopPanel, {
+  FilterField,
+  filterInputStyle,
+  ActiveFilterChips,
+  type ActiveChip,
+} from '../components/FilterTopPanel'
 
 type CD = { id: number; nome: string; cidade: string; uf: string; ativo: boolean }
 type Zona = {
@@ -62,10 +69,20 @@ export default function Zonas() {
   const [cds, setCds] = useState<CD[]>([])
   const [zonas, setZonas] = useState<Zona[]>([])
   const [ceps, setCeps] = useState<CepRange[]>([])
+
+  // Filtros aplicados.
   const [cdFilter, setCdFilter] = useState<number | ''>('')
   const [textFilter, setTextFilter] = useState('')
   const [opFilter, setOpFilter] = useState('')
   const [zonaFilter, setZonaFilter] = useState('')
+
+  // Drafts no painel.
+  const [draftCd, setDraftCd] = useState<number | ''>('')
+  const [draftText, setDraftText] = useState('')
+  const [draftOp, setDraftOp] = useState('')
+  const [draftZona, setDraftZona] = useState('')
+  const [filterOpen, setFilterOpen] = useState(false)
+
   const [cepInput, setCepInput] = useState('')
   const [cepResult, setCepResult] = useState<CepCheckResult | null>(null)
   const [cepLoading, setCepLoading] = useState(false)
@@ -120,6 +137,31 @@ export default function Zonas() {
     }
   }
 
+  function openPanel() {
+    setDraftCd(cdFilter); setDraftText(textFilter); setDraftOp(opFilter); setDraftZona(zonaFilter)
+    setFilterOpen(true)
+  }
+  function applyFilters() {
+    setCdFilter(draftCd); setTextFilter(draftText); setOpFilter(draftOp); setZonaFilter(draftZona)
+    setFilterOpen(false)
+  }
+  function clearFilters() {
+    setCdFilter(''); setTextFilter(''); setOpFilter(''); setZonaFilter('')
+    setDraftCd(''); setDraftText(''); setDraftOp(''); setDraftZona('')
+    setFilterOpen(false)
+  }
+
+  // Chips ativos.
+  const chips: ActiveChip[] = []
+  if (cdFilter !== '') {
+    const cd = cds.find(c => c.id === cdFilter)
+    chips.push({ key: 'cd', label: `CD: ${cd?.nome || `#${cdFilter}`}`, onRemove: () => setCdFilter('') })
+  }
+  if (textFilter) chips.push({ key: 'q', label: `Busca: ${textFilter}`, onRemove: () => setTextFilter('') })
+  if (opFilter) chips.push({ key: 'op', label: `Operação: ${opFilter}`, onRemove: () => setOpFilter('') })
+  if (zonaFilter) chips.push({ key: 'zona', label: `Zona: ${zonaFilter}`, onRemove: () => setZonaFilter('') })
+  const activeCount = chips.length
+
   return (
     <div>
       <div className="szv2-section-head">
@@ -127,60 +169,14 @@ export default function Zonas() {
           <h1>Zonas de Entrega</h1>
           <p>{zonas.length} zonas · {ceps.length} faixas de CEP</p>
         </div>
-        {/* Filtro por CD */}
-        <select
-          className="szv2-select"
-          style={{ width: '200px' }}
-          value={cdFilter}
-          onChange={e => setCdFilter(e.target.value === '' ? '' : +e.target.value)}
-        >
-          <option value="">Todos CDs</option>
-          {cds.map(c => (
-            <option key={c.id} value={c.id}>
-              {c.nome} — {c.cidade}/{c.uf.toUpperCase()}
-            </option>
-          ))}
-        </select>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <FilterButton active={activeCount > 0} count={activeCount} onClick={openPanel} />
+        </div>
       </div>
+
+      <ActiveFilterChips chips={chips} onClearAll={clearFilters} />
 
       {err && <div className="sz-alert-danger">{err}</div>}
-
-      {/* Barra de filtros adicionais */}
-      <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
-        <input
-          className="szv2-input"
-          style={{ flex: '1', minWidth: '160px' }}
-          type="search"
-          placeholder="Buscar zona, CD ou CEP..."
-          value={textFilter}
-          onChange={e => setTextFilter(e.target.value)}
-        />
-        <select
-          className="szv2-select"
-          style={{ minWidth: '180px' }}
-          value={opFilter}
-          onChange={e => setOpFilter(e.target.value)}
-        >
-          <option value="">Todas as operações</option>
-          <option value="seg-sab">Segunda a sábado</option>
-          <option value="sexta">Apenas sexta-feira</option>
-          <option value="sabado">Apenas sábado</option>
-          <option value="domingo">Inclui domingo</option>
-        </select>
-        <select
-          className="szv2-select"
-          style={{ minWidth: '160px' }}
-          value={zonaFilter}
-          onChange={e => setZonaFilter(e.target.value)}
-        >
-          <option value="">Todas as zonas</option>
-          {zonas.map(z => (
-            <option key={z.id} value={z.nome.toLowerCase()}>
-              {z.nome}
-            </option>
-          ))}
-        </select>
-      </div>
 
       {/* Lista de zonas */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
@@ -334,6 +330,65 @@ export default function Zonas() {
           </tbody>
         </table>
       </div>
+
+      <FilterTopPanel
+        open={filterOpen}
+        onClose={() => setFilterOpen(false)}
+        onApply={applyFilters}
+        onClear={clearFilters}
+        title="Filtros"
+      >
+        <FilterField label="CD">
+          <select
+            style={filterInputStyle}
+            value={draftCd}
+            onChange={e => setDraftCd(e.target.value === '' ? '' : +e.target.value)}
+          >
+            <option value="">Todos CDs</option>
+            {cds.map(c => (
+              <option key={c.id} value={c.id}>
+                {c.nome} — {c.cidade}/{c.uf.toUpperCase()}
+              </option>
+            ))}
+          </select>
+        </FilterField>
+        <FilterField label="Operação">
+          <select
+            style={filterInputStyle}
+            value={draftOp}
+            onChange={e => setDraftOp(e.target.value)}
+          >
+            <option value="">Todas as operações</option>
+            <option value="seg-sab">Segunda a sábado</option>
+            <option value="sexta">Apenas sexta-feira</option>
+            <option value="sabado">Apenas sábado</option>
+            <option value="domingo">Inclui domingo</option>
+          </select>
+        </FilterField>
+        <FilterField label="Zona">
+          <select
+            style={filterInputStyle}
+            value={draftZona}
+            onChange={e => setDraftZona(e.target.value)}
+          >
+            <option value="">Todas as zonas</option>
+            {zonas.map(z => (
+              <option key={z.id} value={z.nome.toLowerCase()}>
+                {z.nome}
+              </option>
+            ))}
+          </select>
+        </FilterField>
+        <FilterField label="Busca (zona / CD / CEP)">
+          <input
+            type="search"
+            style={filterInputStyle}
+            placeholder="ex.: Centro, 01310"
+            value={draftText}
+            onChange={e => setDraftText(e.target.value)}
+          />
+        </FilterField>
+      </FilterTopPanel>
     </div>
   )
 }

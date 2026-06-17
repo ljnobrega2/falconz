@@ -1,5 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '../api'
+import FilterButton from '../components/FilterButton'
+import FilterTopPanel, {
+  FilterField,
+  filterInputStyle,
+  ActiveFilterChips,
+  type ActiveChip,
+} from '../components/FilterTopPanel'
 
 // MotoboyDashboard — espelho da aba Dashboard do módulo Motoboy do plugin PHP.
 // Endpoint: GET /motoboy-dashboard?date=YYYY-MM-DD (default hoje em America/Sao_Paulo).
@@ -102,6 +109,25 @@ export default function MotoboyDashboard() {
   const [loading, setLoading] = useState<boolean>(true)
   const [err, setErr] = useState<string>('')
 
+  // Painel de filtros: usa apenas Data (este dashboard é para uma única data).
+  const [draftDate, setDraftDate] = useState<string>(date)
+  const [filterOpen, setFilterOpen] = useState(false)
+
+  function openPanel() {
+    setDraftDate(date)
+    setFilterOpen(true)
+  }
+  function applyFilters() {
+    if (draftDate) setDate(draftDate)
+    setFilterOpen(false)
+  }
+  function clearFilters() {
+    const t = todayInSaoPaulo()
+    setDate(t)
+    setDraftDate(t)
+    setFilterOpen(false)
+  }
+
   // Carrega novamente sempre que a data muda.
   useEffect(() => {
     let cancelled = false
@@ -135,6 +161,12 @@ export default function MotoboyDashboard() {
   const kpis = data?.kpis
   const dateLabel = formatBR(data?.date || date)
 
+  // Chips: data é sempre exibida como chip "Data: ..." se diferente de hoje.
+  const today = todayInSaoPaulo()
+  const chips: ActiveChip[] = []
+  if (date !== today) chips.push({ key: 'date', label: `Data: ${dateLabel}`, onRemove: () => setDate(today) })
+  const activeCount = chips.length
+
   return (
     <div>
       {/* Top bar: data + título */}
@@ -144,32 +176,19 @@ export default function MotoboyDashboard() {
           <p>Visão operacional do dia — {dateLabel}</p>
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <label
-            htmlFor="szv2-mb-dash-date"
-            style={{ fontSize: 12, color: 'var(--szv2-text-muted)' }}
-          >
-            Data:
-          </label>
-          <input
-            id="szv2-mb-dash-date"
-            type="date"
-            className="szv2-input"
-            value={date}
-            max={todayInSaoPaulo()}
-            onChange={e => setDate(e.target.value || todayInSaoPaulo())}
-            disabled={loading}
-            style={{ minWidth: 160 }}
-          />
+          <FilterButton active={activeCount > 0} count={activeCount} onClick={openPanel} />
           <button
             type="button"
             className="szv2-btn szv2-btn-secondary"
-            onClick={() => setDate(todayInSaoPaulo())}
-            disabled={loading || date === todayInSaoPaulo()}
+            onClick={() => setDate(today)}
+            disabled={loading || date === today}
           >
             Hoje
           </button>
         </div>
       </div>
+
+      <ActiveFilterChips chips={chips} onClearAll={clearFilters} />
 
       {err && <div className="sz-alert-danger" style={{ marginBottom: 16 }}>{err}</div>}
 
@@ -264,6 +283,24 @@ export default function MotoboyDashboard() {
           </div>
         )}
       </div>
+
+      <FilterTopPanel
+        open={filterOpen}
+        onClose={() => setFilterOpen(false)}
+        onApply={applyFilters}
+        onClear={clearFilters}
+        title="Filtros"
+      >
+        <FilterField label="Data">
+          <input
+            type="date"
+            style={filterInputStyle}
+            value={draftDate}
+            max={todayInSaoPaulo()}
+            onChange={e => setDraftDate(e.target.value)}
+          />
+        </FilterField>
+      </FilterTopPanel>
     </div>
   )
 }

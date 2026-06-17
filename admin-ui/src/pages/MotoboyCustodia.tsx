@@ -1,5 +1,12 @@
 import { useEffect, useState } from 'react'
 import { api, getToken } from '../api'
+import FilterButton from '../components/FilterButton'
+import FilterTopPanel, {
+  FilterField,
+  filterInputStyle,
+  ActiveFilterChips,
+  type ActiveChip,
+} from '../components/FilterTopPanel'
 
 // MotoboyCustodia — espelha sz_mb_tab_estoque_motoboy() (admin.php:1510).
 // Custódia física de pacotes em rota / aguardando OL / com ocorrência.
@@ -130,13 +137,35 @@ export default function MotoboyCustodia() {
   const [err, setErr] = useState('')
   const [toast, setToast] = useState<{ kind: 'ok' | 'err'; msg: string } | null>(null)
 
+  // Filtros aplicados.
+  const [q, setQ] = useState('')
+  const [motoboyID, setMotoboyID] = useState('')
+  const [statusFilter, setStatusFilter] = useState('')
+  const [dataIni, setDataIni] = useState('')
+  const [dataFim, setDataFim] = useState('')
+
+  // Drafts no painel.
+  const [draftQ, setDraftQ] = useState('')
+  const [draftMotoboy, setDraftMotoboy] = useState('')
+  const [draftStatus, setDraftStatus] = useState('')
+  const [draftIni, setDraftIni] = useState('')
+  const [draftFim, setDraftFim] = useState('')
+  const [filterOpen, setFilterOpen] = useState(false)
+
   async function load() {
     setLoading(true)
     setErr('')
     try {
+      const p = new URLSearchParams()
+      p.set('limit', '300')
+      if (q) p.set('q', q)
+      if (motoboyID) p.set('motoboy_id', motoboyID)
+      if (statusFilter) p.set('status', statusFilter)
+      if (dataIni) p.set('data_ini', dataIni)
+      if (dataFim) p.set('data_fim', dataFim)
       const [s, it, bm] = await Promise.all([
         api<Summary>('/motoboy-custodia/summary'),
-        api<{ items: Item[]; count: number }>('/motoboy-custodia?limit=300'),
+        api<{ items: Item[]; count: number }>(`/motoboy-custodia?${p.toString()}`),
         api<{ items: ByMotoboy[]; count: number }>('/motoboy-custodia/summary-by-motoboy'),
       ])
       setSummary(s)
@@ -156,7 +185,33 @@ export default function MotoboyCustodia() {
     }
   }
 
-  useEffect(() => { load() }, [])
+  useEffect(() => { load() /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [q, motoboyID, statusFilter, dataIni, dataFim])
+
+  function openPanel() {
+    setDraftQ(q); setDraftMotoboy(motoboyID); setDraftStatus(statusFilter); setDraftIni(dataIni); setDraftFim(dataFim)
+    setFilterOpen(true)
+  }
+  function applyFilters() {
+    setQ(draftQ); setMotoboyID(draftMotoboy); setStatusFilter(draftStatus); setDataIni(draftIni); setDataFim(draftFim)
+    setFilterOpen(false)
+  }
+  function clearFilters() {
+    setQ(''); setMotoboyID(''); setStatusFilter(''); setDataIni(''); setDataFim('')
+    setDraftQ(''); setDraftMotoboy(''); setDraftStatus(''); setDraftIni(''); setDraftFim('')
+    setFilterOpen(false)
+  }
+
+  // Chips ativos.
+  const chips: ActiveChip[] = []
+  if (q) chips.push({ key: 'q', label: `Busca: ${q}`, onRemove: () => setQ('') })
+  if (motoboyID) {
+    const m = motoboys.find(mb => String(mb.id) === motoboyID)
+    chips.push({ key: 'mb', label: `Motoboy: ${m?.nome || `#${motoboyID}`}`, onRemove: () => setMotoboyID('') })
+  }
+  if (statusFilter) chips.push({ key: 'status', label: `Status: ${statusFilter}`, onRemove: () => setStatusFilter('') })
+  if (dataIni) chips.push({ key: 'ini', label: `De: ${dataIni}`, onRemove: () => setDataIni('') })
+  if (dataFim) chips.push({ key: 'fim', label: `Até: ${dataFim}`, onRemove: () => setDataFim('') })
+  const activeCount = chips.length
 
   function showToast(kind: 'ok' | 'err', msg: string) {
     setToast({ kind, msg })
@@ -174,7 +229,12 @@ export default function MotoboyCustodia() {
             pelo motoboy e confirmação final pelo OL.
           </p>
         </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <FilterButton active={activeCount > 0} count={activeCount} onClick={openPanel} />
+        </div>
       </div>
+
+      <ActiveFilterChips chips={chips} onClearAll={clearFilters} />
 
       {err && <div className="sz-alert-danger" style={{ marginBottom: 16 }}>{err}</div>}
       {toast && (
@@ -502,6 +562,68 @@ export default function MotoboyCustodia() {
           )}
         </div>
       </details>
+
+      <FilterTopPanel
+        open={filterOpen}
+        onClose={() => setFilterOpen(false)}
+        onApply={applyFilters}
+        onClear={clearFilters}
+        title="Filtros"
+      >
+        <FilterField label="Data inicial">
+          <input
+            type="date"
+            style={filterInputStyle}
+            value={draftIni}
+            max={draftFim || undefined}
+            onChange={e => setDraftIni(e.target.value)}
+          />
+        </FilterField>
+        <FilterField label="Data final">
+          <input
+            type="date"
+            style={filterInputStyle}
+            value={draftFim}
+            min={draftIni || undefined}
+            onChange={e => setDraftFim(e.target.value)}
+          />
+        </FilterField>
+        <FilterField label="Motoboy">
+          <select
+            style={filterInputStyle}
+            value={draftMotoboy}
+            onChange={e => setDraftMotoboy(e.target.value)}
+          >
+            <option value="">Todos</option>
+            {motoboys.map(m => (
+              <option key={m.id} value={String(m.id)}>{m.nome} (#{m.id})</option>
+            ))}
+          </select>
+        </FilterField>
+        <FilterField label="Status">
+          <select
+            style={filterInputStyle}
+            value={draftStatus}
+            onChange={e => setDraftStatus(e.target.value)}
+          >
+            <option value="">Todos</option>
+            <option value="with_motoboy">Com motoboy</option>
+            <option value="frustrated">Frustrado</option>
+            <option value="return_declared">Devolução declarada</option>
+            <option value="damaged">Avariado</option>
+            <option value="reserved">Reservado</option>
+          </select>
+        </FilterField>
+        <FilterField label="Busca (pedido / produto / QR)">
+          <input
+            type="search"
+            style={filterInputStyle}
+            placeholder="ex.: SZ-1234-…"
+            value={draftQ}
+            onChange={e => setDraftQ(e.target.value)}
+          />
+        </FilterField>
+      </FilterTopPanel>
     </div>
   )
 }

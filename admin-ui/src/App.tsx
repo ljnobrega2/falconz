@@ -56,6 +56,7 @@ import PwaConfig from './pages/PwaConfig'
 import BulkActions from './pages/BulkActions'
 import MotoboyMapa from './pages/MotoboyMapa'
 import Products from './pages/Products'
+import CheckoutLinks from './pages/CheckoutLinks'
 
 function Protected({ children }: { children: JSX.Element }) {
   return getToken() ? children : <Navigate to="/login" replace />
@@ -120,6 +121,7 @@ export default function App() {
         <Route path="/bulk-actions" element={<BulkActions />} />
         <Route path="/motoboy-mapa" element={<MotoboyMapa />} />
         <Route path="/products" element={<Products />} />
+        <Route path="/checkout-links" element={<CheckoutLinks />} />
       </Route>
     </Routes>
     </ErrorBoundary>

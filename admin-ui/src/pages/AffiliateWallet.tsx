@@ -1,5 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '../api'
+import FilterButton from '../components/FilterButton'
+import FilterTopPanel, {
+  FilterField,
+  filterInputStyle,
+  ActiveFilterChips,
+  type ActiveChip,
+} from '../components/FilterTopPanel'
 
 // ---------------------------------------------------------------------------
 // Tipos espelhados de internal/handlers/affiliate_wallet.go
@@ -304,12 +311,46 @@ export default function AffiliateWallet() {
   const [summary, setSummary] = useState<Summary | null>(null)
   const [rows, setRows] = useState<Row[]>([])
   const [types, setTypes] = useState<string[]>([])
-  const [q, setQ] = useState('')
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState<number | 'all' | null>(null)
   const [drawer, setDrawer] = useState<Row | null>(null)
   const [toast, setToast] = useState<{ kind: 'ok' | 'err'; msg: string } | null>(null)
+
+  // Filtros aplicados.
+  const [q, setQ] = useState('')
+  const [statusFilter, setStatusFilter] = useState('')
+  const [dataIni, setDataIni] = useState('')
+  const [dataFim, setDataFim] = useState('')
+
+  // Drafts no painel.
+  const [draftQ, setDraftQ] = useState('')
+  const [draftStatus, setDraftStatus] = useState('')
+  const [draftIni, setDraftIni] = useState('')
+  const [draftFim, setDraftFim] = useState('')
+  const [filterOpen, setFilterOpen] = useState(false)
+
+  function openPanel() {
+    setDraftQ(q); setDraftStatus(statusFilter); setDraftIni(dataIni); setDraftFim(dataFim)
+    setFilterOpen(true)
+  }
+  function applyFilters() {
+    setQ(draftQ); setStatusFilter(draftStatus); setDataIni(draftIni); setDataFim(draftFim)
+    setFilterOpen(false)
+  }
+  function clearFilters() {
+    setQ(''); setStatusFilter(''); setDataIni(''); setDataFim('')
+    setDraftQ(''); setDraftStatus(''); setDraftIni(''); setDraftFim('')
+    setFilterOpen(false)
+  }
+
+  // Chips ativos.
+  const chips: ActiveChip[] = []
+  if (q) chips.push({ key: 'q', label: `Busca: ${q}`, onRemove: () => setQ('') })
+  if (statusFilter) chips.push({ key: 'status', label: `Status: ${statusFilter}`, onRemove: () => setStatusFilter('') })
+  if (dataIni) chips.push({ key: 'ini', label: `De: ${dataIni}`, onRemove: () => setDataIni('') })
+  if (dataFim) chips.push({ key: 'fim', label: `Até: ${dataFim}`, onRemove: () => setDataFim('') })
+  const activeCount = chips.length
 
   function showToast(kind: 'ok' | 'err', msg: string) {
     setToast({ kind, msg })
@@ -329,7 +370,13 @@ export default function AffiliateWallet() {
   async function loadList() {
     setLoading(true); setErr('')
     try {
-      const r = await api<{ items: Row[] }>(`/affiliates-wallet?limit=300&q=${encodeURIComponent(q)}`)
+      const p = new URLSearchParams()
+      p.set('limit', '300')
+      if (q) p.set('q', q)
+      if (statusFilter) p.set('status', statusFilter)
+      if (dataIni) p.set('data_ini', dataIni)
+      if (dataFim) p.set('data_fim', dataFim)
+      const r = await api<{ items: Row[] }>(`/affiliates-wallet?${p.toString()}`)
       setRows(r.items || [])
     } catch (e: any) {
       setErr(e.message || 'Erro ao carregar lista')
@@ -356,7 +403,7 @@ export default function AffiliateWallet() {
     loadTypes()
     loadList()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [q, statusFilter, dataIni, dataFim])
 
   async function handleSync(affID: number) {
     if (!window.confirm(`Sincronizar carteira do afiliado #${affID}?`)) return
@@ -432,6 +479,7 @@ export default function AffiliateWallet() {
           <p>Saldos consolidados, liberações e correções</p>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
+          <FilterButton active={activeCount > 0} count={activeCount} onClick={openPanel} />
           <button
             className="szv2-btn szv2-btn-secondary"
             onClick={handleSyncAll}
@@ -441,6 +489,8 @@ export default function AffiliateWallet() {
           </button>
         </div>
       </div>
+
+      <ActiveFilterChips chips={chips} onClearAll={clearFilters} />
 
       {err && <div className="sz-alert-danger" style={{ marginBottom: 16 }}>{err}</div>}
 
@@ -496,7 +546,7 @@ export default function AffiliateWallet() {
         ⚠️ Repasses somente de transações ativas. Comissões canceladas/estornadas <strong>NÃO</strong> entram.
       </div>
 
-      {/* Busca */}
+      {/* Resumo da lista */}
       <div className="szv2-card" style={{ marginBottom: 16 }}>
         <div className="szv2-card-head">
           <div>
@@ -504,19 +554,6 @@ export default function AffiliateWallet() {
             <p className="szv2-card-sub">
               {rows.length} afiliado(s){summary ? ` de ${summary.affiliates_count}` : ''}
             </p>
-          </div>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <input
-              className="szv2-input"
-              style={{ width: 240 }}
-              placeholder="buscar email ou nome…"
-              value={q}
-              onChange={e => setQ(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && loadList()}
-            />
-            <button className="szv2-btn szv2-btn-secondary" onClick={loadList} disabled={loading}>
-              {loading ? 'Buscando…' : 'Buscar'}
-            </button>
           </div>
         </div>
       </div>
@@ -626,6 +663,53 @@ export default function AffiliateWallet() {
           onClose={() => setDrawer(null)}
         />
       )}
+
+      <FilterTopPanel
+        open={filterOpen}
+        onClose={() => setFilterOpen(false)}
+        onApply={applyFilters}
+        onClear={clearFilters}
+        title="Filtros"
+      >
+        <FilterField label="Data inicial">
+          <input
+            type="date"
+            style={filterInputStyle}
+            value={draftIni}
+            max={draftFim || undefined}
+            onChange={e => setDraftIni(e.target.value)}
+          />
+        </FilterField>
+        <FilterField label="Data final">
+          <input
+            type="date"
+            style={filterInputStyle}
+            value={draftFim}
+            min={draftIni || undefined}
+            onChange={e => setDraftFim(e.target.value)}
+          />
+        </FilterField>
+        <FilterField label="Status carteira">
+          <select
+            style={filterInputStyle}
+            value={draftStatus}
+            onChange={e => setDraftStatus(e.target.value)}
+          >
+            <option value="">Todos</option>
+            <option value="ok">OK</option>
+            <option value="divergente">Divergente</option>
+          </select>
+        </FilterField>
+        <FilterField label="Busca (email / nome)">
+          <input
+            type="search"
+            style={filterInputStyle}
+            placeholder="ex.: joao@…"
+            value={draftQ}
+            onChange={e => setDraftQ(e.target.value)}
+          />
+        </FilterField>
+      </FilterTopPanel>
     </div>
   )
 }

@@ -1,5 +1,12 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api'
+import FilterButton from '../components/FilterButton'
+import FilterTopPanel, {
+  FilterField,
+  filterInputStyle,
+  ActiveFilterChips,
+  type ActiveChip,
+} from '../components/FilterTopPanel'
 
 type Product = {
   id: number
@@ -47,13 +54,39 @@ function emptyForm(): Omit<Product, 'id' | 'produtor_nome' | 'created_at' | 'afi
   }
 }
 
+type ProductsStats = {
+  active_count: number
+  total_affiliates: number
+  revenue_30d: number
+}
+
+function fmtBRL(n: number): string {
+  return n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
+}
+
 export default function Products() {
   const [items, setItems] = useState<Product[]>([])
   const [total, setTotal] = useState(0)
-  const [q, setQ] = useState('')
-  const [statusFilter, setStatusFilter] = useState('')
+  const [stats, setStats] = useState<ProductsStats | null>(null)
   const [err, setErr] = useState('')
   const [loading, setLoading] = useState(false)
+  const [syncing, setSyncing] = useState(false)
+
+  // Filtros aplicados.
+  const [q, setQ] = useState('')
+  const [statusFilter, setStatusFilter] = useState('')
+  const [produtorID, setProdutorID] = useState('')
+  const [dataIni, setDataIni] = useState('')
+  const [dataFim, setDataFim] = useState('')
+
+  // Drafts no painel.
+  const [draftQ, setDraftQ] = useState('')
+  const [draftStatus, setDraftStatus] = useState('')
+  const [draftProdutor, setDraftProdutor] = useState('')
+  const [draftIni, setDraftIni] = useState('')
+  const [draftFim, setDraftFim] = useState('')
+
+  const [filterOpen, setFilterOpen] = useState(false)
 
   // Form state
   const [showForm, setShowForm] = useState(false)
@@ -72,12 +105,22 @@ export default function Products() {
     } catch { /* ignora — select fica vazio */ }
   }
 
+  async function loadStats() {
+    try {
+      const s = await api<ProductsStats>('/products/stats')
+      setStats(s)
+    } catch { /* silencia — KPIs ficam zerados */ }
+  }
+
   async function load() {
     setLoading(true)
     try {
       const p = new URLSearchParams()
       if (q.trim()) p.set('q', q.trim())
       if (statusFilter) p.set('status', statusFilter)
+      if (produtorID) p.set('produtor_id', produtorID)
+      if (dataIni) p.set('data_ini', dataIni)
+      if (dataFim) p.set('data_fim', dataFim)
       p.set('limit', '100')
       const r = await api<{ items: Product[]; total: number }>(`/products?${p.toString()}`)
       setItems(r.items ?? [])
@@ -86,7 +129,25 @@ export default function Products() {
     finally { setLoading(false) }
   }
 
-  useEffect(() => { load() /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [statusFilter])
+  // Sincroniza produtos a partir do histórico de pedidos (idempotente no backend).
+  async function syncFromOrders() {
+    setSyncing(true)
+    setErr('')
+    try {
+      const r = await api<{ ok: boolean; synced: number }>('/products/sync-from-orders', { method: 'POST' })
+      if (r.synced === 0) {
+        setErr('Nenhum produto novo foi encontrado no histórico de pedidos.')
+      }
+      await load()
+      await loadStats()
+    } catch (e: any) { setErr(e.message) }
+    finally { setSyncing(false) }
+  }
+
+  useEffect(() => { load(); loadStats() /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [q, statusFilter, produtorID, dataIni, dataFim])
+
+  // Lista de produtores para o filtro do painel.
+  useEffect(() => { loadProducers() }, [])
 
   async function save(e: React.FormEvent) {
     e.preventDefault()
@@ -111,6 +172,7 @@ export default function Products() {
       setShowForm(false)
       setForm(emptyForm())
       load()
+      loadStats()
     } catch (e: any) { setErr(e.message) }
     finally { setSaving(false) }
   }
@@ -120,6 +182,7 @@ export default function Products() {
     try {
       await api(`/products/${p.id}`, { method: 'DELETE' })
       load()
+      loadStats()
     } catch (e: any) { setErr(e.message) }
   }
 
@@ -148,8 +211,35 @@ export default function Products() {
   const filtered = items.filter(p => {
     if (qNorm && !`${p.nome} ${p.sku ?? ''} ${p.produtor_nome}`.toLowerCase().includes(qNorm)) return false
     if (statusFilter && p.status !== statusFilter) return false
+    if (produtorID && String(p.produtor_id) !== produtorID) return false
     return true
   })
+
+  function openPanel() {
+    setDraftQ(q); setDraftStatus(statusFilter); setDraftProdutor(produtorID); setDraftIni(dataIni); setDraftFim(dataFim)
+    setFilterOpen(true)
+  }
+  function applyFilters() {
+    setQ(draftQ); setStatusFilter(draftStatus); setProdutorID(draftProdutor); setDataIni(draftIni); setDataFim(draftFim)
+    setFilterOpen(false)
+  }
+  function clearFilters() {
+    setQ(''); setStatusFilter(''); setProdutorID(''); setDataIni(''); setDataFim('')
+    setDraftQ(''); setDraftStatus(''); setDraftProdutor(''); setDraftIni(''); setDraftFim('')
+    setFilterOpen(false)
+  }
+
+  // Chips ativos.
+  const chips: ActiveChip[] = []
+  if (q) chips.push({ key: 'q', label: `Busca: ${q}`, onRemove: () => setQ('') })
+  if (statusFilter) chips.push({ key: 'status', label: `Status: ${STATUS_LABEL[statusFilter] ?? statusFilter}`, onRemove: () => setStatusFilter('') })
+  if (produtorID) {
+    const p = producers.find(pp => String(pp.id) === produtorID)
+    chips.push({ key: 'prod', label: `Produtor: ${p?.nome || p?.email || `#${produtorID}`}`, onRemove: () => setProdutorID('') })
+  }
+  if (dataIni) chips.push({ key: 'ini', label: `De: ${dataIni}`, onRemove: () => setDataIni('') })
+  if (dataFim) chips.push({ key: 'fim', label: `Até: ${dataFim}`, onRemove: () => setDataFim('') })
+  const activeCount = chips.length
 
   return (
     <div>
@@ -158,41 +248,63 @@ export default function Products() {
           <h1>Produtos</h1>
           <p>{filtered.length} de {total} produto(s)</p>
         </div>
-        <button className="szv2-btn szv2-btn-brand" onClick={openCreate}>
-          + Novo Produto
-        </button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <FilterButton active={activeCount > 0} count={activeCount} onClick={openPanel} />
+          {items.length === 0 && (
+            <button
+              className="szv2-btn szv2-btn-secondary"
+              onClick={syncFromOrders}
+              disabled={syncing}
+              title="Importa produtos do histórico de pedidos"
+            >
+              {syncing ? 'Sincronizando…' : '🔄 Sincronizar do histórico de pedidos'}
+            </button>
+          )}
+          <button className="szv2-btn szv2-btn-brand" onClick={openCreate}>
+            + Novo Produto
+          </button>
+        </div>
       </div>
+
+      <ActiveFilterChips chips={chips} onClearAll={clearFilters} />
 
       {err && <div className="sz-alert-danger" style={{ marginBottom: 16 }}>{err}</div>}
 
-      {/* Filtros inline */}
-      <div className="szv2-card" style={{ marginBottom: 16 }}>
-        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-          <div className="szv2-field">
-            <label className="szv2-label">Busca (nome / SKU)</label>
-            <input
-              className="szv2-input"
-              placeholder="ex: Curso, Recarga…"
-              value={q}
-              onChange={e => setQ(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && load()}
-            />
+      {/* KPIs */}
+      {stats && (
+        <div
+          className="szv2-kpi-grid"
+          style={{ gridTemplateColumns: 'repeat(3, minmax(0,1fr))', gap: 16, marginBottom: 16 }}
+        >
+          <div className="szv2-card">
+            <div className="szv2-kpi">
+              <span className="szv2-kpi-label">Produtos ativos</span>
+              <span className="szv2-kpi-value" style={{ color: 'var(--szv2-brand)' }}>
+                {stats.active_count.toLocaleString('pt-BR')}
+              </span>
+              <span className="szv2-kpi-meta">com status = ativo</span>
+            </div>
           </div>
-          <div className="szv2-field">
-            <label className="szv2-label">Status</label>
-            <select className="szv2-input" value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
-              <option value="">Todos</option>
-              {STATUSES.map(s => <option key={s} value={s}>{STATUS_LABEL[s]}</option>)}
-            </select>
+          <div className="szv2-card">
+            <div className="szv2-kpi">
+              <span className="szv2-kpi-label">Total afiliados vinculados</span>
+              <span className="szv2-kpi-value" style={{ color: 'var(--szv2-success)' }}>
+                {stats.total_affiliates.toLocaleString('pt-BR')}
+              </span>
+              <span className="szv2-kpi-meta">vínculos produtor ↔ afiliado</span>
+            </div>
           </div>
-          <button className="szv2-btn szv2-btn-brand" onClick={load}>Buscar</button>
-          {(q || statusFilter) && (
-            <button className="szv2-btn szv2-btn-secondary" onClick={() => { setQ(''); setStatusFilter('') }}>
-              Limpar
-            </button>
-          )}
+          <div className="szv2-card">
+            <div className="szv2-kpi">
+              <span className="szv2-kpi-label">Receita 30d</span>
+              <span className="szv2-kpi-value" style={{ color: 'var(--szv2-brand)' }}>
+                {fmtBRL(stats.revenue_30d)}
+              </span>
+              <span className="szv2-kpi-meta">soma dos itens dos pedidos</span>
+            </div>
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Form modal inline */}
       {showForm && (
@@ -291,7 +403,21 @@ export default function Products() {
       {!loading && filtered.length === 0 && (
         <div className="szv2-card" style={{ textAlign: 'center', padding: 48, color: 'var(--szv2-text-muted)' }}>
           <p style={{ fontSize: 32, margin: '0 0 8px' }}>📦</p>
-          <p style={{ margin: 0 }}>Nenhum produto cadastrado ainda.</p>
+          <p style={{ margin: '0 0 16px' }}>
+            Nenhum produto cadastrado ainda. Importe automaticamente dos pedidos existentes ou crie manualmente.
+          </p>
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'center', flexWrap: 'wrap' }}>
+            <button
+              className="szv2-btn szv2-btn-secondary"
+              onClick={syncFromOrders}
+              disabled={syncing}
+            >
+              {syncing ? 'Sincronizando…' : '🔄 Sincronizar do histórico de pedidos'}
+            </button>
+            <button className="szv2-btn szv2-btn-brand" onClick={openCreate}>
+              + Novo Produto
+            </button>
+          </div>
         </div>
       )}
 
@@ -354,6 +480,64 @@ export default function Products() {
           </table>
         </div>
       )}
+
+      <FilterTopPanel
+        open={filterOpen}
+        onClose={() => setFilterOpen(false)}
+        onApply={applyFilters}
+        onClear={clearFilters}
+        title="Filtros"
+      >
+        <FilterField label="Data inicial">
+          <input
+            type="date"
+            style={filterInputStyle}
+            value={draftIni}
+            max={draftFim || undefined}
+            onChange={e => setDraftIni(e.target.value)}
+          />
+        </FilterField>
+        <FilterField label="Data final">
+          <input
+            type="date"
+            style={filterInputStyle}
+            value={draftFim}
+            min={draftIni || undefined}
+            onChange={e => setDraftFim(e.target.value)}
+          />
+        </FilterField>
+        <FilterField label="Status">
+          <select
+            style={filterInputStyle}
+            value={draftStatus}
+            onChange={e => setDraftStatus(e.target.value)}
+          >
+            <option value="">Todos</option>
+            {STATUSES.map(s => <option key={s} value={s}>{STATUS_LABEL[s]}</option>)}
+          </select>
+        </FilterField>
+        <FilterField label="Produtor">
+          <select
+            style={filterInputStyle}
+            value={draftProdutor}
+            onChange={e => setDraftProdutor(e.target.value)}
+          >
+            <option value="">Todos</option>
+            {producers.map(p => (
+              <option key={p.id} value={String(p.id)}>{p.nome || p.email}</option>
+            ))}
+          </select>
+        </FilterField>
+        <FilterField label="Busca (nome / SKU)">
+          <input
+            type="search"
+            style={filterInputStyle}
+            placeholder="ex: Curso, Recarga…"
+            value={draftQ}
+            onChange={e => setDraftQ(e.target.value)}
+          />
+        </FilterField>
+      </FilterTopPanel>
     </div>
   )
 }

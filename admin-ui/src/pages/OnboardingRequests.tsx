@@ -1,5 +1,12 @@
 import { FormEvent, useEffect, useState } from 'react'
 import { api } from '../api'
+import FilterButton from '../components/FilterButton'
+import FilterTopPanel, {
+  FilterField,
+  filterInputStyle,
+  ActiveFilterChips,
+  type ActiveChip,
+} from '../components/FilterTopPanel'
 
 type Request = {
   id: number
@@ -56,11 +63,24 @@ const emptyCreate = () => ({
 
 export default function OnboardingRequests() {
   const [items, setItems] = useState<Request[]>([])
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>('')
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
   const [toast, setToast] = useState<{ kind: 'ok' | 'err'; msg: string } | null>(null)
+
+  // Filtros aplicados.
+  const [q, setQ] = useState('')
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('')
+  const [dataIni, setDataIni] = useState('')
+  const [dataFim, setDataFim] = useState('')
+
+  // Drafts no painel.
+  const [draftQ, setDraftQ] = useState('')
+  const [draftStatus, setDraftStatus] = useState<StatusFilter>('')
+  const [draftIni, setDraftIni] = useState('')
+  const [draftFim, setDraftFim] = useState('')
+
+  const [filterOpen, setFilterOpen] = useState(false)
 
   // Modais.
   const [showCreate, setShowCreate] = useState(false)
@@ -79,8 +99,13 @@ export default function OnboardingRequests() {
     setLoading(true)
     setErr('')
     try {
-      const qs = statusFilter ? `?status=${statusFilter}&limit=200` : '?limit=200'
-      const r = await api<{ items: Request[]; count: number }>(`/onboarding/requests${qs}`)
+      const p = new URLSearchParams()
+      if (statusFilter) p.set('status', statusFilter)
+      if (q.trim()) p.set('q', q.trim())
+      if (dataIni) p.set('data_ini', dataIni)
+      if (dataFim) p.set('data_fim', dataFim)
+      p.set('limit', '200')
+      const r = await api<{ items: Request[]; count: number }>(`/onboarding/requests?${p.toString()}`)
       setItems(r.items || [])
     } catch (e: any) {
       setErr(e.message || 'Erro ao carregar')
@@ -89,7 +114,7 @@ export default function OnboardingRequests() {
     }
   }
 
-  useEffect(() => { load() }, [statusFilter])
+  useEffect(() => { load() /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [q, statusFilter, dataIni, dataFim])
 
   function showToast(kind: 'ok' | 'err', msg: string) {
     setToast({ kind, msg })
@@ -173,6 +198,28 @@ export default function OnboardingRequests() {
 
   const pendingCount = items.filter(x => x.status === 'pending').length
 
+  function openPanel() {
+    setDraftQ(q); setDraftStatus(statusFilter); setDraftIni(dataIni); setDraftFim(dataFim)
+    setFilterOpen(true)
+  }
+  function applyFilters() {
+    setQ(draftQ); setStatusFilter(draftStatus); setDataIni(draftIni); setDataFim(draftFim)
+    setFilterOpen(false)
+  }
+  function clearFilters() {
+    setQ(''); setStatusFilter(''); setDataIni(''); setDataFim('')
+    setDraftQ(''); setDraftStatus(''); setDraftIni(''); setDraftFim('')
+    setFilterOpen(false)
+  }
+
+  // Chips ativos.
+  const chips: ActiveChip[] = []
+  if (q) chips.push({ key: 'q', label: `Busca: ${q}`, onRemove: () => setQ('') })
+  if (statusFilter) chips.push({ key: 'status', label: `Status: ${STATUS_LABELS[statusFilter]}`, onRemove: () => setStatusFilter('') })
+  if (dataIni) chips.push({ key: 'ini', label: `De: ${dataIni}`, onRemove: () => setDataIni('') })
+  if (dataFim) chips.push({ key: 'fim', label: `Até: ${dataFim}`, onRemove: () => setDataFim('') })
+  const activeCount = chips.length
+
   return (
     <div>
       <div className="szv2-section-head">
@@ -181,16 +228,7 @@ export default function OnboardingRequests() {
           <p>{items.length} solicitação(ões){pendingCount > 0 ? ` — ${pendingCount} pendente(s)` : ''}</p>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
-          <select
-            value={statusFilter}
-            onChange={e => setStatusFilter(e.target.value as StatusFilter)}
-            className="szv2-select"
-            disabled={busy || loading}
-          >
-            {(Object.keys(STATUS_LABELS) as StatusFilter[]).map(k => (
-              <option key={k} value={k}>{STATUS_LABELS[k]}</option>
-            ))}
-          </select>
+          <FilterButton active={activeCount > 0} count={activeCount} onClick={openPanel} />
           <button
             className="szv2-btn szv2-btn-brand"
             onClick={() => { setCreateForm(emptyCreate()); setCreateErr(''); setShowCreate(true) }}
@@ -199,6 +237,8 @@ export default function OnboardingRequests() {
           </button>
         </div>
       </div>
+
+      <ActiveFilterChips chips={chips} onClearAll={clearFilters} />
 
       {err && <div className="sz-alert-danger" style={{ marginBottom: 16 }}>{err}</div>}
 
@@ -496,6 +536,53 @@ export default function OnboardingRequests() {
           </form>
         </div>
       )}
+
+      <FilterTopPanel
+        open={filterOpen}
+        onClose={() => setFilterOpen(false)}
+        onApply={applyFilters}
+        onClear={clearFilters}
+        title="Filtros"
+      >
+        <FilterField label="Data inicial">
+          <input
+            type="date"
+            style={filterInputStyle}
+            value={draftIni}
+            max={draftFim || undefined}
+            onChange={e => setDraftIni(e.target.value)}
+          />
+        </FilterField>
+        <FilterField label="Data final">
+          <input
+            type="date"
+            style={filterInputStyle}
+            value={draftFim}
+            min={draftIni || undefined}
+            onChange={e => setDraftFim(e.target.value)}
+          />
+        </FilterField>
+        <FilterField label="Status">
+          <select
+            style={filterInputStyle}
+            value={draftStatus}
+            onChange={e => setDraftStatus(e.target.value as StatusFilter)}
+          >
+            {(Object.keys(STATUS_LABELS) as StatusFilter[]).map(k => (
+              <option key={k} value={k}>{STATUS_LABELS[k]}</option>
+            ))}
+          </select>
+        </FilterField>
+        <FilterField label="Busca (nome / e-mail)">
+          <input
+            type="search"
+            style={filterInputStyle}
+            placeholder="ex.: joao@…"
+            value={draftQ}
+            onChange={e => setDraftQ(e.target.value)}
+          />
+        </FilterField>
+      </FilterTopPanel>
     </div>
   )
 }

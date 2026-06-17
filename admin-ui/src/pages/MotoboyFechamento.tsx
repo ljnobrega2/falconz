@@ -6,6 +6,13 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '../api'
+import FilterButton from '../components/FilterButton'
+import FilterTopPanel, {
+  FilterField,
+  filterInputStyle,
+  ActiveFilterChips,
+  type ActiveChip,
+} from '../components/FilterTopPanel'
 
 // ─── Tipos ────────────────────────────────────────────────────────────────
 
@@ -275,6 +282,30 @@ export default function MotoboyFechamento() {
   const [toast, setToast] = useState<{ kind: 'ok' | 'err'; msg: string } | null>(null)
   const [modal, setModal] = useState<ModalKind>(null)
 
+  // Drafts no painel.
+  const [draftFrom, setDraftFrom] = useState<string>(from)
+  const [draftTo, setDraftTo] = useState<string>(to)
+  const [draftStatus, setDraftStatus] = useState<StatusFilter>(status)
+  const [draftMotoboy, setDraftMotoboy] = useState<number>(filterMotoboy)
+  const [filterOpen, setFilterOpen] = useState(false)
+
+  function openPanel() {
+    setDraftFrom(from); setDraftTo(to); setDraftStatus(status); setDraftMotoboy(filterMotoboy)
+    setFilterOpen(true)
+  }
+  function applyFilters() {
+    if (draftFrom) setFrom(draftFrom)
+    if (draftTo) setTo(draftTo)
+    setStatus(draftStatus); setFilterMotoboy(draftMotoboy)
+    setFilterOpen(false)
+  }
+  function clearFilters() {
+    const f = daysAgoISO(7); const t = todayISO()
+    setFrom(f); setTo(t); setStatus('all'); setFilterMotoboy(0)
+    setDraftFrom(f); setDraftTo(t); setDraftStatus('all'); setDraftMotoboy(0)
+    setFilterOpen(false)
+  }
+
   function showToast(kind: 'ok' | 'err', msg: string) {
     setToast({ kind, msg })
     setTimeout(() => setToast(null), 5000)
@@ -395,6 +426,22 @@ export default function MotoboyFechamento() {
     total_pedidos: 0, total_a_repassar: 0, pendentes_alan: 0, pendentes_repasse: 0, finalizados: 0,
   }, [summary])
 
+  // Chips ativos. Range default = últimos 7 dias — só vira chip quando alterado.
+  const defaultFrom = daysAgoISO(7)
+  const defaultTo = todayISO()
+  const chips: ActiveChip[] = []
+  if (from !== defaultFrom) chips.push({ key: 'from', label: `De: ${fmtDate(from)}`, onRemove: () => setFrom(defaultFrom) })
+  if (to !== defaultTo) chips.push({ key: 'to', label: `Até: ${fmtDate(to)}`, onRemove: () => setTo(defaultTo) })
+  if (status !== 'all') {
+    const lbl = STATUS_FILTERS.find(s => s.key === status)?.label ?? status
+    chips.push({ key: 'status', label: `Status: ${lbl}`, onRemove: () => setStatus('all') })
+  }
+  if (filterMotoboy > 0) {
+    const m = motoboys.find(mb => mb.id === filterMotoboy)
+    chips.push({ key: 'mb', label: `Motoboy: ${m?.nome || `#${filterMotoboy}`}`, onRemove: () => setFilterMotoboy(0) })
+  }
+  const activeCount = chips.length
+
   // ─── Render ──────────────────────────────────────────────────────────────
 
   return (
@@ -410,7 +457,7 @@ export default function MotoboyFechamento() {
         </div>
       )}
 
-      {/* Top bar: range + chips + botão gerar */}
+      {/* Top bar */}
       <div className="szv2-card" style={{ marginBottom: 16 }}>
         <div
           className="szv2-card-head"
@@ -423,6 +470,7 @@ export default function MotoboyFechamento() {
             </p>
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
+            <FilterButton active={activeCount > 0} count={activeCount} onClick={openPanel} />
             <button
               type="button"
               className="szv2-btn szv2-btn-secondary"
@@ -442,63 +490,7 @@ export default function MotoboyFechamento() {
             </button>
           </div>
         </div>
-
-        <div style={{
-          display: 'flex',
-          flexWrap: 'wrap',
-          gap: 12,
-          alignItems: 'flex-end',
-          padding: '12px 0 4px',
-        }}>
-          <div className="szv2-field" style={{ minWidth: 160 }}>
-            <label className="szv2-label">De</label>
-            <input
-              type="date"
-              className="szv2-input"
-              value={from}
-              onChange={(e) => setFrom(e.target.value)}
-              disabled={busy}
-            />
-          </div>
-          <div className="szv2-field" style={{ minWidth: 160 }}>
-            <label className="szv2-label">Até</label>
-            <input
-              type="date"
-              className="szv2-input"
-              value={to}
-              onChange={(e) => setTo(e.target.value)}
-              disabled={busy}
-            />
-          </div>
-          <div className="szv2-field" style={{ minWidth: 180 }}>
-            <label className="szv2-label">Motoboy</label>
-            <select
-              className="szv2-select"
-              value={filterMotoboy}
-              onChange={(e) => setFilterMotoboy(parseInt(e.target.value || '0', 10))}
-              disabled={busy}
-            >
-              <option value={0}>Todos</option>
-              {motoboys.map(m => (
-                <option key={m.id} value={m.id}>{m.nome} (#{m.id})</option>
-              ))}
-            </select>
-          </div>
-          <div className="szv2-chip-group" style={{ alignSelf: 'flex-end' }}>
-            {STATUS_FILTERS.map(f => (
-              <button
-                key={f.key}
-                type="button"
-                className="szv2-chip"
-                aria-pressed={status === f.key}
-                onClick={() => setStatus(f.key)}
-                disabled={busy || loading}
-              >
-                {f.label}
-              </button>
-            ))}
-          </div>
-        </div>
+        <ActiveFilterChips chips={chips} onClearAll={clearFilters} />
       </div>
 
       {/* 5 KPI cards */}
@@ -671,6 +663,56 @@ export default function MotoboyFechamento() {
         onConfirmText={doAction}
         onConfirmGenerate={doGenerate}
       />
+
+      <FilterTopPanel
+        open={filterOpen}
+        onClose={() => setFilterOpen(false)}
+        onApply={applyFilters}
+        onClear={clearFilters}
+        title="Filtros"
+      >
+        <FilterField label="Data inicial">
+          <input
+            type="date"
+            style={filterInputStyle}
+            value={draftFrom}
+            max={draftTo || undefined}
+            onChange={e => setDraftFrom(e.target.value)}
+          />
+        </FilterField>
+        <FilterField label="Data final">
+          <input
+            type="date"
+            style={filterInputStyle}
+            value={draftTo}
+            min={draftFrom || undefined}
+            onChange={e => setDraftTo(e.target.value)}
+          />
+        </FilterField>
+        <FilterField label="Motoboy">
+          <select
+            style={filterInputStyle}
+            value={draftMotoboy}
+            onChange={e => setDraftMotoboy(parseInt(e.target.value || '0', 10))}
+          >
+            <option value={0}>Todos</option>
+            {motoboys.map(m => (
+              <option key={m.id} value={m.id}>{m.nome} (#{m.id})</option>
+            ))}
+          </select>
+        </FilterField>
+        <FilterField label="Status">
+          <select
+            style={filterInputStyle}
+            value={draftStatus}
+            onChange={e => setDraftStatus(e.target.value as StatusFilter)}
+          >
+            {STATUS_FILTERS.map(f => (
+              <option key={f.key} value={f.key}>{f.label}</option>
+            ))}
+          </select>
+        </FilterField>
+      </FilterTopPanel>
     </div>
   )
 }

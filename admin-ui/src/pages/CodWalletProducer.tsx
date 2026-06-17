@@ -1,5 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '../api'
+import FilterButton from '../components/FilterButton'
+import FilterTopPanel, {
+  FilterField,
+  filterInputStyle,
+  ActiveFilterChips,
+  type ActiveChip,
+} from '../components/FilterTopPanel'
 
 // ---------------------------------------------------------------------------
 // Tipos espelhados de internal/handlers/cod_wallet_producer.go
@@ -858,7 +865,6 @@ function RulesSection() {
 export default function CodWalletProducer() {
   const [summary, setSummary] = useState<Summary | null>(null)
   const [rows, setRows] = useState<Row[]>([])
-  const [q, setQ] = useState('')
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState<number | null>(null)
@@ -866,6 +872,44 @@ export default function CodWalletProducer() {
   const [toast, setToast] = useState<{ kind: 'ok' | 'err'; msg: string } | null>(null)
   // Aba ativa: 'wallet' | 'financeiro' | 'regras'
   const [tab, setTab] = useState<'wallet' | 'financeiro' | 'regras'>('wallet')
+
+  // Filtros aplicados (aba Wallet).
+  const [q, setQ] = useState('')
+  const [userIDFilter, setUserIDFilter] = useState('')
+  const [statusFilter, setStatusFilter] = useState('')
+  const [dataIni, setDataIni] = useState('')
+  const [dataFim, setDataFim] = useState('')
+
+  // Drafts no painel.
+  const [draftQ, setDraftQ] = useState('')
+  const [draftUserID, setDraftUserID] = useState('')
+  const [draftStatus, setDraftStatus] = useState('')
+  const [draftIni, setDraftIni] = useState('')
+  const [draftFim, setDraftFim] = useState('')
+  const [filterOpen, setFilterOpen] = useState(false)
+
+  function openPanel() {
+    setDraftQ(q); setDraftUserID(userIDFilter); setDraftStatus(statusFilter); setDraftIni(dataIni); setDraftFim(dataFim)
+    setFilterOpen(true)
+  }
+  function applyFilters() {
+    setQ(draftQ); setUserIDFilter(draftUserID); setStatusFilter(draftStatus); setDataIni(draftIni); setDataFim(draftFim)
+    setFilterOpen(false)
+  }
+  function clearFilters() {
+    setQ(''); setUserIDFilter(''); setStatusFilter(''); setDataIni(''); setDataFim('')
+    setDraftQ(''); setDraftUserID(''); setDraftStatus(''); setDraftIni(''); setDraftFim('')
+    setFilterOpen(false)
+  }
+
+  // Chips ativos.
+  const chips: ActiveChip[] = []
+  if (q) chips.push({ key: 'q', label: `Busca: ${q}`, onRemove: () => setQ('') })
+  if (userIDFilter) chips.push({ key: 'uid', label: `User #${userIDFilter}`, onRemove: () => setUserIDFilter('') })
+  if (statusFilter) chips.push({ key: 'status', label: `Status: ${statusFilter}`, onRemove: () => setStatusFilter('') })
+  if (dataIni) chips.push({ key: 'ini', label: `De: ${dataIni}`, onRemove: () => setDataIni('') })
+  if (dataFim) chips.push({ key: 'fim', label: `Até: ${dataFim}`, onRemove: () => setDataFim('') })
+  const activeCount = chips.length
 
   function showToast(kind: 'ok' | 'err', msg: string) {
     setToast({ kind, msg })
@@ -884,9 +928,14 @@ export default function CodWalletProducer() {
   async function loadList() {
     setLoading(true); setErr('')
     try {
-      const r = await api<{ items: Row[] }>(
-        `/cod-wallet-producer?limit=300&q=${encodeURIComponent(q)}`,
-      )
+      const p = new URLSearchParams()
+      p.set('limit', '300')
+      if (q) p.set('q', q)
+      if (userIDFilter) p.set('user_id', userIDFilter)
+      if (statusFilter) p.set('status', statusFilter)
+      if (dataIni) p.set('data_ini', dataIni)
+      if (dataFim) p.set('data_fim', dataFim)
+      const r = await api<{ items: Row[] }>(`/cod-wallet-producer?${p.toString()}`)
       setRows(r.items || [])
     } catch (e: any) {
       setErr(e.message || 'Erro ao carregar lista')
@@ -899,7 +948,7 @@ export default function CodWalletProducer() {
     loadSummary()
     loadList()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [q, userIDFilter, statusFilter, dataIni, dataFim])
 
   async function handleRelease(r: Row) {
     if (!window.confirm(
@@ -939,7 +988,14 @@ export default function CodWalletProducer() {
           <h1>Carteira COD — Produtores</h1>
           <p>Saldos, P&amp;L financeiro e regras de repasse por produtor</p>
         </div>
+        {tab === 'wallet' && (
+          <div style={{ display: 'flex', gap: 8 }}>
+            <FilterButton active={activeCount > 0} count={activeCount} onClick={openPanel} />
+          </div>
+        )}
       </div>
+
+      {tab === 'wallet' && <ActiveFilterChips chips={chips} onClearAll={clearFilters} />}
 
       {/* Tabs de navegação */}
       <div style={{ display: 'flex', gap: 4, marginBottom: 20, borderBottom: '1px solid var(--szv2-border)' }}>
@@ -1015,7 +1071,7 @@ export default function CodWalletProducer() {
             </div>
           )}
 
-          {/* Busca */}
+          {/* Resumo da lista */}
           <div className="szv2-card" style={{ marginBottom: 16 }}>
             <div className="szv2-card-head">
               <div>
@@ -1024,19 +1080,6 @@ export default function CodWalletProducer() {
                   {filteredRows.length} produtor(es)
                   {summary ? ` de ${summary.producers_count}` : ''}
                 </p>
-              </div>
-              <div style={{ display: 'flex', gap: 8 }}>
-                <input
-                  className="szv2-input"
-                  style={{ width: 260 }}
-                  placeholder="buscar email ou nome…"
-                  value={q}
-                  onChange={e => setQ(e.target.value)}
-                  onKeyDown={e => e.key === 'Enter' && loadList()}
-                />
-                <button className="szv2-btn szv2-btn-secondary" onClick={loadList} disabled={loading}>
-                  {loading ? 'Buscando…' : 'Buscar'}
-                </button>
               </div>
             </div>
           </div>
@@ -1154,6 +1197,63 @@ export default function CodWalletProducer() {
       {drawer && (
         <AccountsDrawer row={drawer} onClose={() => setDrawer(null)} />
       )}
+
+      <FilterTopPanel
+        open={filterOpen}
+        onClose={() => setFilterOpen(false)}
+        onApply={applyFilters}
+        onClear={clearFilters}
+        title="Filtros"
+      >
+        <FilterField label="Data inicial">
+          <input
+            type="date"
+            style={filterInputStyle}
+            value={draftIni}
+            max={draftFim || undefined}
+            onChange={e => setDraftIni(e.target.value)}
+          />
+        </FilterField>
+        <FilterField label="Data final">
+          <input
+            type="date"
+            style={filterInputStyle}
+            value={draftFim}
+            min={draftIni || undefined}
+            onChange={e => setDraftFim(e.target.value)}
+          />
+        </FilterField>
+        <FilterField label="User ID">
+          <input
+            type="number"
+            style={filterInputStyle}
+            placeholder="ex.: 42"
+            value={draftUserID}
+            onChange={e => setDraftUserID(e.target.value)}
+          />
+        </FilterField>
+        <FilterField label="Status">
+          <select
+            style={filterInputStyle}
+            value={draftStatus}
+            onChange={e => setDraftStatus(e.target.value)}
+          >
+            <option value="">Todos</option>
+            <option value="pending">Pendente</option>
+            <option value="available">Disponível</option>
+            <option value="paid">Pago</option>
+          </select>
+        </FilterField>
+        <FilterField label="Busca (email / nome)">
+          <input
+            type="search"
+            style={filterInputStyle}
+            placeholder="ex.: joao@…"
+            value={draftQ}
+            onChange={e => setDraftQ(e.target.value)}
+          />
+        </FilterField>
+      </FilterTopPanel>
     </div>
   )
 }

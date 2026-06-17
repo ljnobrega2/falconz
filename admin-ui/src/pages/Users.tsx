@@ -1,5 +1,12 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api'
+import FilterButton from '../components/FilterButton'
+import FilterTopPanel, {
+  FilterField,
+  filterInputStyle,
+  ActiveFilterChips,
+  type ActiveChip,
+} from '../components/FilterTopPanel'
 
 type User = { id: number; email: string; nome: string; role: string; ativo: boolean; plano: string; created_at: string }
 
@@ -23,11 +30,24 @@ const ROLES = ['admin', 'operator', 'producer', 'produtor', 'affiliate', 'afilia
 
 export default function Users() {
   const [items, setItems] = useState<User[]>([])
+  const [total, setTotal] = useState(0)
+  const [err, setErr] = useState('')
+
+  // Filtros aplicados (disparam fetch).
   const [q, setQ] = useState('')
   const [role, setRole] = useState('')
   const [ativo, setAtivo] = useState('') // '' | 'sim' | 'nao'
-  const [total, setTotal] = useState(0)
-  const [err, setErr] = useState('')
+  const [dataIni, setDataIni] = useState('')
+  const [dataFim, setDataFim] = useState('')
+
+  // Drafts editados no painel — só aplicam ao confirmar.
+  const [draftQ, setDraftQ] = useState('')
+  const [draftRole, setDraftRole] = useState('')
+  const [draftAtivo, setDraftAtivo] = useState('')
+  const [draftIni, setDraftIni] = useState('')
+  const [draftFim, setDraftFim] = useState('')
+
+  const [filterOpen, setFilterOpen] = useState(false)
 
   async function load() {
     try {
@@ -35,6 +55,8 @@ export default function Users() {
       if (q.trim()) p.set('q', q.trim())
       if (role) p.set('role', role)
       if (ativo) p.set('ativo', ativo === 'sim' ? '1' : '0')
+      if (dataIni) p.set('data_ini', dataIni)
+      if (dataFim) p.set('data_fim', dataFim)
       p.set('limit', '100')
       const r = await api<{ items: User[]; total: number }>(`/users?${p.toString()}`)
       setItems(r.items ?? [])
@@ -42,9 +64,9 @@ export default function Users() {
     } catch (e: any) { setErr(e.message) }
   }
 
-  useEffect(() => { load() /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [role, ativo])
+  useEffect(() => { load() /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [q, role, ativo, dataIni, dataFim])
 
-  // Aplica filtros client-side complementares (caso o backend ignore params)
+  // Aplica filtros client-side complementares (caso o backend ignore params).
   const qNorm = q.trim().toLowerCase()
   const filtered = items.filter(u => {
     if (qNorm) {
@@ -57,11 +79,28 @@ export default function Users() {
     return true
   })
 
-  function limpar() {
-    setQ('')
-    setRole('')
-    setAtivo('')
+  function openPanel() {
+    setDraftQ(q); setDraftRole(role); setDraftAtivo(ativo); setDraftIni(dataIni); setDraftFim(dataFim)
+    setFilterOpen(true)
   }
+  function applyFilters() {
+    setQ(draftQ); setRole(draftRole); setAtivo(draftAtivo); setDataIni(draftIni); setDataFim(draftFim)
+    setFilterOpen(false)
+  }
+  function clearFilters() {
+    setQ(''); setRole(''); setAtivo(''); setDataIni(''); setDataFim('')
+    setDraftQ(''); setDraftRole(''); setDraftAtivo(''); setDraftIni(''); setDraftFim('')
+    setFilterOpen(false)
+  }
+
+  // Chips ativos.
+  const chips: ActiveChip[] = []
+  if (q) chips.push({ key: 'q', label: `Busca: ${q}`, onRemove: () => setQ('') })
+  if (role) chips.push({ key: 'role', label: `Role: ${role}`, onRemove: () => setRole('') })
+  if (ativo) chips.push({ key: 'ativo', label: `Ativo: ${ativo === 'sim' ? 'Sim' : 'Não'}`, onRemove: () => setAtivo('') })
+  if (dataIni) chips.push({ key: 'ini', label: `De: ${dataIni}`, onRemove: () => setDataIni('') })
+  if (dataFim) chips.push({ key: 'fim', label: `Até: ${dataFim}`, onRemove: () => setDataFim('') })
+  const activeCount = chips.length
 
   return (
     <div>
@@ -70,56 +109,12 @@ export default function Users() {
           <h1>Usuários do Portal</h1>
           <p>{filtered.length} de {total} usuário(s)</p>
         </div>
-      </div>
-
-      {/* Filtros */}
-      <div className="szv2-card" style={{ marginBottom: 16 }}>
-        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-          <div className="szv2-field">
-            <label className="szv2-label">Busca</label>
-            <input
-              type="search"
-              className="szv2-input"
-              placeholder="email / nome"
-              style={{ width: 240 }}
-              value={q}
-              onChange={e => setQ(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && load()}
-            />
-          </div>
-          <div className="szv2-field">
-            <label className="szv2-label">Role</label>
-            <select
-              className="szv2-select"
-              style={{ width: 180 }}
-              value={role}
-              onChange={e => setRole(e.target.value)}
-            >
-              <option value="">Todas roles</option>
-              {ROLES.map(r => <option key={r} value={r}>{r}</option>)}
-            </select>
-          </div>
-          <div className="szv2-field">
-            <label className="szv2-label">Ativo</label>
-            <select
-              className="szv2-select"
-              style={{ width: 140 }}
-              value={ativo}
-              onChange={e => setAtivo(e.target.value)}
-            >
-              <option value="">Todos</option>
-              <option value="sim">Sim</option>
-              <option value="nao">Não</option>
-            </select>
-          </div>
-          <button className="szv2-btn szv2-btn-secondary" onClick={load}>Buscar</button>
-          {(q || role || ativo) && (
-            <button className="szv2-btn szv2-btn-secondary" onClick={limpar}>
-              Limpar filtros
-            </button>
-          )}
+        <div style={{ display: 'flex', gap: 8 }}>
+          <FilterButton active={activeCount > 0} count={activeCount} onClick={openPanel} />
         </div>
       </div>
+
+      <ActiveFilterChips chips={chips} onClearAll={clearFilters} />
 
       {err && <div className="sz-alert-danger">{err}</div>}
 
@@ -165,6 +160,63 @@ export default function Users() {
           </tbody>
         </table>
       </div>
+
+      <FilterTopPanel
+        open={filterOpen}
+        onClose={() => setFilterOpen(false)}
+        onApply={applyFilters}
+        onClear={clearFilters}
+        title="Filtros"
+      >
+        <FilterField label="Data inicial">
+          <input
+            type="date"
+            style={filterInputStyle}
+            value={draftIni}
+            max={draftFim || undefined}
+            onChange={e => setDraftIni(e.target.value)}
+          />
+        </FilterField>
+        <FilterField label="Data final">
+          <input
+            type="date"
+            style={filterInputStyle}
+            value={draftFim}
+            min={draftIni || undefined}
+            onChange={e => setDraftFim(e.target.value)}
+          />
+        </FilterField>
+        <FilterField label="Role">
+          <select
+            style={filterInputStyle}
+            value={draftRole}
+            onChange={e => setDraftRole(e.target.value)}
+          >
+            <option value="">Todas roles</option>
+            {ROLES.map(r => <option key={r} value={r}>{r}</option>)}
+          </select>
+        </FilterField>
+        <FilterField label="Ativo">
+          <select
+            style={filterInputStyle}
+            value={draftAtivo}
+            onChange={e => setDraftAtivo(e.target.value)}
+          >
+            <option value="">Todos</option>
+            <option value="sim">Sim</option>
+            <option value="nao">Não</option>
+          </select>
+        </FilterField>
+        <FilterField label="Busca (email / nome)">
+          <input
+            type="search"
+            style={filterInputStyle}
+            placeholder="ex.: joao@…"
+            value={draftQ}
+            onChange={e => setDraftQ(e.target.value)}
+          />
+        </FilterField>
+      </FilterTopPanel>
     </div>
   )
 }

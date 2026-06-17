@@ -37,10 +37,11 @@ const NAV_GROUPS: NavGroup[] = [
   {
     kicker: 'Usuários',
     items: [
-      { to: '/users',       label: 'Usuários',  icon: ICONS.users },
-      { to: '/affiliates',  label: 'Afiliados', icon: ICONS.affiliate },
-      { to: '/commissions', label: 'Comissões', icon: ICONS.commissions },
-      { to: '/products',    label: 'Produtos',  icon: ICONS.tools },
+      { to: '/users',           label: 'Usuários',        icon: ICONS.users },
+      { to: '/affiliates',      label: 'Afiliados',       icon: ICONS.affiliate },
+      { to: '/commissions',     label: 'Comissões',       icon: ICONS.commissions },
+      { to: '/products',        label: 'Produtos',        icon: ICONS.tools },
+      { to: '/checkout-links',  label: 'Links Checkout',  icon: ICONS.webhooks },
     ],
   },
   {
@@ -171,6 +172,7 @@ const PAGE_TITLES: Record<string, string> = {
   '/bulk-actions':             'Ações em Lote (Etiquetas)',
   '/motoboy-mapa':             'Mapa Ao Vivo — Motoboys',
   '/products':                 'Produtos',
+  '/checkout-links':            'Gestão de Links de Checkout',
 }
 
 const LOGO_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 36" fill="none" height="28">

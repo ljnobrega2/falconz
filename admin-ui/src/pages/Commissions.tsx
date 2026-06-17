@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api'
 import FilterButton from '../components/FilterButton'
+import CopyButton from '../components/CopyButton'
 import FilterTopPanel, {
   FilterField,
   filterInputStyle,
@@ -24,14 +25,22 @@ type Aff = {
 type Commission = {
   id: number
   order_id: number | null
+  order_number: string
+  order_total: number
+  order_status: string
   afiliado_nome: string
+  afiliado_email: string
   produtor_nome: string
+  produtor_email: string
   produto_nome: string | null
+  produto_id: number | null
   comissao_pct: number
   valor: number
   tipo: string
   status_tx: string
   link_token: string
+  link_url: string
+  available_at: string | null
   created_at: string
 }
 
@@ -254,15 +263,20 @@ export default function Commissions() {
               <thead>
                 <tr>
                   <th>ID</th>
-                  <th>Pedido</th>
+                  <th>Pedido #</th>
+                  <th className="szv2-td-num">Total pedido</th>
+                  <th>Cliente / Status pedido</th>
                   <th>Afiliado</th>
+                  <th>Email afiliado</th>
                   <th>Produtor</th>
+                  <th>Email produtor</th>
                   <th>Produto</th>
-                  <th>Oferta</th>
+                  <th>Link checkout</th>
                   <th className="szv2-td-num">Regra %</th>
                   <th className="szv2-td-num">Valor</th>
                   <th>Tipo</th>
                   <th>Status tx</th>
+                  <th>Liberação em</th>
                   <th>Data</th>
                 </tr>
               </thead>
@@ -270,16 +284,51 @@ export default function Commissions() {
                 {comms.map(c => (
                   <tr key={c.id}>
                     <td style={{ fontSize: '12px', color: 'var(--szv2-text-muted)' }}>#{c.id}</td>
-                    <td style={{ fontSize: '12px', color: 'var(--szv2-text-muted)' }}>
-                      {c.order_id ? `#${c.order_id}` : '—'}
+                    {/* Pedido #: prioriza order_number (SZ-xxxxx). Fallback pra #id. */}
+                    <td style={{ fontSize: '12px', color: 'var(--szv2-text-soft)', fontFamily: 'var(--szv2-font-mono)' }}>
+                      {c.order_number
+                        ? c.order_number
+                        : c.order_id ? `#${c.order_id}` : <span style={{ color: 'var(--szv2-text-faint)' }}>—</span>}
+                    </td>
+                    <td className="szv2-td-num" style={{ fontFamily: 'var(--szv2-font-mono)', fontSize: 12 }}>
+                      {c.order_total > 0
+                        ? `R$ ${Number(c.order_total).toFixed(2)}`
+                        : <span style={{ color: 'var(--szv2-text-faint)' }}>—</span>}
+                    </td>
+                    {/* Cliente / Status pedido empilhados — nome do afiliado é nosso cliente "comprador" da comissão. */}
+                    <td style={{ fontSize: 12 }}>
+                      <div style={{ fontWeight: 500 }}>{c.afiliado_nome || <span style={{ color: 'var(--szv2-text-faint)' }}>—</span>}</div>
+                      {c.order_status && (
+                        <div>
+                          <span className="sz-badge szv2-badge-neutral" style={{ fontSize: 10 }}>{c.order_status}</span>
+                        </div>
+                      )}
                     </td>
                     <td style={{ fontSize: '13px', fontWeight: 600 }}>{c.afiliado_nome}</td>
+                    <td style={{ fontSize: 12, color: 'var(--szv2-text-muted)' }}>
+                      {c.afiliado_email || <span style={{ color: 'var(--szv2-text-faint)' }}>—</span>}
+                    </td>
                     <td style={{ fontSize: '13px' }}>{c.produtor_nome}</td>
+                    <td style={{ fontSize: 12, color: 'var(--szv2-text-muted)' }}>
+                      {c.produtor_email || <span style={{ color: 'var(--szv2-text-faint)' }}>—</span>}
+                    </td>
                     <td style={{ fontSize: '12px', color: 'var(--szv2-text-soft)' }}>{c.produto_nome ?? '—'}</td>
+                    {/* Link checkout: copia URL completa quando disponível; fallback exibe token cru. */}
                     <td style={{ fontSize: 12 }}>
-                      {c.link_token
-                        ? <span title={c.link_token} style={{ fontFamily: 'var(--szv2-font-mono)', background: 'var(--szv2-brand-light)', color: 'var(--szv2-brand)', padding: '2px 6px', borderRadius: 4 }}>{c.link_token}</span>
-                        : <span style={{ color: 'var(--szv2-text-faint)' }}>—</span>}
+                      {c.link_url
+                        ? (
+                          <CopyButton
+                            text={c.link_url}
+                            title={c.link_url}
+                            copiedLabel="✓ copiado"
+                            style={{ fontFamily: 'var(--szv2-font-mono)', fontSize: 11 }}
+                          >
+                            {c.link_token ? `${c.link_token.slice(0, 12)}…` : 'copiar'}
+                          </CopyButton>
+                        )
+                        : c.link_token
+                          ? <span title={c.link_token} style={{ fontFamily: 'var(--szv2-font-mono)', background: 'var(--szv2-brand-light)', color: 'var(--szv2-brand)', padding: '2px 6px', borderRadius: 4 }}>{c.link_token.slice(0, 12)}…</span>
+                          : <span style={{ color: 'var(--szv2-text-faint)' }}>—</span>}
                     </td>
                     <td className="szv2-td-num" style={{ fontFamily: 'var(--szv2-font-mono)', color: 'var(--szv2-brand)' }}>
                       {c.comissao_pct > 0 ? `${c.comissao_pct}%` : '—'}
@@ -291,11 +340,14 @@ export default function Commissions() {
                         ? <span className={`sz-badge ${c.status_tx === 'available' ? 'szv2-badge-success' : c.status_tx === 'pending' ? 'szv2-badge-warning' : 'szv2-badge-neutral'}`}>{c.status_tx}</span>
                         : <span style={{ color: 'var(--szv2-text-faint)' }}>—</span>}
                     </td>
+                    <td style={{ fontSize: '12px', color: 'var(--szv2-text-muted)' }}>
+                      {c.available_at ? c.available_at.slice(0, 10) : <span style={{ color: 'var(--szv2-text-faint)' }}>—</span>}
+                    </td>
                     <td style={{ fontSize: '12px', color: 'var(--szv2-text-muted)' }}>{c.created_at.slice(0, 10)}</td>
                   </tr>
                 ))}
                 {comms.length === 0 && (
-                  <tr><td colSpan={11}><div className="szv2-empty"><h3>Sem comissões</h3></div></td></tr>
+                  <tr><td colSpan={16}><div className="szv2-empty"><h3>Sem comissões</h3></div></td></tr>
                 )}
               </tbody>
             </table>

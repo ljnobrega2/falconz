@@ -1,5 +1,12 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api'
+import FilterButton from '../components/FilterButton'
+import FilterTopPanel, {
+  FilterField,
+  filterInputStyle,
+  ActiveFilterChips,
+  type ActiveChip,
+} from '../components/FilterTopPanel'
 
 // ----- Tipos retornados pelo handler Go -------------------------------------
 
@@ -114,12 +121,23 @@ function KpiCard({
 export default function MotoboyCarteira() {
   const [summary, setSummary] = useState<Summary | null>(null)
   const [rows, setRows] = useState<Row[]>([])
-  const [q, setQ] = useState('')
-  const [searchInput, setSearchInput] = useState('')
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
   const [toast, setToast] = useState<{ kind: 'ok' | 'err'; msg: string } | null>(null)
+
+  // Filtros aplicados.
+  const [q, setQ] = useState('')
+  const [motoboyID, setMotoboyID] = useState('')
+  const [dataIni, setDataIni] = useState('')
+  const [dataFim, setDataFim] = useState('')
+
+  // Drafts no painel.
+  const [draftQ, setDraftQ] = useState('')
+  const [draftMotoboy, setDraftMotoboy] = useState('')
+  const [draftIni, setDraftIni] = useState('')
+  const [draftFim, setDraftFim] = useState('')
+  const [filterOpen, setFilterOpen] = useState(false)
 
   // Estado de modais
   const [payModal, setPayModal] = useState<Row | null>(null)
@@ -131,8 +149,13 @@ export default function MotoboyCarteira() {
     try {
       const s = await api<Summary>('/motoboy-carteira/summary')
       setSummary(s)
-      const qs = q ? `?q=${encodeURIComponent(q)}&limit=200` : '?limit=200'
-      const r = await api<{ items: Row[]; count: number }>(`/motoboy-carteira${qs}`)
+      const p = new URLSearchParams()
+      if (q) p.set('q', q)
+      if (motoboyID) p.set('motoboy_id', motoboyID)
+      if (dataIni) p.set('data_ini', dataIni)
+      if (dataFim) p.set('data_fim', dataFim)
+      p.set('limit', '200')
+      const r = await api<{ items: Row[]; count: number }>(`/motoboy-carteira?${p.toString()}`)
       setRows(r.items || [])
     } catch (e: any) {
       setErr(e.message || 'Erro ao carregar')
@@ -141,17 +164,34 @@ export default function MotoboyCarteira() {
     }
   }
 
-  useEffect(() => { load() /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [q])
+  useEffect(() => { load() /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [q, motoboyID, dataIni, dataFim])
 
   function showToast(kind: 'ok' | 'err', msg: string) {
     setToast({ kind, msg })
     setTimeout(() => setToast(null), 5000)
   }
 
-  function applySearch(e: React.FormEvent) {
-    e.preventDefault()
-    setQ(searchInput.trim())
+  function openPanel() {
+    setDraftQ(q); setDraftMotoboy(motoboyID); setDraftIni(dataIni); setDraftFim(dataFim)
+    setFilterOpen(true)
   }
+  function applyFilters() {
+    setQ(draftQ); setMotoboyID(draftMotoboy); setDataIni(draftIni); setDataFim(draftFim)
+    setFilterOpen(false)
+  }
+  function clearFilters() {
+    setQ(''); setMotoboyID(''); setDataIni(''); setDataFim('')
+    setDraftQ(''); setDraftMotoboy(''); setDraftIni(''); setDraftFim('')
+    setFilterOpen(false)
+  }
+
+  // Chips ativos.
+  const chips: ActiveChip[] = []
+  if (q) chips.push({ key: 'q', label: `Busca: ${q}`, onRemove: () => setQ('') })
+  if (motoboyID) chips.push({ key: 'mb', label: `Motoboy #${motoboyID}`, onRemove: () => setMotoboyID('') })
+  if (dataIni) chips.push({ key: 'ini', label: `De: ${dataIni}`, onRemove: () => setDataIni('') })
+  if (dataFim) chips.push({ key: 'fim', label: `Até: ${dataFim}`, onRemove: () => setDataFim('') })
+  const activeCount = chips.length
 
   async function handleSync() {
     if (!window.confirm('Recalcular os saldos da carteira dos motoboys?')) return
@@ -182,15 +222,20 @@ export default function MotoboyCarteira() {
             Disponível = saldo conciliado e ainda não pago. Pagamentos podem ser parciais.
           </p>
         </div>
-        <button
-          type="button"
-          className="szv2-btn-secondary"
-          disabled={busy || loading}
-          onClick={handleSync}
-        >
-          {busy ? 'Atualizando…' : '🔄 Atualizar dados'}
-        </button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <FilterButton active={activeCount > 0} count={activeCount} onClick={openPanel} />
+          <button
+            type="button"
+            className="szv2-btn-secondary"
+            disabled={busy || loading}
+            onClick={handleSync}
+          >
+            {busy ? 'Atualizando…' : '🔄 Atualizar dados'}
+          </button>
+        </div>
       </div>
+
+      <ActiveFilterChips chips={chips} onClearAll={clearFilters} />
 
       {err && <div className="sz-alert-danger" style={{ marginBottom: 16 }}>{err}</div>}
       {toast && (
@@ -225,29 +270,6 @@ export default function MotoboyCarteira() {
           />
         </div>
       )}
-
-      {/* Busca */}
-      <div className="szv2-card" style={{ marginTop: 24, marginBottom: 16 }}>
-        <form onSubmit={applySearch} style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
-          <input
-            className="szv2-input"
-            placeholder="Buscar motoboy pelo nome…"
-            value={searchInput}
-            onChange={e => setSearchInput(e.target.value)}
-            style={{ flex: 1 }}
-          />
-          <button type="submit" className="szv2-btn-secondary">Buscar</button>
-          {q && (
-            <button
-              type="button"
-              className="szv2-btn-secondary"
-              onClick={() => { setSearchInput(''); setQ('') }}
-            >
-              Limpar
-            </button>
-          )}
-        </form>
-      </div>
 
       {/* Tabela principal */}
       <div className="szv2-card">
@@ -377,6 +399,51 @@ export default function MotoboyCarteira() {
       {histModal && (
         <HistoricoModal motoboy={histModal} onClose={() => setHistModal(null)} />
       )}
+
+      <FilterTopPanel
+        open={filterOpen}
+        onClose={() => setFilterOpen(false)}
+        onApply={applyFilters}
+        onClear={clearFilters}
+        title="Filtros"
+      >
+        <FilterField label="Data inicial">
+          <input
+            type="date"
+            style={filterInputStyle}
+            value={draftIni}
+            max={draftFim || undefined}
+            onChange={e => setDraftIni(e.target.value)}
+          />
+        </FilterField>
+        <FilterField label="Data final">
+          <input
+            type="date"
+            style={filterInputStyle}
+            value={draftFim}
+            min={draftIni || undefined}
+            onChange={e => setDraftFim(e.target.value)}
+          />
+        </FilterField>
+        <FilterField label="Motoboy ID">
+          <input
+            type="number"
+            style={filterInputStyle}
+            placeholder="ex.: 12"
+            value={draftMotoboy}
+            onChange={e => setDraftMotoboy(e.target.value)}
+          />
+        </FilterField>
+        <FilterField label="Busca (nome)">
+          <input
+            type="search"
+            style={filterInputStyle}
+            placeholder="ex.: João"
+            value={draftQ}
+            onChange={e => setDraftQ(e.target.value)}
+          />
+        </FilterField>
+      </FilterTopPanel>
     </div>
   )
 }

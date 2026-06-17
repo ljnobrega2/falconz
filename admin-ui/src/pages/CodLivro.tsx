@@ -1,5 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '../api'
+import FilterButton from '../components/FilterButton'
+import FilterTopPanel, {
+  FilterField,
+  filterInputStyle,
+  ActiveFilterChips,
+  type ActiveChip,
+} from '../components/FilterTopPanel'
 
 type Summary = {
   bruto_cod: number
@@ -150,6 +157,50 @@ export default function CodLivro() {
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState('')
 
+  // Filtros adicionais (client-side sobre `orders`).
+  const [situacao, setSituacao] = useState('')
+  const [statusRepasse, setStatusRepasse] = useState('')
+
+  // Drafts no painel.
+  const [draftFrom, setDraftFrom] = useState(from)
+  const [draftTo, setDraftTo] = useState(to)
+  const [draftSituacao, setDraftSituacao] = useState('')
+  const [draftStatusRepasse, setDraftStatusRepasse] = useState('')
+  const [filterOpen, setFilterOpen] = useState(false)
+
+  function openPanel() {
+    setDraftFrom(from); setDraftTo(to); setDraftSituacao(situacao); setDraftStatusRepasse(statusRepasse)
+    setFilterOpen(true)
+  }
+  function applyFilters() {
+    if (draftFrom) setFrom(draftFrom)
+    if (draftTo) setTo(draftTo)
+    setSituacao(draftSituacao); setStatusRepasse(draftStatusRepasse)
+    setFilterOpen(false)
+  }
+  function clearFilters() {
+    const def = defaultRange()
+    setFrom(def.from); setTo(def.to); setSituacao(''); setStatusRepasse('')
+    setDraftFrom(def.from); setDraftTo(def.to); setDraftSituacao(''); setDraftStatusRepasse('')
+    setFilterOpen(false)
+  }
+
+  // Filtragem client-side por situação/status — backend não tem esses params.
+  const filteredOrders = orders.filter(o => {
+    if (situacao && o.situacao !== situacao) return false
+    if (statusRepasse && o.status_repasse !== statusRepasse) return false
+    return true
+  })
+
+  // Chips ativos — sempre mostra a janela de datas para visibilidade do escopo.
+  const chips: ActiveChip[] = [
+    { key: 'from', label: `De: ${fmtDate(from)}`, onRemove: () => setFrom(defaultRange().from) },
+    { key: 'to', label: `Até: ${fmtDate(to)}`, onRemove: () => setTo(defaultRange().to) },
+  ]
+  if (situacao) chips.push({ key: 'sit', label: `Situação: ${situacao}`, onRemove: () => setSituacao('') })
+  if (statusRepasse) chips.push({ key: 'sr', label: `Repasse: ${statusRepasse}`, onRemove: () => setStatusRepasse('') })
+  const activeCount = chips.length
+
   async function load() {
     setLoading(true)
     setErr('')
@@ -187,33 +238,12 @@ export default function CodLivro() {
             Período: {fmtDate(from)} até {fmtDate(to)} — receita, repasses e taxas por pedido.
           </p>
         </div>
-        <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end' }}>
-          <div className="szv2-field">
-            <label className="szv2-label" htmlFor="cod-from">De</label>
-            <input
-              id="cod-from"
-              type="date"
-              className="szv2-input"
-              value={from}
-              onChange={e => setFrom(e.target.value)}
-              max={to}
-              style={{ width: 160 }}
-            />
-          </div>
-          <div className="szv2-field">
-            <label className="szv2-label" htmlFor="cod-to">Até</label>
-            <input
-              id="cod-to"
-              type="date"
-              className="szv2-input"
-              value={to}
-              onChange={e => setTo(e.target.value)}
-              min={from}
-              style={{ width: 160 }}
-            />
-          </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <FilterButton active={activeCount > 0} count={activeCount} onClick={openPanel} />
         </div>
       </div>
+
+      <ActiveFilterChips chips={chips} onClearAll={clearFilters} />
 
       {err && <div className="sz-alert-danger" style={{ marginBottom: 16 }}>{err}</div>}
 
@@ -233,7 +263,7 @@ export default function CodLivro() {
         <div className="szv2-card-head">
           <div>
             <h2>Livro COD por pedido</h2>
-            <p className="szv2-card-sub">{orders.length} registro(s) — limite 300</p>
+            <p className="szv2-card-sub">{filteredOrders.length} de {orders.length} registro(s) — limite 300</p>
           </div>
         </div>
 
@@ -241,7 +271,7 @@ export default function CodLivro() {
           <div style={{ padding: 48, textAlign: 'center', color: 'var(--szv2-text-muted)' }}>
             Carregando…
           </div>
-        ) : orders.length === 0 ? (
+        ) : filteredOrders.length === 0 ? (
           <div style={{ padding: 48, textAlign: 'center', color: 'var(--szv2-text-muted)' }}>
             Nenhum pedido no período selecionado.
           </div>
@@ -275,7 +305,7 @@ export default function CodLivro() {
                 </tr>
               </thead>
               <tbody>
-                {orders.map(o => (
+                {filteredOrders.map(o => (
                   <tr key={o.order_id}>
                     <td><strong>#{o.order_id}</strong></td>
                     <td style={{ color: 'var(--szv2-text-muted)', fontSize: 12 }}>{fmtDate(o.data_pedido)}</td>
@@ -433,6 +463,59 @@ export default function CodLivro() {
           )}
         </div>
       </details>
+
+      <FilterTopPanel
+        open={filterOpen}
+        onClose={() => setFilterOpen(false)}
+        onApply={applyFilters}
+        onClear={clearFilters}
+        title="Filtros"
+      >
+        <FilterField label="Data inicial">
+          <input
+            type="date"
+            style={filterInputStyle}
+            value={draftFrom}
+            max={draftTo || undefined}
+            onChange={e => setDraftFrom(e.target.value)}
+          />
+        </FilterField>
+        <FilterField label="Data final">
+          <input
+            type="date"
+            style={filterInputStyle}
+            value={draftTo}
+            min={draftFrom || undefined}
+            onChange={e => setDraftTo(e.target.value)}
+          />
+        </FilterField>
+        <FilterField label="Situação">
+          <select
+            style={filterInputStyle}
+            value={draftSituacao}
+            onChange={e => setDraftSituacao(e.target.value)}
+          >
+            <option value="">Todas</option>
+            <option value="Recebido">Recebido</option>
+            <option value="Estornado">Estornado</option>
+            <option value="Previsto">Previsto</option>
+          </select>
+        </FilterField>
+        <FilterField label="Status de repasse">
+          <select
+            style={filterInputStyle}
+            value={draftStatusRepasse}
+            onChange={e => setDraftStatusRepasse(e.target.value)}
+          >
+            <option value="">Todos</option>
+            <option value="Disponível">Disponível</option>
+            <option value="Pendente">Pendente</option>
+            <option value="Previsto">Previsto</option>
+            <option value="Não repassar">Não repassar</option>
+            <option value="Sem afiliado">Sem afiliado</option>
+          </select>
+        </FilterField>
+      </FilterTopPanel>
     </div>
   )
 }

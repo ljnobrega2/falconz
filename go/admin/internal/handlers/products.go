@@ -1,12 +1,15 @@
 // Handler CRUD de produtos (sz_products).
 //
-// GET    /products?q=&produtor_id=&status=&limit=100&offset=0
+// GET    /products?q=&produtor_id=&status=&limit=100&offset=0&auto_sync=1
+// GET    /products/stats
 // POST   /products
+// POST   /products/sync-from-orders
 // PUT    /products/{id}
 // DELETE /products/{id}
 package handlers
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 	"strings"
@@ -37,12 +40,17 @@ type Product struct {
 
 // tableExistsProducts retorna true se sz_products já existe no banco.
 func (h *ProductsHandler) tableExistsProducts(r *http.Request) bool {
+	return h.tableExists(r.Context(), "sz_products")
+}
+
+// tableExists — checagem genérica para qualquer tabela public.<name>.
+func (h *ProductsHandler) tableExists(ctx context.Context, name string) bool {
 	var exists bool
-	_ = h.Pool.QueryRow(r.Context(),
+	_ = h.Pool.QueryRow(ctx,
 		`SELECT EXISTS (
 			SELECT FROM information_schema.tables
-			WHERE table_schema = 'public' AND table_name = 'sz_products'
-		)`).Scan(&exists)
+			WHERE table_schema = 'public' AND table_name = $1
+		)`, name).Scan(&exists)
 	return exists
 }
 
@@ -63,6 +71,17 @@ func (h *ProductsHandler) List(w http.ResponseWriter, r *http.Request) {
 	search := strings.TrimSpace(q.Get("q"))
 	status := strings.TrimSpace(q.Get("status"))
 	produtorID, _ := strconv.ParseInt(q.Get("produtor_id"), 10, 64)
+	autoSync := q.Get("auto_sync") == "1"
+
+	// Auto-trigger opt-in: se nenhum produto cadastrado e o cliente pediu auto_sync,
+	// importa do histórico de pedidos antes de listar. Evita surpresa silenciosa.
+	if autoSync && h.tableExists(r.Context(), "sz_order_items") && h.tableExists(r.Context(), "sz_orders") {
+		var existing int64
+		_ = h.Pool.QueryRow(r.Context(), `SELECT COUNT(*) FROM sz_products`).Scan(&existing)
+		if existing == 0 {
+			_, _ = h.runSyncFromOrders(r.Context())
+		}
+	}
 
 	rows, err := h.Pool.Query(r.Context(),
 		`SELECT
@@ -77,7 +96,9 @@ func (h *ProductsHandler) List(w http.ResponseWriter, r *http.Request) {
 		    sp.categoria,
 		    sp.status,
 		    sp.created_at::text,
-		    (SELECT COUNT(*) FROM senderzz_affiliates sa WHERE sa.produto_id = sp.id) AS afiliados_count
+		    -- senderzz_affiliates.produto_id é wp_post_id; com fallback para sp.id quando wp_post_id é NULL
+		    (SELECT COUNT(*) FROM senderzz_affiliates sa
+		        WHERE sa.produto_id = COALESCE(sp.wp_post_id, sp.id)) AS afiliados_count
 		FROM sz_products sp
 		LEFT JOIN senderzz_portal_users pu ON pu.id = sp.produtor_id
 		WHERE ($1 = '' OR sp.nome ILIKE '%' || $1 || '%')
@@ -225,4 +246,125 @@ func (h *ProductsHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.JSON(w, 200, map[string]any{"ok": true})
+}
+
+// runSyncFromOrders — executa o INSERT…SELECT idempotente que importa produtos
+// distintos do histórico de sz_order_items. Retorna a contagem de linhas inseridas.
+//
+// Usado por SyncFromOrders e pelo auto-trigger do List (?auto_sync=1).
+//
+// NOTA sobre produtor_id: sz_orders.produtor_id armazena wp_user_id, enquanto
+// sz_products.produtor_id é portal_users.id (LEFT JOIN no List usa pu.id = sp.produtor_id).
+// Tentamos resolver via senderzz_portal_users.wp_user_id; se não houver match,
+// caímos no fallback `1` (mantém o COALESCE pedido pelo spec).
+func (h *ProductsHandler) runSyncFromOrders(ctx context.Context) (int64, error) {
+	// DISTINCT ON precisa estar alinhado com o ORDER BY: pegamos a linha mais
+	// recente (oi.id DESC) por produto_id e tomamos MAX(preco_unit) na janela.
+	// NOT EXISTS garante idempotência — produtos já cadastrados não são duplicados.
+	rows, err := h.Pool.Query(ctx,
+		`INSERT INTO sz_products
+		    (wp_post_id, produtor_id, nome, sku, preco, status, meta, created_at, updated_at)
+		 SELECT DISTINCT ON (oi.produto_id)
+		     NULLIF(oi.produto_id, 0)                            AS wp_post_id,
+		     COALESCE(pu.id, o.produtor_id, 1)                   AS produtor_id,
+		     COALESCE(NULLIF(oi.nome, ''), 'Produto')            AS nome,
+		     NULLIF(oi.sku, '')                                  AS sku,
+		     MAX(oi.preco_unit) OVER (PARTITION BY oi.produto_id) AS preco,
+		     'active'                                            AS status,
+		     jsonb_build_object('source','sync-from-orders')     AS meta,
+		     NOW(),
+		     NOW()
+		 FROM sz_order_items oi
+		 LEFT JOIN sz_orders o            ON o.id = oi.order_id
+		 LEFT JOIN senderzz_portal_users pu ON pu.wp_user_id = o.produtor_id
+		 WHERE oi.produto_id IS NOT NULL AND oi.produto_id > 0
+		   AND NOT EXISTS (
+		       SELECT 1 FROM sz_products sp
+		       WHERE sp.wp_post_id = oi.produto_id
+		   )
+		 ORDER BY oi.produto_id, oi.id DESC
+		 RETURNING id`)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	var count int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return count, err
+		}
+		count++
+	}
+	return count, rows.Err()
+}
+
+// SyncFromOrders — POST /products/sync-from-orders
+//
+// Importa produtos distintos do histórico de sz_order_items para sz_products.
+// Idempotente: re-execução não duplica (NOT EXISTS por wp_post_id).
+func (h *ProductsHandler) SyncFromOrders(w http.ResponseWriter, r *http.Request) {
+	if !h.tableExistsProducts(r) {
+		httpx.Err(w, 503, "table_not_found", "tabela sz_products não existe — execute a migration v462")
+		return
+	}
+	if !h.tableExists(r.Context(), "sz_order_items") {
+		httpx.Err(w, 503, "table_not_found", "tabela sz_order_items não existe — não há histórico para sincronizar")
+		return
+	}
+
+	synced, err := h.runSyncFromOrders(r.Context())
+	if err != nil {
+		httpx.Err(w, 500, "db_error", err.Error())
+		return
+	}
+	httpx.JSON(w, 200, map[string]any{"ok": true, "synced": synced})
+}
+
+// Stats — GET /products/stats
+//
+// KPIs do topo da tela Produtos: contagem ativos, total de vínculos de afiliados
+// e receita dos últimos 30 dias (soma de subtotais em sz_order_items).
+func (h *ProductsHandler) Stats(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	out := map[string]any{
+		"active_count":     int64(0),
+		"total_affiliates": int64(0),
+		"revenue_30d":      float64(0),
+	}
+
+	if h.tableExists(ctx, "sz_products") {
+		var n int64
+		_ = h.Pool.QueryRow(ctx,
+			`SELECT COUNT(*) FROM sz_products WHERE status = 'active'`).Scan(&n)
+		out["active_count"] = n
+	}
+
+	// Conta apenas vínculos que apontam para produtos sincronizados (join via wp_post_id).
+	// Se sz_products ainda não existe, devolve 0 (degradação graciosa).
+	if h.tableExists(ctx, "senderzz_affiliates") && h.tableExists(ctx, "sz_products") {
+		var n int64
+		_ = h.Pool.QueryRow(ctx,
+			`SELECT COUNT(*)
+			   FROM senderzz_affiliates sa
+			   JOIN sz_products sp
+			     ON sa.produto_id = COALESCE(sp.wp_post_id, sp.id)`).Scan(&n)
+		out["total_affiliates"] = n
+	}
+
+	// Receita 30d: soma subtotal de itens cujo produto está em sz_products.
+	if h.tableExists(ctx, "sz_order_items") && h.tableExists(ctx, "sz_orders") && h.tableExists(ctx, "sz_products") {
+		var v float64
+		_ = h.Pool.QueryRow(ctx,
+			`SELECT COALESCE(SUM(oi.subtotal), 0)::float8
+			   FROM sz_order_items oi
+			   JOIN sz_orders o      ON o.id = oi.order_id
+			   JOIN sz_products sp   ON sp.wp_post_id = oi.produto_id
+			  WHERE o.created_at >= NOW() - INTERVAL '30 days'`).Scan(&v)
+		out["revenue_30d"] = v
+	}
+
+	httpx.JSON(w, 200, out)
 }

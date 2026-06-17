@@ -1,5 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { api } from '../api'
+import FilterButton from '../components/FilterButton'
+import FilterTopPanel, {
+  FilterField,
+  filterInputStyle,
+  ActiveFilterChips,
+  type ActiveChip,
+} from '../components/FilterTopPanel'
 
 type MB = {
   id: number
@@ -39,6 +46,8 @@ const hoje = () => new Date().toISOString().slice(0, 10)
 
 export default function MotoboysDay() {
   const [date, setDate] = useState(hoje())
+  const [motoboyID, setMotoboyID] = useState('')
+  const [statusFilter, setStatusFilter] = useState('')
   const [mbs, setMbs] = useState<MB[]>([])
   const [semMotoboy, setSemMotoboy] = useState(0)
   const [kpis, setKpis] = useState<DashKPIs | null>(null)
@@ -46,11 +55,20 @@ export default function MotoboysDay() {
   const [loading, setLoading] = useState(true)
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
+  // Drafts no painel.
+  const [draftDate, setDraftDate] = useState(date)
+  const [draftMotoboy, setDraftMotoboy] = useState('')
+  const [draftStatus, setDraftStatus] = useState('')
+  const [filterOpen, setFilterOpen] = useState(false)
+
   const fetchData = (d: string, isFirst = false) => {
     if (isFirst) setLoading(true)
     setErr('')
+    const qDia = new URLSearchParams({ date: d })
+    if (motoboyID) qDia.set('motoboy_id', motoboyID)
+    if (statusFilter) qDia.set('status', statusFilter)
     Promise.all([
-      api<DiaResp>(`/motoboys/dia?date=${d}`),
+      api<DiaResp>(`/motoboys/dia?${qDia.toString()}`),
       api<DashResp>(`/motoboy-dashboard?date=${d}`),
     ])
       .then(([dia, dash]) => {
@@ -71,11 +89,31 @@ export default function MotoboysDay() {
       if (intervalRef.current) clearInterval(intervalRef.current)
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [date])
+  }, [date, motoboyID, statusFilter])
 
-  const handleDateChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setDate(e.target.value)
+  function openPanel() {
+    setDraftDate(date); setDraftMotoboy(motoboyID); setDraftStatus(statusFilter)
+    setFilterOpen(true)
   }
+  function applyFilters() {
+    if (draftDate) setDate(draftDate)
+    setMotoboyID(draftMotoboy); setStatusFilter(draftStatus)
+    setFilterOpen(false)
+  }
+  function clearFilters() {
+    const t = hoje()
+    setDate(t); setMotoboyID(''); setStatusFilter('')
+    setDraftDate(t); setDraftMotoboy(''); setDraftStatus('')
+    setFilterOpen(false)
+  }
+
+  // Chips ativos.
+  const today = hoje()
+  const chips: ActiveChip[] = []
+  if (date !== today) chips.push({ key: 'date', label: `Data: ${date}`, onRemove: () => setDate(today) })
+  if (motoboyID) chips.push({ key: 'mb', label: `Motoboy #${motoboyID}`, onRemove: () => setMotoboyID('') })
+  if (statusFilter) chips.push({ key: 'status', label: `Status: ${statusFilter}`, onRemove: () => setStatusFilter('') })
+  const activeCount = chips.length
 
   return (
     <div>
@@ -86,18 +124,14 @@ export default function MotoboysDay() {
           <p>Visão em tempo real — {mbs.length} motoboy(s) com pedidos hoje</p>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <input
-            type="date"
-            className="szv2-input"
-            value={date}
-            onChange={handleDateChange}
-            style={{ fontSize: '13px', padding: '6px 10px' }}
-          />
+          <FilterButton active={activeCount > 0} count={activeCount} onClick={openPanel} />
           <button className="szv2-btn szv2-btn-secondary" onClick={() => fetchData(date, true)}>
             Atualizar
           </button>
         </div>
       </div>
+
+      <ActiveFilterChips chips={chips} onClearAll={clearFilters} />
 
       {err && <div className="sz-alert-danger">{err}</div>}
 
@@ -247,6 +281,46 @@ export default function MotoboysDay() {
           )
         })}
       </div>
+
+      <FilterTopPanel
+        open={filterOpen}
+        onClose={() => setFilterOpen(false)}
+        onApply={applyFilters}
+        onClear={clearFilters}
+        title="Filtros"
+      >
+        <FilterField label="Data">
+          <input
+            type="date"
+            style={filterInputStyle}
+            value={draftDate}
+            onChange={e => setDraftDate(e.target.value)}
+          />
+        </FilterField>
+        <FilterField label="Motoboy ID">
+          <input
+            type="number"
+            style={filterInputStyle}
+            placeholder="ex.: 12"
+            value={draftMotoboy}
+            onChange={e => setDraftMotoboy(e.target.value)}
+          />
+        </FilterField>
+        <FilterField label="Status">
+          <select
+            style={filterInputStyle}
+            value={draftStatus}
+            onChange={e => setDraftStatus(e.target.value)}
+          >
+            <option value="">Todos</option>
+            <option value="agendado">Agendado</option>
+            <option value="embalado">Embalado</option>
+            <option value="em_rota">Em rota</option>
+            <option value="entregue">Entregue</option>
+            <option value="frustrado">Frustrado</option>
+          </select>
+        </FilterField>
+      </FilterTopPanel>
     </div>
   )
 }
