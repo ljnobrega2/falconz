@@ -101,6 +101,7 @@ func main() {
 	mbMapaH := &handlers.MotoboyMapaHandler{Pool: pool}
 	zonasH := &handlers.ZonasHandler{Pool: pool}
 	settingsH := &handlers.SettingsHandler{Pool: pool}
+	prdH := &handlers.ProductsHandler{Pool: pool}
 
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
@@ -426,6 +427,12 @@ func main() {
 
 			// Motoboys do dia
 			r.Get("/motoboys/dia", motH.Dia)
+
+			// Produtos (sz_products)
+			r.Get("/products", prdH.List)
+			r.Post("/products", prdH.Create)
+			r.Put("/products/{id}", prdH.Update)
+			r.Delete("/products/{id}", prdH.Delete)
 		})
 	})
 

@@ -32,56 +32,30 @@ func (h *AffiliatesHandler) List(w http.ResponseWriter, r *http.Request) {
 		limit = 100
 	}
 	offset, _ := strconv.Atoi(q.Get("offset"))
-	status := strings.TrimSpace(q.Get("status"))
-	// busca textual por email ou nome do afiliado (?q=)
+	// busca textual por email ou nome do afiliado (?q=) — passado raw; SQL monta os wildcards
 	search := strings.TrimSpace(q.Get("q"))
-	if search != "" {
-		search = "%" + search + "%"
-	}
 
-	// Lista AFILIADOS ÚNICOS (usuários) com agregações dos vínculos produtor↔afiliado.
-	// LEFT JOIN com subquery agregada de sz_orders (últimos 30d) — total vendido + comissão.
-	// Subquery escalar nas colunas (em vez de JOIN agregado) evita fan-out quando o afiliado
-	// tem múltiplos vínculos e múltiplos pedidos no período.
+	// Lista TODOS os usuários com role='affiliate' em senderzz_portal_users,
+	// com LEFT JOIN para agregar vínculos e link_token (afiliado pode existir
+	// sem vínculo ativo — nesse caso status='sem_vinculo').
 	rows, err := h.Pool.Query(r.Context(),
-		`SELECT af.id AS user_id,
-		        COALESCE(af.email,'') AS email,
-		        COALESCE(af.nome,'')  AS nome,
-		        COALESCE(MAX(al.link_token), '')          AS affiliate_code,
-		        COALESCE(MAX(a.comissao_pct), 0)::float8  AS comissao_pct,
-		        COALESCE(MAX(a.status), 'pending')        AS status,
-		        MIN(a.created_at)::text                   AS created_at,
-		        COUNT(DISTINCT a.id)                      AS vinculos,
-		        COALESCE((
-		          SELECT SUM(COALESCE(o.total,0))
-		          FROM sz_orders o
-		          WHERE o.affiliate_id = af.id
-		            AND o.created_at >= NOW() - INTERVAL '30 days'
-		            AND o.status NOT IN ('frustrado','cancelled','refunded')
-		        ), 0)::float8 AS total_vendido_30d,
-		        COALESCE((
-		          SELECT SUM(COALESCE(o.affiliate_amount,0))
-		          FROM sz_orders o
-		          WHERE o.affiliate_id = af.id
-		            AND o.created_at >= NOW() - INTERVAL '30 days'
-		            AND o.status NOT IN ('frustrado','cancelled','refunded')
-		        ), 0)::float8 AS total_comissao_30d,
-		        COALESCE((
-		          SELECT COUNT(*)
-		          FROM sz_orders o
-		          WHERE o.affiliate_id = af.id
-		            AND o.created_at >= NOW() - INTERVAL '30 days'
-		        ), 0)::bigint AS pedidos_count_30d
-		 FROM senderzz_portal_users af
-		 JOIN senderzz_affiliates a ON a.afiliado_id = af.id
-		 LEFT JOIN senderzz_affiliate_links al
-		        ON al.affiliate_id = a.id AND al.active = TRUE
-		 WHERE ($1='' OR a.status = $1)
-		   AND ($2='' OR COALESCE(af.email,'') ILIKE $2
-		              OR COALESCE(af.nome,'')  ILIKE $2)
-		 GROUP BY af.id, af.email, af.nome
-		 ORDER BY MIN(a.created_at) DESC
-		 LIMIT $3 OFFSET $4`, status, search, limit, offset)
+		`SELECT
+		    u.id AS user_id,
+		    u.email,
+		    COALESCE(u.nome, '') AS nome,
+		    COALESCE(MAX(al.link_token), '') AS affiliate_code,
+		    COALESCE(MAX(a.comissao_pct), 0)::float8 AS comissao_pct,
+		    COALESCE(MAX(a.status), 'sem_vinculo') AS status,
+		    COALESCE(MIN(a.created_at), u.created_at)::text AS created_at,
+		    COUNT(DISTINCT a.id) AS vinculos
+		FROM senderzz_portal_users u
+		LEFT JOIN senderzz_affiliates a ON a.afiliado_id = u.id
+		LEFT JOIN senderzz_affiliate_links al ON al.affiliate_id = a.id AND al.active = TRUE
+		WHERE u.role = 'affiliate'
+		  AND ($1 = '' OR u.email ILIKE '%' || $1 || '%' OR u.nome ILIKE '%' || $1 || '%')
+		GROUP BY u.id, u.email, u.nome, u.created_at
+		ORDER BY u.created_at DESC
+		LIMIT $2 OFFSET $3`, search, limit, offset)
 	if err != nil {
 		httpx.Err(w, 500, "db_error", err.Error())
 		return
@@ -92,20 +66,17 @@ func (h *AffiliatesHandler) List(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var a affiliate
 		_ = rows.Scan(&a.UserID, &a.Email, &a.Nome, &a.AffiliateCode,
-			&a.ComissaoPct, &a.Status, &a.CreatedAt, &a.Vinculos,
-			&a.TotalVendido30d, &a.TotalComissao30d, &a.PedidosCount30d)
+			&a.ComissaoPct, &a.Status, &a.CreatedAt, &a.Vinculos)
 		out = append(out, a)
 	}
 
-	// Total = contagem de afiliados únicos que casam com o filtro.
+	// Total = todos os usuários com role='affiliate' que casam com a busca.
 	var total int64
 	_ = h.Pool.QueryRow(r.Context(),
-		`SELECT COUNT(DISTINCT af.id)
-		 FROM senderzz_portal_users af
-		 JOIN senderzz_affiliates a ON a.afiliado_id = af.id
-		 WHERE ($1='' OR a.status = $1)
-		   AND ($2='' OR COALESCE(af.email,'') ILIKE $2
-		              OR COALESCE(af.nome,'')  ILIKE $2)`, status, search).Scan(&total)
+		`SELECT COUNT(*) FROM senderzz_portal_users
+		 WHERE role = 'affiliate'
+		   AND ($1 = '' OR email ILIKE '%' || $1 || '%' OR nome ILIKE '%' || $1 || '%')`,
+		search).Scan(&total)
 
 	httpx.JSON(w, 200, map[string]any{"items": out, "total": total})
 }
@@ -150,9 +121,7 @@ func (h *AffiliatesHandler) Links(w http.ResponseWriter, r *http.Request) {
 		        COALESCE((SELECT al.link_token FROM senderzz_affiliate_links al
 		                  WHERE al.affiliate_id = a.id
 		                  ORDER BY al.active DESC, al.id ASC LIMIT 1), '') AS link_token,
-		        COALESCE((SELECT al.link_url FROM senderzz_affiliate_links al
-		                  WHERE al.affiliate_id = a.id
-		                  ORDER BY al.active DESC, al.id ASC LIMIT 1), '') AS link_url,
+		        ''::text AS link_url,
 		        COALESCE((SELECT al.active FROM senderzz_affiliate_links al
 		                  WHERE al.affiliate_id = a.id
 		                  ORDER BY al.active DESC, al.id ASC LIMIT 1), FALSE) AS link_active

@@ -55,6 +55,7 @@ import OrderMetaNormalization from './pages/OrderMetaNormalization'
 import PwaConfig from './pages/PwaConfig'
 import BulkActions from './pages/BulkActions'
 import MotoboyMapa from './pages/MotoboyMapa'
+import Products from './pages/Products'
 
 function Protected({ children }: { children: JSX.Element }) {
   return getToken() ? children : <Navigate to="/login" replace />
@@ -118,6 +119,7 @@ export default function App() {
         <Route path="/pwa-config" element={<PwaConfig />} />
         <Route path="/bulk-actions" element={<BulkActions />} />
         <Route path="/motoboy-mapa" element={<MotoboyMapa />} />
+        <Route path="/products" element={<Products />} />
       </Route>
     </Routes>
     </ErrorBoundary>
