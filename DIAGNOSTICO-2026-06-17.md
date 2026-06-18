@@ -4,6 +4,26 @@ Verificação cruzada: o que os arquivos `.md` afirmam **vs** o que o código re
 
 ---
 
+## ✅ Status de resolução (2026-06-17)
+
+Todos os itens acionáveis foram resolvidos nesta sessão (branch `chore/track-php-source`, commit `04d374c`):
+
+| # | Item | Status | O que foi feito |
+|---|---|---|---|
+| 1 | 🔴 Git: fonte PHP fora do controle | ✅ RESOLVIDO | `.gitignore` criado, `node_modules` destrackeado (0 arquivos), fonte PHP commitada — `senderzz-logistics.php` agora trackeado |
+| 2 | 🟠 Build quebrado (phpunit ausente) | ✅ RESOLVIDO | `composer install` rodado → `composer test`: **104 testes, 196 assertions, OK** |
+| 3 | 🟠 `senderzz-security-tests.sh` stale + crash | ✅ RESOLVIDO | Asserts FIX-11/12 de templates inexistentes viraram SKIP condicional; bug `set -u` linha 214 corrigido; `skip()` adicionado. Roda exit 0 |
+| 4 | 🟡 Drift de versão + CLAUDE.md v458 | ✅ RESOLVIDO | CLAUDE.md atualizado v458→v459, scheme Go documentado |
+| 5 | 🟡 CLAUDE.md cita HOTFIX-*.md inexistentes | ✅ RESOLVIDO | Referência corrigida para os docs que existem |
+| 6 | 🟡 CHANGELOG CRIT-02 `cancelled` errado | ✅ RESOLVIDO | Corrigido para `emcancelamento` (tabela + checklist) |
+| 7 | 🟡 ROADMAP-V2 subestima Go | ✅ RESOLVIDO | Tabela-resumo reconciliada com código real + banner |
+
+**Pendências reais restantes (ops/runtime — fora do escopo de código):** provisionar VPS, TLS, rotação de secret em produção, janelas double-write 7/30 dias, cutover. Restaurar rate-limits de login antes de produção (ver CLAUDE.md "Rate limiting de login — desativado para dev").
+
+Detalhe original do diagnóstico abaixo (mantido para histórico).
+
+---
+
 ## 🔴 CRÍTICO — Integridade de controle de versão
 
 **O plugin PHP inteiro está FORA do git.** Único conteúdo trackeado: `admin-ui/`, `go/`, `infra/` + 1 `.md` solto.
