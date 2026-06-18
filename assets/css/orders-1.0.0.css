@@ -1,0 +1,24 @@
+.widefat .column-wc_actions a.me_add_to_cart:after{font-family:"FontAwesome"!important;content:""!important;font-size:var(--sz-text-lg)!important}.widefat .column-wc_actions a.me_print_label:after{font-family:"FontAwesome"!important;content:""!important;font-size:var(--sz-text-lg)!important}
+
+/* Senderzz v405 — fonte padrão Apple/SF nativa */
+:root,
+.sz-root,
+#sz-admin-wrap,
+.sz-admin-wrap,
+.sz-pwa,
+.sz-pwa-only,
+body.sz-pwa-only,
+.sz-checkout,
+.sz-mb-date-checkout{--sz-font:-apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", system-ui, sans-serif}
+html body #sz-admin-wrap,
+html body #sz-admin-wrap *:not(.dashicons):not([class^="dashicons"]):not([class*=" dashicons"]):not(.fa):not(.fas):not(.far):not(.fab):not(.material-icons),
+html body .sz-root,
+html body .sz-root *:not(.dashicons):not([class^="dashicons"]):not([class*=" dashicons"]):not(.fa):not(.fas):not(.far):not(.fab):not(.material-icons),
+html body .sz-pwa,
+html body .sz-pwa *:not(.dashicons):not([class^="dashicons"]):not([class*=" dashicons"]):not(.fa):not(.fas):not(.far):not(.fab):not(.material-icons),
+html body.sz-pwa-only,
+html body.sz-pwa-only *:not(.dashicons):not([class^="dashicons"]):not([class*=" dashicons"]):not(.fa):not(.fas):not(.far):not(.fab):not(.material-icons),
+html body .sz-checkout,
+html body .sz-checkout *:not(.dashicons):not([class^="dashicons"]):not([class*=" dashicons"]):not(.fa):not(.fas):not(.far):not(.fab):not(.material-icons),
+html body .sz-mb-date-checkout,
+html body .sz-mb-date-checkout *:not(.dashicons):not([class^="dashicons"]):not([class*=" dashicons"]):not(.fa):not(.fas):not(.far):not(.fab):not(.material-icons){font-family:var(--sz-font)!important}

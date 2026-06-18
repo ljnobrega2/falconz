@@ -1,0 +1,26 @@
+# Dependências (restauradas via composer install / npm install)
+/vendor/
+admin-ui/node_modules/
+node_modules/
+
+# Build / cache
+.phpunit.result.cache
+admin-ui/dist/
+admin-ui/*.tsbuildinfo
+admin-ui/tsconfig*.tsbuildinfo
+*.log
+
+# Segredos / ambiente (NUNCA versionar — usar .env.example como referência)
+.env
+.env.local
+*.pem
+*.key
+
+# Config local de ferramentas
+.claude/settings.local.json
+*.local.json
+
+# SO
+.DS_Store
+**/.DS_Store
+Thumbs.db

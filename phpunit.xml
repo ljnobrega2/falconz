@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<phpunit xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:noNamespaceSchemaLocation="https://schema.phpunit.de/9.6/phpunit.xsd"
+         bootstrap="tests/bootstrap/wp-stubs.php"
+         colors="true"
+         stopOnFailure="false">
+
+    <testsuites>
+        <testsuite name="Financial">
+            <directory>tests/Unit/Financial</directory>
+        </testsuite>
+        <testsuite name="Webhook">
+            <directory>tests/Unit/Webhook</directory>
+        </testsuite>
+        <testsuite name="Security">
+            <directory>tests/Unit/Security</directory>
+        </testsuite>
+        <testsuite name="Portal">
+            <directory>tests/Unit/Portal</directory>
+        </testsuite>
+        <testsuite name="All">
+            <directory>tests/Unit</directory>
+        </testsuite>
+    </testsuites>
+
+    <filter>
+        <whitelist>
+            <directory suffix=".php">includes/tpc</directory>
+            <directory suffix=".php">includes</directory>
+            <exclude>
+                <directory>vendor</directory>
+                <directory>tests</directory>
+            </exclude>
+        </whitelist>
+    </filter>
+
+</phpunit>

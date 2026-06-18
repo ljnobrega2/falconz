@@ -1,0 +1,185 @@
+/**
+ * Senderzz — Painel de produtos: estilos do gerador inline de checkouts.
+ *
+ * Externalizado do nowdoc SZ_PRODUCT_INLINE_ASSETS em Portal_Page::render_products_panel()
+ * — REFACTOR-v459. Renderizado via <link rel="stylesheet"> na mesma posição de saída.
+ * Não contém interpolação PHP.
+ *
+ * Inclui:
+ *   1. sz-prod-affiliate-v169-fix  — alinhamento da coluna Ações para afiliados (v169)
+ *   2. sz-product-checkout-inline-css — estilos do formulário inline de criação de checkout (v143–v290)
+ */
+
+/* ── v169 — Coluna Ações para afiliados ─────────────────────────────────── */
+.sz-root #sec-products .sz-prod-row-v135 .actions{justify-content:flex-end;align-items:center}
+.sz-root #sec-products .sz-prod-row-v135 .actions .sz-prod-btn-copy{min-width:120px;text-align:center;justify-content:center}
+
+/* ── Gerador inline de checkout — base ──────────────────────────────────── */
+.sz-prod-checkout-actions{display:flex!important;align-items:center!important;justify-content:center!important;gap:8px!important;flex-wrap:wrap!important}.sz-prod-btn-copy{min-width:112px!important;background:#E8650A!important;color:#fff!important;border:0!important}.sz-prod-btn-delete{background:#fff7ed!important;color:#E8650A!important;border:1px solid #fed7c2!important}.sz-prod-commission-cell{display:flex!important;align-items:center!important;justify-content:center!important;gap:8px!important;min-width:178px!important;white-space:nowrap!important}.sz-prod-commission-editor{position:relative!important;display:inline-flex!important;align-items:center!important;flex:0 0 92px!important;width:92px!important}.sz-prod-commission-input{width:92px!important;height:38px!important;border:1px solid rgba(148,163,184,.42)!important;border-radius:12px!important;background:rgba(255,255,255,.03)!important;color:inherit!important;text-align:center!important;font-weight:700;padding:0 24px 0 10px!important;box-sizing:border-box!important}.sz-prod-commission-suffix{position:absolute!important;right:10px!important;top:50%!important;transform:translateY(-50%)!important;color:#94a3b8!important;font-size:var(--sz-text-meta);font-weight:700;pointer-events:none!important}.sz-prod-commission-save{height:38px!important;border-radius:12px!important;border:1px solid #E8650A!important;background:rgba(232,101,10,.10)!important;color:#E8650A!important;font-weight:700;padding:0 12px!important;cursor:pointer!important;min-width:64px!important}.sz-prod-inline-create{margin-top:16px;border:1px solid var(--bd,#e5e7eb);border-radius:20px;background:var(--c1,#fff);padding:16px;display:grid;gap:14px}.sz-prod-inline-create.is-collapsed{display:none}.sz-prod-inline-create-head{display:flex;align-items:center;justify-content:space-between;gap:12px}.sz-prod-inline-create-head strong{display:block;font-weight:700;color:var(--tx,#111827)}.sz-prod-inline-create-head small{display:block;margin-top:3px;color:var(--tx2,#64748b);font-weight:700}.sz-prod-inline-close{height:38px;border:1px solid #fed7c2;background:#fff7ed;color:#E8650A;border-radius:12px;font-weight:700;padding:0 14px;cursor:pointer}.sz-prod-inline-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.sz-prod-inline-grid label span{display:block;font-size:var(--sz-text-sm);text-transform:none;letter-spacing:0;color:#64748b;font-weight:700;margin-bottom:7px}.sz-prod-inline-grid input,.sz-prod-inline-component select,.sz-prod-inline-component input{width:100%;height:44px;border:1px solid #e5eaf1;border-radius:13px;background:#fff;padding:0 12px;font-weight:700;color:#111827;box-sizing:border-box}.sz-prod-inline-component{display:grid;grid-template-columns:minmax(220px,1fr) minmax(160px,.55fr) 110px 44px;gap:10px;align-items:center;background:#f8fafc;border:1px solid #edf2f7;border-radius:16px;padding:10px}.sz-prod-inline-actions{display:flex;align-items:center;justify-content:space-between;gap:12px}.sz-prod-inline-add{height:40px;border:1px solid #e5eaf1;background:#fff;color:#111827;border-radius:12px;font-weight:700;padding:0 14px;cursor:pointer}.sz-prod-inline-aff{display:flex;align-items:center;gap:10px;font-weight:700;color:#111827}.sz-prod-inline-aff input{width:20px;height:20px;accent-color:#E8650A}.sz-prod-inline-generate{height:48px;border:0;border-radius:14px;background:#E8650A;color:#fff;font-weight:700;cursor:pointer}.sz-root.sz-dark .sz-prod-inline-create{background:#111827;border-color:rgba(255,255,255,.10)}.sz-root.sz-dark .sz-prod-inline-create-head strong,.sz-root.sz-dark .sz-prod-inline-aff{color:#f8fafc}.sz-root.sz-dark .sz-prod-inline-component{background:#0f172a;border-color:rgba(255,255,255,.10)}@media(max-width:900px){.sz-prod-inline-grid,.sz-prod-inline-component{grid-template-columns:1fr}.sz-prod-inline-actions{align-items:stretch;flex-direction:column}.sz-prod-inline-add{width:100%}}
+
+/* Senderzz v288 — Produtos: grade real separada em Nome | Produto | Valor | Comissão | Links | Ações
+   - Links ficam em coluna própria.
+   - Ações fica só com Afiliados/Excluir.
+   - Valor em diante fica mais à direita sem esmagar botões. */
+.sz-prod-table-v135{
+    overflow-x:hidden!important;
+    width:100%!important;
+}
+.sz-prod-table-v135 .sz-prod-row-v135:not(.is-affiliate-row),
+.sz-prod-table-v135 .sz-prod-row-v135.head:not(.is-affiliate-row){
+    display:grid!important;
+    grid-template-columns:minmax(240px,1.28fr) minmax(170px,.78fr) 120px 196px 236px 204px!important;
+    column-gap:15px!important;
+    align-items:center!important;
+}
+.sz-prod-table-v135 .sz-prod-row-v135.head{min-height:54px!important}
+.sz-prod-table-v135 .sz-prod-row-v135.head span{white-space:nowrap!important}
+.sz-prod-table-v135 .sz-prod-row-v135:not(.is-affiliate-row)>span:nth-child(3),
+.sz-prod-table-v135 .sz-prod-row-v135:not(.is-affiliate-row)>span:nth-child(4),
+.sz-prod-table-v135 .sz-prod-row-v135:not(.is-affiliate-row)>span:nth-child(5),
+.sz-prod-table-v135 .sz-prod-row-v135:not(.is-affiliate-row)>span:nth-child(6){
+    justify-self:start!important;
+    text-align:left!important;
+}
+.sz-prod-commission-cell{
+    display:flex!important;
+    align-items:center!important;
+    justify-content:flex-start!important;
+    gap:8px!important;
+    min-width:196px!important;
+    width:196px!important;
+    max-width:196px!important;
+    overflow:visible!important;
+    white-space:nowrap!important;
+}
+.sz-prod-commission-editor{flex:0 0 90px!important;width:90px!important;min-width:90px!important;position:relative!important}
+.sz-prod-commission-input{width:90px!important;min-width:90px!important;height:40px!important;padding:0 26px 0 10px!important;text-align:center!important;border-radius:13px!important}
+.sz-prod-commission-save{flex:0 0 78px!important;width:78px!important;min-width:78px!important;height:40px!important;padding:0!important;margin:0!important;position:static!important;transform:none!important;box-shadow:none!important;border-radius:13px!important;white-space:nowrap!important}
+.sz-prod-links-cell{
+    display:flex!important;
+    align-items:center!important;
+    justify-content:flex-start!important;
+    gap:8px!important;
+    min-width:236px!important;
+    width:236px!important;
+    max-width:236px!important;
+    flex-wrap:nowrap!important;
+    overflow:visible!important;
+}
+.sz-prod-links-cell .sz-prod-btn-copy{flex:0 0 112px!important;width:112px!important;min-width:112px!important;height:40px!important;padding:0!important;border-radius:13px!important;white-space:nowrap!important;background:rgba(232,101,10,.08)!important;color:#E8650A!important;border:1px solid #fed7c2!important}
+.sz-prod-checkout-actions{
+    display:flex!important;
+    align-items:center!important;
+    justify-content:flex-start!important;
+    gap:8px!important;
+    min-width:204px!important;
+    width:204px!important;
+    max-width:204px!important;
+    flex-wrap:nowrap!important;
+    overflow:visible!important;
+}
+.sz-prod-checkout-actions .sz-prod-aff-toggle{flex:0 0 118px!important;width:118px!important;min-width:118px!important;height:40px!important;border-radius:13px!important;white-space:nowrap!important}
+.sz-prod-checkout-actions .sz-prod-btn-delete{flex:0 0 78px!important;width:78px!important;min-width:78px!important;height:40px!important;padding:0!important;border-radius:13px!important;white-space:nowrap!important}
+.sz-prod-table-v135 .sz-prod-row-v135.is-affiliate-row{grid-template-columns:minmax(320px,1.35fr) minmax(240px,1fr) 128px 120px 136px minmax(150px,.45fr)!important;column-gap:22px!important}
+.is-affiliate-row .sz-prod-commission-cell{min-width:0!important;width:auto!important;max-width:none!important}
+.is-affiliate-row .sz-prod-checkout-actions{min-width:0!important;width:auto!important;max-width:none!important;justify-content:flex-start!important;flex-wrap:nowrap!important;gap:6px!important}
+.is-affiliate-row .sz-prod-checkout-actions .sz-prod-btn-copy{min-width:auto!important;width:auto!important;height:36px!important;padding:0 14px!important}
+@media(max-width:1480px){
+    .sz-prod-table-v135{overflow-x:auto!important}
+    .sz-prod-table-v135 .sz-prod-row-v135:not(.is-affiliate-row){min-width:1265px!important}
+    .sz-prod-table-v135 .sz-prod-row-v135.is-affiliate-row{min-width:1080px!important}
+}
+@media(max-width:1180px){
+    .sz-prod-table-v135 .sz-prod-row-v135{grid-template-columns:1fr!important;min-width:0!important;row-gap:10px!important}
+    .sz-prod-commission-cell,.sz-prod-links-cell,.sz-prod-checkout-actions{min-width:0!important;width:auto!important;max-width:none!important;flex-wrap:wrap!important;justify-content:flex-start!important}
+}
+
+/* Senderzz v289 — Produtos: override final 6 colunas Nome | Produto | Valor | Comissão | Links | Ações */
+html body .sz-root #sec-products .sz-prod-table-v135 .sz-prod-row-v135:not(.is-affiliate-row),
+html body .sz-root #sec-products .sz-prod-table-v135 .sz-prod-row-v135.head:not(.is-affiliate-row){display:grid!important;grid-template-columns:minmax(330px,1.18fr) minmax(260px,.86fr) 128px 184px 252px 210px!important;column-gap:18px!important;row-gap:0!important;align-items:center!important;min-width:0!important}
+html body .sz-root #sec-products .sz-prod-table-v135 .sz-prod-row-v135.head:not(.is-affiliate-row)>span{white-space:nowrap!important;min-width:0!important;overflow:visible!important}
+html body .sz-root #sec-products .sz-prod-table-v135 .sz-prod-row-v135:not(.is-affiliate-row)>span:nth-child(3),html body .sz-root #sec-products .sz-prod-table-v135 .sz-prod-row-v135:not(.is-affiliate-row)>span:nth-child(4),html body .sz-root #sec-products .sz-prod-table-v135 .sz-prod-row-v135:not(.is-affiliate-row)>span:nth-child(5),html body .sz-root #sec-products .sz-prod-table-v135 .sz-prod-row-v135:not(.is-affiliate-row)>span:nth-child(6){justify-self:start!important;justify-content:flex-start!important;text-align:left!important;margin-left:0!important;min-width:0!important}
+html body .sz-root #sec-products .sz-prod-table-v135 .sz-prod-row-v135:not(.is-affiliate-row) .sz-prod-commission-cell{width:184px!important;min-width:184px!important;max-width:184px!important;display:flex!important;align-items:center!important;justify-content:flex-start!important;gap:8px!important;flex-wrap:nowrap!important;white-space:nowrap!important;overflow:visible!important}
+html body .sz-root #sec-products .sz-prod-table-v135 .sz-prod-row-v135:not(.is-affiliate-row) .sz-prod-commission-editor{flex:0 0 88px!important;width:88px!important;min-width:88px!important}
+html body .sz-root #sec-products .sz-prod-table-v135 .sz-prod-row-v135:not(.is-affiliate-row) .sz-prod-commission-input{width:88px!important;min-width:88px!important;height:40px!important}
+html body .sz-root #sec-products .sz-prod-table-v135 .sz-prod-row-v135:not(.is-affiliate-row) .sz-prod-commission-save{flex:0 0 78px!important;width:78px!important;min-width:78px!important;height:40px!important;padding:0!important;margin:0!important}
+html body .sz-root #sec-products .sz-prod-table-v135 .sz-prod-row-v135:not(.is-affiliate-row) .sz-prod-links-cell{width:252px!important;min-width:252px!important;max-width:252px!important;display:flex!important;align-items:center!important;justify-content:flex-start!important;gap:8px!important;flex-wrap:nowrap!important;overflow:visible!important}
+html body .sz-root #sec-products .sz-prod-table-v135 .sz-prod-row-v135:not(.is-affiliate-row) .sz-prod-links-cell .sz-prod-btn-copy{flex:0 0 120px!important;width:120px!important;min-width:120px!important;height:40px!important;padding:0!important;border-radius:13px!important}
+html body .sz-root #sec-products .sz-prod-table-v135 .sz-prod-row-v135:not(.is-affiliate-row) .sz-prod-checkout-actions{width:210px!important;min-width:210px!important;max-width:210px!important;display:flex!important;align-items:center!important;justify-content:flex-start!important;gap:8px!important;flex-wrap:nowrap!important;overflow:visible!important}
+html body .sz-root #sec-products .sz-prod-table-v135 .sz-prod-row-v135:not(.is-affiliate-row) .sz-prod-checkout-actions .sz-prod-aff-toggle{flex:0 0 124px!important;width:124px!important;min-width:124px!important;height:40px!important}
+html body .sz-root #sec-products .sz-prod-table-v135 .sz-prod-row-v135:not(.is-affiliate-row) .sz-prod-checkout-actions .sz-prod-btn-delete{flex:0 0 78px!important;width:78px!important;min-width:78px!important;height:40px!important;padding:0!important}
+@media(max-width:1480px){html body .sz-root #sec-products .sz-prod-table-v135{overflow-x:auto!important}html body .sz-root #sec-products .sz-prod-table-v135 .sz-prod-row-v135:not(.is-affiliate-row),html body .sz-root #sec-products .sz-prod-table-v135 .sz-prod-row-v135.head:not(.is-affiliate-row){min-width:1456px!important}}
+
+
+/* Senderzz v143 — correções do gerador inline e dark mode */
+.sz-prod-inline-component select{appearance:auto!important;-webkit-appearance:auto!important;color:var(--tx,#111827)!important;background:var(--c1,#fff)!important;opacity:1!important;visibility:visible!important}
+.sz-prod-inline-component select option{color:#111827!important;background:#fff!important}
+.sz-prod-inline-aff{display:inline-flex!important;align-items:center!important;justify-content:flex-end!important;gap:12px!important;min-height:42px!important;color:var(--tx,#111827)!important;line-height:1;white-space:nowrap!important}
+.sz-prod-inline-aff input{position:absolute!important;opacity:0!important;pointer-events:none!important}
+.sz-prod-inline-aff i{width:42px!important;height:24px!important;border-radius:999px!important;background:#cbd5e1!important;position:relative!important;display:inline-block!important;box-shadow:inset 0 0 0 1px rgba(15,23,42,.08)!important;flex:0 0 42px!important}
+.sz-prod-inline-aff i:before{content:"";position:absolute;left:3px;top:3px;width:18px;height:18px;border-radius:50%;background:#fff;box-shadow:0 2px 8px rgba(15,23,42,.18);transition:.18s}
+.sz-prod-inline-aff input:checked+i{background:#E8650A!important}
+.sz-prod-inline-aff input:checked+i:before{transform:translateX(18px)}
+.sz-root.sz-dark .sz-prod-inline-grid input,.sz-root.sz-dark .sz-prod-inline-component select,.sz-root.sz-dark .sz-prod-inline-component input{background:#020617!important;border-color:rgba(255,255,255,.14)!important;color:#f8fafc!important}
+.sz-root.sz-dark .sz-prod-inline-component select option{background:#020617!important;color:#f8fafc!important}
+.sz-root.sz-dark .sz-prod-inline-add,.sz-root.sz-dark .sz-prod-inline-close{background:#111827!important;color:#fb923c!important;border-color:rgba(249,115,22,.35)!important}
+.sz-root.sz-dark .sz-prod-inline-aff span{color:#f8fafc!important}
+
+
+/* Senderzz v146 — dark mode sólido e criação de checkout */
+.sz-root.sz-dark .sz-prod-btn-solid,.sz-root.sz-dark .sz-prod-inline-generate{background:#E8650A!important;color:#fff!important;border-color:#E8650A!important;box-shadow:none!important}
+.sz-root.sz-dark .sz-prod-btn-delete,.sz-root.sz-dark .sz-prod-inline-close{background:#111827!important;color:#fb923c!important;border-color:#E8650A!important;box-shadow:none!important}
+.sz-root.sz-dark .sz-prod-aff-toggle{background:#fff!important;color:#475569!important;border-color:rgba(255,255,255,.16)!important}
+.sz-root.sz-dark .sz-prod-aff-toggle input:checked+span{background:#E8650A!important}
+.sz-root.sz-dark .sz-prod-inline-aff input:checked+i{background:#E8650A!important}
+.sz-root.sz-dark .sz-alert.err{background:rgba(220,38,38,.12)!important;border:1px solid rgba(220,38,38,.35)!important;color:#fecaca!important;border-radius:12px!important;padding:12px!important}
+
+
+/* Senderzz v147 — criação de checkout e afiliados/produtos no dark */
+.sz-prod-inline-grid{grid-template-columns:1fr 1fr 220px!important}
+.sz-root.sz-dark .sz-prod-aff-toggle{background:#0b1220!important;color:#f8fafc!important;border:1px solid #E8650A!important;box-shadow:none!important}
+.sz-root.sz-dark .sz-prod-aff-toggle em{color:#f8fafc!important}
+.sz-root.sz-dark .sz-prod-aff-toggle span{background:#334155!important}
+.sz-root.sz-dark .sz-prod-aff-toggle input:checked+span{background:#E8650A!important}
+.sz-root.sz-dark .sz-prod-aff-toggle input:checked~em{color:#fff!important}
+.sz-root.sz-dark .sz-prod-btn-copy,.sz-root.sz-dark .sz-prod-btn-solid,.sz-root.sz-dark .sz-prod-inline-generate{background:#E8650A!important;color:#fff!important;border-color:#E8650A!important;box-shadow:none!important}
+.sz-root.sz-dark .sz-prod-inline-add,.sz-root.sz-dark .sz-prod-inline-close,.sz-root.sz-dark .sz-prod-btn-delete{background:#0b1220!important;color:#fb923c!important;border-color:#E8650A!important;box-shadow:none!important}
+@media(max-width:900px){.sz-prod-inline-grid{grid-template-columns:1fr!important}}
+
+/* Senderzz v290 — Produtos: toggle Afiliados contido no card de ações */
+html body .sz-root #sec-products .sz-prod-table-v135 .sz-prod-row-v135:not(.is-affiliate-row) .sz-prod-checkout-actions .sz-prod-aff-toggle,
+html body .sz-root #sec-products .sz-prod-aff-toggle{
+  box-sizing:border-box!important;
+  display:inline-flex!important;
+  align-items:center!important;
+  justify-content:center!important;
+  gap:7px!important;
+  height:40px!important;
+  min-height:40px!important;
+  padding:0 10px!important;
+  overflow:hidden!important;
+}
+html body .sz-root #sec-products .sz-prod-aff-toggle span{
+  box-sizing:border-box!important;
+  flex:0 0 34px!important;
+  width:34px!important;
+  min-width:34px!important;
+  height:20px!important;
+  border-radius:999px!important;
+  overflow:hidden!important;
+  position:relative!important;
+}
+html body .sz-root #sec-products .sz-prod-aff-toggle span:before{
+  width:16px!important;
+  height:16px!important;
+  left:2px!important;
+  top:2px!important;
+  transform:translateX(0)!important;
+}
+html body .sz-root #sec-products .sz-prod-aff-toggle input:checked+span:before{
+  transform:translateX(14px)!important;
+}
+html body .sz-root #sec-products .sz-prod-aff-toggle em{
+  min-width:0!important;
+  line-height:1;
+}

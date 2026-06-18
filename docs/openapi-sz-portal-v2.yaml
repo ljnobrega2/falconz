@@ -1,0 +1,172 @@
+openapi: "3.1.0"
+info:
+  title: Senderzz Portal V2 API
+  version: "2.0"
+  description: |
+    REST API do Portal V2 (sz-portal/v2).
+    Endpoints financeiros do COD wallet e reagendamento motoboy via portal auth.
+    Base URL: https://{host}/wp-json/sz-portal/v2
+
+servers:
+  - url: https://{host}/wp-json/sz-portal/v2
+
+tags:
+  - name: cod
+    description: Carteira COD (saque e antecipação)
+  - name: motoboy
+    description: Operações motoboy via portal
+
+components:
+  securitySchemes:
+    portal_session:
+      type: apiKey
+      in: cookie
+      name: senderzz_portal_session
+    wp_nonce:
+      type: apiKey
+      in: header
+      name: X-WP-Nonce
+    financial_nonce:
+      type: apiKey
+      in: header
+      name: X-Senderzz-Financial-Nonce
+      description: Nonce financeiro vinculado à sessão do portal (gerado server-side)
+
+paths:
+  /cod/accounts:
+    get:
+      tags: [cod]
+      summary: Listar contas PIX cadastradas para saque
+      security:
+        - portal_session: []
+          wp_nonce: []
+      responses:
+        "200":
+          description: Lista de contas PIX ativas
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:  { type: boolean }
+                  accounts:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:            { type: integer }
+                        holder_name:   { type: string }
+                        pix_type:      { type: string, enum: [CPF, email, telefone, aleatoria] }
+                        pix_key:       { type: string }
+                        bank_name:     { type: string }
+                        agency:        { type: string }
+                        account_number: { type: string }
+        "401":
+          description: Sessão inválida
+
+  /cod/withdraw:
+    post:
+      tags: [cod]
+      summary: Solicitar saque COD (tipo=normal)
+      description: |
+        Saque normal de saldo disponível.
+        Para antecipação de recebíveis, usar /cod/anticipate.
+        Rate limit: 5 tentativas por hora.
+        Requer saldo disponível e conta PIX cadastrada.
+      security:
+        - portal_session: []
+          wp_nonce: []
+          financial_nonce: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [account_id]
+              properties:
+                account_id: { type: integer, description: "ID da conta PIX de destino" }
+      responses:
+        "200":
+          description: Saque solicitado com sucesso
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:    { type: boolean }
+                  withdrawal_id: { type: integer }
+                  amount:     { type: number }
+                  net:        { type: number }
+                  fee:        { type: number }
+        "422":
+          description: Saldo insuficiente ou saque pendente em análise
+        "429":
+          description: Rate limit excedido (5 tentativas/hora)
+
+  /cod/anticipate:
+    post:
+      tags: [cod]
+      summary: Antecipar recebíveis COD pendentes
+      description: |
+        Move transações pending para anticipation_pending e solicita transferência imediata.
+        Taxa de antecipação definida em sz_cod_rules (anticipation_fee_pct, padrão 4.99%).
+        O cron de liberação ignora transações com status=anticipation_pending (sem duplo crédito).
+        Requer conta PIX cadastrada e saldo pendente > 0.
+      security:
+        - portal_session: []
+          wp_nonce: []
+          financial_nonce: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [account_id]
+              properties:
+                account_id: { type: integer }
+      responses:
+        "200":
+          description: Antecipação solicitada
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:  { type: boolean }
+                  amount:   { type: number, description: "Valor bruto antecipado" }
+                  fee:      { type: number, description: "Taxa cobrada" }
+                  net:      { type: number, description: "Valor líquido a receber" }
+                  fee_pct:  { type: number, description: "% de taxa aplicada" }
+        "422":
+          description: Sem saldo pendente para antecipar ou conta PIX ausente
+
+  /motoboy/reschedule:
+    post:
+      tags: [motoboy]
+      summary: Reagendar pedido motoboy via portal (produtor/OL)
+      description: |
+        Reagenda entrega de pedido motoboy.
+        Diferente do endpoint público /tracking/{id}/reagendar que exige order key,
+        este endpoint aceita autenticação via portal session (produtor ou OL).
+      security:
+        - portal_session: []
+          wp_nonce: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [pedido_id, date]
+              properties:
+                pedido_id: { type: integer }
+                date:      { type: string, format: date, example: "2026-06-20" }
+      responses:
+        "200":
+          description: Reagendamento realizado
+        "403":
+          description: Pedido não pertence ao usuário autenticado
+        "422":
+          description: Data inválida ou status não permite reagendamento

@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120" viewBox="0 0 120 120" role="img" aria-label="Senderzz">
+  <!-- Falcão Senderzz — vetor oficial (brand-book-v2/marks.js). O traço escuro
+       interno é o raio legado, mantido como detalhe secundário da marca. -->
+  <path d="M20 58 L66 22 L84 42 L78 56 L74 76 L60 87 L46 74 L40 60 Z" fill="var(--m1, #E8650A)"/>
+  <path d="M84 42 L107 49 L95 63 L78 56 Z" fill="var(--m2, #C24E06)"/>
+  <path d="M46 74 L60 63 L74 76 L60 87 Z" fill="var(--m2, #C24E06)"/>
+  <circle cx="70" cy="44" r="5.4" fill="var(--eye, #0E1320)"/>
+  <circle cx="71.5" cy="42.5" r="1.8" fill="#fff"/>
+  <path d="M66 52 L57 65 L64 65 L55 78 L72 61 L65 61 L70 52 Z" fill="var(--eye, #0E1320)"/>
+</svg>

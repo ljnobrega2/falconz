@@ -1,0 +1,212 @@
+openapi: "3.1.0"
+info:
+  title: Senderzz Carteira (Wallet/PIX) API
+  version: "1.0"
+  description: |
+    REST API da carteira de frete (tp-carteira/v1).
+    Gerencia saldo, recargas PIX e emissão de etiquetas.
+    Base URL: https://{host}/wp-json/tp-carteira/v1
+
+servers:
+  - url: https://{host}/wp-json/tp-carteira/v1
+    variables:
+      host:
+        default: app.senderzz.com.br
+
+tags:
+  - name: carteira
+    description: Saldo e extrato
+  - name: pix
+    description: Recarga via PIX
+  - name: etiqueta
+    description: Emissão de etiqueta via carteira
+  - name: auth
+    description: Autenticação JWT
+  - name: admin
+    description: Endpoints administrativos (manage_woocommerce)
+
+components:
+  securitySchemes:
+    jwt_bearer:
+      type: http
+      scheme: bearer
+      description: JWT gerado via /auth/token ou /auth/token-from-portal-session
+    wp_logged_in:
+      type: apiKey
+      in: cookie
+      name: wordpress_logged_in
+    portal_session:
+      type: apiKey
+      in: cookie
+      name: senderzz_portal_session
+
+paths:
+  /me:
+    get:
+      tags: [carteira]
+      summary: Dados do usuário autenticado e saldo
+      security: [{ jwt_bearer: [] }]
+      responses:
+        "200":
+          description: Dados do usuário e saldo atual
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user_id:    { type: integer }
+                  saldo:      { type: number, format: float }
+                  reservado:  { type: number, format: float }
+                  disponivel: { type: number, format: float }
+
+  /saldo:
+    get:
+      tags: [carteira]
+      summary: Saldo disponível do usuário
+      security: [{ jwt_bearer: [] }]
+      responses:
+        "200":
+          description: Saldo disponível
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  saldo:     { type: number }
+                  reservado: { type: number }
+
+  /extrato:
+    get:
+      tags: [carteira]
+      summary: Extrato de transações da carteira
+      security: [{ jwt_bearer: [] }]
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0 }
+        - name: tipo
+          in: query
+          schema: { type: string, enum: [credito, debito] }
+      responses:
+        "200":
+          description: Lista de transações
+
+  /recarregar:
+    post:
+      tags: [pix]
+      summary: Criar recarga PIX (gera QR code)
+      security: [{ jwt_bearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [valor]
+              properties:
+                valor: { type: number, example: 100.00, description: "Valor em reais (mín. R$10)" }
+      responses:
+        "200":
+          description: QR code PIX gerado
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:         { type: boolean }
+                  recarga_id: { type: integer }
+                  qr_src:     { type: string }
+                  copia_cola: { type: string }
+                  link:       { type: string }
+                  expires_at: { type: string, format: date-time }
+        "422":
+          description: Valor inválido ou abaixo do mínimo
+
+  "/recarga/{recarga_id}/pix":
+    get:
+      tags: [pix]
+      summary: Verificar status de uma recarga PIX
+      security: [{ jwt_bearer: [] }]
+      parameters:
+        - name: recarga_id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Status da recarga
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:     { type: boolean }
+                  status: { type: string, enum: [pendente, analise, confirmado, cancelado, expirado] }
+                  saldo:  { type: number }
+
+  "/admin/usuario/{user_id}/saldo":
+    get:
+      tags: [admin]
+      summary: Saldo de um usuário específico (admin)
+      security: [{ wp_logged_in: [] }]
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema: { type: integer }
+
+  "/admin/usuario/{user_id}/extrato":
+    get:
+      tags: [admin]
+      summary: Extrato de um usuário específico (admin)
+      security: [{ wp_logged_in: [] }]
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema: { type: integer }
+
+  /auth/token:
+    post:
+      tags: [auth]
+      summary: Gerar JWT via credenciais WP
+      description: Autentica com user_login/password do WordPress e retorna JWT para tp-carteira/v1.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string }
+                password: { type: string }
+      responses:
+        "200":
+          description: JWT gerado
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token:   { type: string }
+                  expires: { type: string, format: date-time }
+        "401":
+          description: Credenciais inválidas
+
+  /auth/token-from-portal-session:
+    post:
+      tags: [auth]
+      summary: Trocar sessão do portal por JWT da carteira
+      description: |
+        Recebe cookie senderzz_portal_session ou header X-Senderzz-Token
+        e emite JWT do tp-carteira. V-SEC-02 — usa IN(%s,%s) para suportar tokens legacy e HMAC.
+      security: [{ portal_session: [] }]
+      responses:
+        "200":
+          description: JWT emitido
+        "401":
+          description: Sessão inválida ou expirada

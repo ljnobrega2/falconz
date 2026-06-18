@@ -1,0 +1,576 @@
+/*
+ * Senderzz v406 — normalização tipográfica global
+ * Objetivo: uma única família visual Apple/SF, pesos consistentes e sem espaçamentos artificiais.
+ * Mantém fontes de ícone intactas (Dashicons/FontAwesome/material icons).
+ */
+:root,
+.sz-root,
+#sz-admin-wrap,
+.sz-admin-wrap,
+.sz-pwa,
+.sz-pwa-only,
+body.sz-pwa-only,
+.sz-checkout,
+.sz-mb-date-checkout{
+  --sz-font:-apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", system-ui, sans-serif;
+  --sz-text-xs:11px;
+  --sz-text-sm:12px;
+  --sz-text-meta:12px;
+  --sz-text-base:14px;
+  --sz-text-md:15px;
+  --sz-text-lg:17px;
+  --sz-text-xl:20px;
+  --sz-text-2xl:22px;
+  --sz-text-3xl:24px;
+  --sz-text-hero:28px;
+  --sz-weight-regular:400;
+  --sz-weight-normal:400;
+  --sz-weight-medium:500;
+  --sz-weight-semibold:600;
+  --sz-weight-bold:700;
+  --sz-weight-heavy:700;
+  --sz-ls-normal:0;
+  --sz-ls-tight:-.015em;
+  --sz-ls-label:0;
+  --sz-lh-tight:1.12;
+  --sz-lh-title:1.18;
+  --sz-lh-body:1.45;
+}
+html body #sz-admin-wrap,
+html body #sz-admin-wrap *:not(.dashicons):not([class^="dashicons"]):not([class*=" dashicons"]):not(.fa):not(.fas):not(.far):not(.fab):not(.material-icons),
+html body .sz-root,
+html body .sz-root *:not(.dashicons):not([class^="dashicons"]):not([class*=" dashicons"]):not(.fa):not(.fas):not(.far):not(.fab):not(.material-icons),
+html body .sz-pwa,
+html body .sz-pwa *:not(.dashicons):not([class^="dashicons"]):not([class*=" dashicons"]):not(.fa):not(.fas):not(.far):not(.fab):not(.material-icons),
+html body.sz-pwa-only,
+html body.sz-pwa-only *:not(.dashicons):not([class^="dashicons"]):not([class*=" dashicons"]):not(.fa):not(.fas):not(.far):not(.fab):not(.material-icons),
+html body .sz-checkout,
+html body .sz-checkout *:not(.dashicons):not([class^="dashicons"]):not([class*=" dashicons"]):not(.fa):not(.fas):not(.far):not(.fab):not(.material-icons),
+html body .sz-mb-date-checkout,
+html body .sz-mb-date-checkout *:not(.dashicons):not([class^="dashicons"]):not([class*=" dashicons"]):not(.fa):not(.fas):not(.far):not(.fab):not(.material-icons){
+  font-family:var(--sz-font)!important;
+  font-synthesis-weight:none;
+  -webkit-font-smoothing:antialiased;
+  -moz-osx-font-smoothing:grayscale;
+}
+html body .sz-root,
+html body #sz-admin-wrap,
+html body .sz-pwa,
+html body .sz-checkout,
+html body .sz-mb-date-checkout{
+  font-size:var(--sz-text-base)!important;
+  font-weight:var(--sz-weight-regular)!important;
+  line-height:var(--sz-lh-body)!important;
+  letter-spacing:0!important;
+}
+html body .sz-root h1,
+html body .sz-root .sz-hero h1,
+html body .sz-root .sz-section-hero h1,
+html body .sz-root .sz-stock-hero h1,
+html body .sz-root .sz-webhook-hero h1,
+html body .sz-root .sz-support-hero h1,
+html body .sz-root .sz-page-title,
+html body .sz-root .sz-mode-title{
+  font-size:var(--sz-text-3xl)!important;
+  font-weight:var(--sz-weight-bold)!important;
+  line-height:var(--sz-lh-title)!important;
+  letter-spacing:var(--sz-ls-tight)!important;
+}
+html body .sz-root h2,
+html body .sz-root h3,
+html body .sz-root .sz-title,
+html body .sz-root .sz-tb-title,
+html body .sz-root .sz-card-head h2,
+html body .sz-root .sz-card-head h3,
+html body .sz-root .sz-panel-head h2,
+html body .sz-root .szst-title,
+html body .sz-root .szlk-title,
+html body .sz-root .sz-wh-head h3{
+  font-weight:var(--sz-weight-semibold)!important;
+  line-height:var(--sz-lh-title)!important;
+  letter-spacing:var(--sz-ls-tight)!important;
+}
+html body .sz-root p,
+html body .sz-root small,
+html body .sz-root span,
+html body .sz-root div,
+html body .sz-root td,
+html body .sz-root li,
+html body #sz-admin-wrap p,
+html body #sz-admin-wrap small,
+html body #sz-admin-wrap td,
+html body .sz-pwa p,
+html body .sz-checkout p{
+  letter-spacing:0!important;
+}
+html body .sz-root strong,
+html body .sz-root b,
+html body #sz-admin-wrap strong,
+html body .sz-pwa strong,
+html body .sz-checkout strong{
+  font-weight:var(--sz-weight-semibold)!important;
+  letter-spacing:0!important;
+}
+html body .sz-root .sz-kicker,
+html body .sz-root label,
+html body .sz-root .sz-lbl,
+html body .sz-root .sz-field label,
+html body .sz-root .szlk-lbl,
+html body .sz-root .szst-lbl,
+html body .sz-root .sz-filter-label,
+html body .sz-root table th,
+html body .sz-root .sz-orders-table th,
+html body .sz-root .sz-mode-stat span,
+html body .sz-root .sz-mode-detail-cols span,
+html body .sz-root .sz-fin-card span,
+html body .sz-root .sz-stock-metric span{
+  font-size:var(--sz-text-meta)!important;
+  font-weight:var(--sz-weight-semibold)!important;
+  letter-spacing:0!important;
+  text-transform:none!important;
+}
+html body .sz-root input,
+html body .sz-root select,
+html body .sz-root textarea,
+html body .sz-root button,
+html body .sz-root .sz-field-input,
+html body .sz-root .sz-fi,
+html body .sz-root .sz-fs,
+html body .sz-root .szlk-input,
+html body .sz-root .szlk-select,
+html body .sz-root .szst-input,
+html body .sz-root .szst-select,
+html body #sz-admin-wrap input,
+html body #sz-admin-wrap select,
+html body #sz-admin-wrap textarea,
+html body #sz-admin-wrap button,
+html body .sz-pwa input,
+html body .sz-pwa select,
+html body .sz-pwa textarea,
+html body .sz-pwa button,
+html body .sz-checkout input,
+html body .sz-checkout select,
+html body .sz-checkout textarea,
+html body .sz-checkout button{
+  font-family:var(--sz-font)!important;
+  font-size:var(--sz-text-base)!important;
+  font-weight:var(--sz-weight-medium)!important;
+  letter-spacing:0!important;
+  text-transform:none!important;
+}
+html body .sz-root button,
+html body .sz-root .sz-primary,
+html body .sz-root .sz-quick,
+html body .sz-root .szlk-btn,
+html body .sz-root .sz-mini,
+html body .sz-root .sz-act,
+html body .sz-root .sz-btn,
+html body .sz-root .sz-btn-ghost,
+html body .sz-root .sz-tab,
+html body .sz-root .sz-tabs button,
+html body .sz-root .sz-mode-switch button,
+html body .sz-root .sz-nav a,
+html body .sz-root .sz-ni,
+html body #sz-admin-wrap button,
+html body .sz-pwa button,
+html body .sz-checkout button{
+  font-weight:var(--sz-weight-semibold)!important;
+  letter-spacing:0!important;
+  text-transform:none!important;
+}
+html body .sz-root .sz-badge,
+html body .sz-root [class*="badge"],
+html body .sz-root [class*="status"],
+html body #sz-admin-wrap .sz-badge,
+html body .sz-pwa .sz-badge{
+  font-size:var(--sz-text-sm)!important;
+  font-weight:var(--sz-weight-semibold)!important;
+  letter-spacing:0!important;
+  text-transform:none!important;
+}
+html body .sz-root .sz-stat strong,
+html body .sz-root .sz-balance strong,
+html body .sz-root .sz-fin-card strong,
+html body .sz-root .sz-mode-stat strong,
+html body .sz-root .sz-info-val,
+html body .sz-root .sz-money,
+html body .sz-root .sz-value,
+html body .sz-root .sz-price,
+html body .sz-root .sz-card-value{
+  font-weight:var(--sz-weight-bold)!important;
+  letter-spacing:var(--sz-ls-tight)!important;
+}
+html body .sz-root table td,
+html body .sz-root .sz-orders-table td,
+html body .sz-root .sz-compact-table td{
+  font-size:var(--sz-text-base)!important;
+  font-weight:var(--sz-weight-medium)!important;
+  line-height:1.35!important;
+}
+html body .sz-root .sz-muted,
+html body .sz-root .sz-hint,
+html body .sz-root .sz-card-head p,
+html body .sz-root .sz-card-head small,
+html body .sz-root .szlk-sub,
+html body .sz-root .szst-sub,
+html body .sz-root .sz-log-sub{
+  font-weight:var(--sz-weight-regular)!important;
+  line-height:var(--sz-lh-body)!important;
+  letter-spacing:0!important;
+}
+
+/*
+ * Senderzz v407 — polimento tipográfico por componente
+ * Ajusta o que ainda parecia “várias fontes” nos prints: menu lateral, banners,
+ * abas, tabelas, cards, filtros, botões, badges e telas financeiras/conexões.
+ */
+html body .sz-root,
+html body .sz-root *:not(.dashicons):not([class^="dashicons"]):not([class*=" dashicons"]):not(.fa):not(.fas):not(.far):not(.fab):not(.material-icons),
+html body #sz-admin-wrap,
+html body #sz-admin-wrap *:not(.dashicons):not([class^="dashicons"]):not([class*=" dashicons"]):not(.fa):not(.fas):not(.far):not(.fab):not(.material-icons){
+  font-kerning:normal!important;
+  text-rendering:optimizeLegibility!important;
+}
+
+/* Hero/banner: uma hierarquia só em todas as telas */
+html body .sz-root .sz-banner,
+html body .sz-root .sz-hero,
+html body .sz-root .sz-section-hero,
+html body .sz-root .sz-support-hero,
+html body .sz-root .sz-stock-hero,
+html body .sz-root .sz-webhook-hero{
+  min-height:104px!important;
+  padding:24px 28px!important;
+  border-radius:22px!important;
+}
+html body .sz-root .sz-banner .sz-kicker,
+html body .sz-root .sz-banner-kicker,
+html body .sz-root .sz-hero .sz-kicker,
+html body .sz-root .sz-section-hero .sz-kicker,
+html body .sz-root .sz-support-hero .sz-kicker,
+html body .sz-root .sz-webhook-hero .sz-kicker{
+  font-size:12px!important;
+  font-weight:600!important;
+  line-height:1.15!important;
+  letter-spacing:0!important;
+  text-transform:none!important;
+  margin:0 0 7px!important;
+}
+html body .sz-root .sz-banner h1,
+html body .sz-root .sz-banner-title,
+html body .sz-root .sz-hero h1,
+html body .sz-root .sz-section-hero h1,
+html body .sz-root .sz-support-hero h1,
+html body .sz-root .sz-stock-hero h1,
+html body .sz-root .sz-webhook-hero h1{
+  font-size:23px!important;
+  font-weight:700!important;
+  line-height:1.12!important;
+  letter-spacing:-.015em!important;
+  margin:0 0 7px!important;
+}
+html body .sz-root .sz-banner p,
+html body .sz-root .sz-banner-sub,
+html body .sz-root .sz-hero p,
+html body .sz-root .sz-section-hero p,
+html body .sz-root .sz-support-hero p,
+html body .sz-root .sz-stock-hero p,
+html body .sz-root .sz-webhook-hero p{
+  font-size:14px!important;
+  font-weight:400!important;
+  line-height:1.45!important;
+  letter-spacing:0!important;
+  margin:0!important;
+}
+
+/* Menu lateral: antes parecia outra família por peso/categorias */
+html body .sz-root .sz-sb,
+html body .sz-root .sz-sb *:not(svg):not(path){
+  font-family:var(--sz-font)!important;
+  letter-spacing:0!important;
+  text-transform:none!important;
+}
+html body .sz-root .sz-sidebar-hello,
+html body .sz-root .sz-user-card{
+  font-size:14px!important;
+  font-weight:500!important;
+  line-height:1.35!important;
+}
+html body .sz-root .sz-sidebar-hello strong,
+html body .sz-root .sz-user-card strong,
+html body .sz-root .sz-sidebar-hello b,
+html body .sz-root .sz-user-card b{
+  font-weight:600!important;
+}
+html body .sz-root .sz-sb-label,
+html body .sz-root .sz-nav > .sz-sb-label{
+  font-size:12px!important;
+  font-weight:600!important;
+  line-height:1.2!important;
+  letter-spacing:0!important;
+  margin:18px 12px 7px!important;
+  color:#E8650A!important;
+}
+html body .sz-root .sz-ni,
+html body .sz-root .sz-sb .sz-ni,
+html body .sz-root .sz-nav .sz-ni{
+  font-size:14px!important;
+  font-weight:500!important;
+  line-height:1!important;
+  letter-spacing:0!important;
+  text-transform:none!important;
+}
+html body .sz-root .sz-ni.active,
+html body .sz-root .sz-nav .sz-ni.active{
+  font-weight:600!important;
+}
+html body .sz-root .sz-sb.sz-collapsed .sz-ni{
+  font-size:0!important;
+  line-height:0!important;
+}
+
+/* Abas/switches: peso consistente, sem parecer fonte diferente */
+html body .sz-root .sz-tab,
+html body .sz-root .sz-tabs button,
+html body .sz-root .sz-mode-switch button,
+html body .sz-root .sz-wallet-tab,
+html body .sz-root .sz-profile-tab,
+html body .sz-root .sz-aff-tab,
+html body .sz-root .szlk-tab,
+html body .sz-root .szst-tab{
+  font-size:14px!important;
+  font-weight:500!important;
+  line-height:1!important;
+  letter-spacing:0!important;
+  text-transform:none!important;
+}
+html body .sz-root .sz-tab.active,
+html body .sz-root .sz-tabs button.active,
+html body .sz-root .sz-mode-switch button.active,
+html body .sz-root .sz-wallet-tab.active,
+html body .sz-root .sz-profile-tab.active,
+html body .sz-root .sz-aff-tab.active,
+html body .sz-root .szlk-tab.active,
+html body .sz-root .szst-tab.active{
+  font-weight:600!important;
+}
+
+/* Títulos internos e cards */
+html body .sz-root .sz-card h2,
+html body .sz-root .sz-card h3,
+html body .sz-root .sz-card-head h2,
+html body .sz-root .sz-card-head h3,
+html body .sz-root .sz-panel-head h2,
+html body .sz-root .sz-panel-head h3,
+html body .sz-root .sz-title,
+html body .sz-root .szlk-title,
+html body .sz-root .szst-title,
+html body .sz-root .sz-wh-head h3,
+html body .sz-root .sz-log-head h3,
+html body .sz-root .sz-freight-title{
+  font-size:17px!important;
+  font-weight:600!important;
+  line-height:1.25!important;
+  letter-spacing:-.01em!important;
+  text-transform:none!important;
+}
+html body .sz-root .sz-card p,
+html body .sz-root .sz-card small,
+html body .sz-root .sz-card-sub,
+html body .sz-root .sz-sub,
+html body .sz-root .szlk-sub,
+html body .sz-root .szst-sub,
+html body .sz-root .sz-log-sub,
+html body .sz-root .sz-freight-sub{
+  font-size:14px!important;
+  font-weight:400!important;
+  line-height:1.45!important;
+  letter-spacing:0!important;
+}
+
+/* Labels e metadados */
+html body .sz-root label,
+html body .sz-root .sz-lbl,
+html body .sz-root .sz-field label,
+html body .sz-root .sz-filter-label,
+html body .sz-root .sz-mode-stat span,
+html body .sz-root .sz-fin-card span,
+html body .sz-root .sz-stock-metric span,
+html body .sz-root .sz-wtc-label,
+html body .sz-root .sz-wallet-th-row,
+html body .sz-root .sz-wallet-th-row span,
+html body .sz-root .sz-mode-table th,
+html body .sz-root .sz-orders-table th,
+html body .sz-root table th{
+  font-size:12px!important;
+  font-weight:500!important;
+  line-height:1.25!important;
+  letter-spacing:0!important;
+  text-transform:none!important;
+}
+
+/* Campos, botões e badges */
+html body .sz-root input,
+html body .sz-root select,
+html body .sz-root textarea,
+html body .sz-root .sz-field-input,
+html body .sz-root .sz-fi,
+html body .sz-root .sz-fs,
+html body .sz-root .szlk-input,
+html body .sz-root .szlk-select,
+html body .sz-root .szst-input,
+html body .sz-root .szst-select{
+  font-size:14px!important;
+  font-weight:500!important;
+  line-height:1.2!important;
+  letter-spacing:0!important;
+  text-transform:none!important;
+}
+html body .sz-root button,
+html body .sz-root .sz-btn,
+html body .sz-root .sz-primary,
+html body .sz-root .sz-quick,
+html body .sz-root .szlk-btn,
+html body .sz-root .sz-mini,
+html body .sz-root .sz-act,
+html body .sz-root .sz-banner-cta,
+html body .sz-root .sz-wallet-outline-btn{
+  font-size:14px!important;
+  font-weight:600!important;
+  line-height:1!important;
+  letter-spacing:0!important;
+  text-transform:none!important;
+}
+html body .sz-root .sz-badge,
+html body .sz-root [class*="badge"],
+html body .sz-root [class*="status"],
+html body .sz-root .sz-wh-status{
+  font-size:12px!important;
+  font-weight:600!important;
+  line-height:1!important;
+  letter-spacing:0!important;
+  text-transform:none!important;
+}
+
+/* Números/valores */
+html body .sz-root .sz-fin-card strong,
+html body .sz-root .sz-wtc-value,
+html body .sz-root .sz-mode-stat strong,
+html body .sz-root .sz-stock-metric strong,
+html body .sz-root .sz-card-value,
+html body .sz-root .sz-value,
+html body .sz-root .sz-money,
+html body .sz-root .sz-price{
+  font-weight:700!important;
+  letter-spacing:-.01em!important;
+  line-height:1.08!important;
+}
+
+/* Tabelas/conexões/relatórios */
+html body .sz-root table,
+html body .sz-root table td,
+html body .sz-root .sz-orders-table td,
+html body .sz-root .sz-mode-table td,
+html body .sz-root .sz-compact-table td,
+html body .sz-root .sz-wh-table td,
+html body .sz-root #sec-webhooks td,
+html body .sz-root #sec-reports td{
+  font-size:14px!important;
+  font-weight:500!important;
+  line-height:1.35!important;
+  letter-spacing:0!important;
+  text-transform:none!important;
+}
+html body .sz-root em,
+html body .sz-root i:not([class*="icon"]):not(.dashicons):not(.fa):not(.fas):not(.far):not(.fab):not(.material-icons){
+  font-style:normal!important;
+}
+
+/* Mobile/PWA: evita voltar para bold pesado no menu inferior */
+@media (max-width:980px){
+  html body .sz-root .sz-ni,
+  html body .sz-root .sz-sb.sz-collapsed .sz-ni,
+  body.sz-pwa-only .sz-ni{
+    font-size:11px!important;
+    font-weight:500!important;
+    letter-spacing:0!important;
+    text-transform:none!important;
+  }
+  html body .sz-root .sz-ni.active,
+  body.sz-pwa-only .sz-ni.active{
+    font-weight:600!important;
+  }
+  html body .sz-root .sz-banner,
+  html body .sz-root .sz-hero,
+  html body .sz-root .sz-section-hero{
+    padding:20px 18px!important;
+    border-radius:20px!important;
+  }
+  html body .sz-root .sz-banner h1,
+  html body .sz-root .sz-hero h1,
+  html body .sz-root .sz-section-hero h1{
+    font-size:22px!important;
+  }
+}
+
+/*
+ * Senderzz v408 — desarme dos overrides críticos.
+ * Esta camada existe apenas para normalizar texto visual que ainda chega via
+ * <style> antigo ou style="" dinâmico. Layout, cores, grid e regras de negócio
+ * continuam nos arquivos de origem.
+ */
+html body .sz-root :where(.sz-card,.sz-panel,.sz-box,.sz-table,.sz-orders-table,.sz-mode-table,.sz-compact-table,.sz-wallet-card,.sz-wh-table,.sz-prod-card-v135,.sz-prod-hero-v135,.sz-filter-row,.sz-tabs,.sz-mode-switch,.sz-nav,.sz-sb,.sz-banner,.sz-hero,.sz-section-hero) :where(*){
+  font-family:var(--sz-font)!important;
+  font-synthesis-weight:none!important;
+  text-shadow:none!important;
+  -webkit-text-stroke:0!important;
+}
+html body .sz-root :where(.sz-card,.sz-panel,.sz-box,.sz-table,.sz-orders-table,.sz-mode-table,.sz-compact-table,.sz-wallet-card,.sz-wh-table,.sz-prod-card-v135,.sz-prod-hero-v135,.sz-filter-row,.sz-tabs,.sz-mode-switch,.sz-nav,.sz-sb) :where(span,small,p,label,td,th,div,a,button,input,select,textarea,strong,b,em,i){
+  letter-spacing:0!important;
+  text-transform:none!important;
+}
+html body .sz-root :where(button,.sz-btn,.sz-primary,.sz-quick,.sz-mini,.sz-act,.szlk-btn,.szst-btn,.sz-wallet-export-btn,.sz-prod-btn-copy,.sz-prod-btn-delete,.sz-prod-commission-save,.sz-wh-table button,.sz-mode-switch button,.sz-tabs button,.sz-tab){
+  font-size:14px!important;
+  font-weight:600!important;
+  line-height:1!important;
+}
+html body .sz-root :where(.sz-badge,[class*="badge"],[class*="status"],.sz-wh-status,.sz-pill){
+  font-size:12px!important;
+  font-weight:600!important;
+  line-height:1!important;
+}
+html body .sz-root :where(table th,.sz-orders-table th,.sz-mode-table th,.sz-compact-table th,.sz-wh-table th,.sz-prod-row-v135.head){
+  font-size:12px!important;
+  font-weight:500!important;
+  line-height:1.25!important;
+}
+html body .sz-root :where(table td,.sz-orders-table td,.sz-mode-table td,.sz-compact-table td,.sz-wh-table td){
+  font-size:14px!important;
+  font-weight:500!important;
+  line-height:1.35!important;
+}
+html body .sz-root :where(h1,.sz-banner-title,.sz-hero h1,.sz-section-hero h1){
+  font-size:23px!important;
+  font-weight:700!important;
+  line-height:1.12!important;
+  letter-spacing:-.015em!important;
+}
+html body .sz-root :where(h2,h3,.sz-title,.szlk-title,.szst-title,.sz-wh-head h3,.sz-card-head h2,.sz-card-head h3,.sz-panel-head h2,.sz-panel-head h3){
+  font-weight:600!important;
+  line-height:1.22!important;
+  letter-spacing:-.01em!important;
+}
+html body .sz-root :where(.sz-fin-card strong,.sz-wtc-value,.sz-mode-stat strong,.sz-stock-metric strong,.sz-card-value,.sz-value,.sz-money,.sz-price,.sz-prod-kpis-v135 strong){
+  font-weight:700!important;
+  letter-spacing:-.01em!important;
+}
+html body .sz-root :where(.dashicons,[class^="dashicons"],[class*=" dashicons"],.fa,.fas,.far,.fab,.material-icons){
+  font-family:dashicons, "Font Awesome 5 Free", "Font Awesome 5 Brands", "Material Icons"!important;
+}
+
+
+/* v411 external guard — sidebar toggle visible and dark tab fallback */
+@media (min-width:981px){
+  html body .sz-root .sz-sb-toggle{display:flex!important;visibility:visible!important;opacity:1!important;pointer-events:auto!important;}
+}
+html body .sz-root #sec-freight .sz-btn-support{display:none!important;}

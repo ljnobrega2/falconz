@@ -1,0 +1,456 @@
+openapi: "3.1.0"
+info:
+  title: Senderzz Motoboy API
+  version: "1.0"
+  description: |
+    REST API do módulo Motoboy (sz-motoboy/v1).
+    Base URL: https://{host}/wp-json/sz-motoboy/v1
+
+    Grupos de autenticação:
+    - **motoboy**: Header `X-MB-Token: {token_app}` (coluna sz_motoboys.token_app)
+    - **alan** (OL/expedição): Header `X-Alan-Token: {token}`
+    - **ol_portal**: Cookie senderzz_portal_session ou X-Senderzz-Token (portal auth)
+    - **público**: sem auth
+
+servers:
+  - url: https://{host}/wp-json/sz-motoboy/v1
+    variables:
+      host:
+        default: app.senderzz.com.br
+
+tags:
+  - name: auth
+    description: Login e autenticação do motoboy
+  - name: motoboy
+    description: Operações do motoboy (pedidos, entrega, rota)
+  - name: wallet
+    description: Carteira financeira do motoboy
+  - name: alan
+    description: Operações do expedidor/OL (Alan = Almoxarife)
+  - name: ol
+    description: Endpoints do Operador Logístico (portal auth)
+  - name: tracking
+    description: Rastreio público de pedidos
+  - name: public
+    description: Endpoints sem autenticação
+
+paths:
+  /login:
+    post:
+      tags: [auth]
+      summary: Solicitar código OTP por WhatsApp
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                telefone: { type: string, example: "11999999999" }
+      responses:
+        "200":
+          description: OTP enviado via WhatsApp
+        "404":
+          description: Telefone não cadastrado
+
+  /login/verificar:
+    post:
+      tags: [auth]
+      summary: Verificar código OTP e obter token_app
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                telefone: { type: string }
+                otp:      { type: string, example: "123456" }
+      responses:
+        "200":
+          description: Token de sessão
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:        { type: boolean }
+                  token_app: { type: string }
+                  motoboy_id: { type: integer }
+        "401":
+          description: OTP inválido ou expirado
+
+  /login/definir-senha:
+    post:
+      tags: [auth]
+      summary: Definir senha (primeiro acesso)
+      security: [{ motoboy_token: [] }]
+
+  /login/autenticar:
+    post:
+      tags: [auth]
+      summary: Login com senha (fluxo alternativo ao OTP)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                telefone: { type: string }
+                senha:    { type: string }
+
+  /motoboy/trocar-senha:
+    post:
+      tags: [auth]
+      summary: Trocar senha
+      security: [{ motoboy_token: [] }]
+
+  /otp/solicitar:
+    post:
+      tags: [auth]
+      summary: Solicitar OTP (fluxo legacy — não usado no fluxo novo)
+      description: Mantido por compatibilidade. Usa /login para fluxo atual.
+
+  /otp/confirmar:
+    post:
+      tags: [auth]
+      summary: Confirmar OTP (fluxo legacy)
+
+  /motoboy/lote:
+    get:
+      tags: [motoboy]
+      summary: Pedidos do dia do motoboy autenticado
+      security: [{ motoboy_token: [] }]
+      responses:
+        "200":
+          description: Lista de pedidos atribuídos ao motoboy hoje
+
+  /motoboy/iniciar-rota:
+    post:
+      tags: [motoboy]
+      summary: Iniciar rota via QR code da etiqueta (V-SEC-03)
+      security: [{ motoboy_token: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                qr_code: { type: string, description: "Código SZ-{wc_order_id}-{pedido_id}-{hmac14}" }
+      responses:
+        "200":
+          description: Rota iniciada, pedido em status em_rota
+        "403":
+          description: QR inválido ou pedido não pertence ao motoboy
+
+  /motoboy/devolver-qr:
+    post:
+      tags: [motoboy]
+      summary: Declarar devolução via QR (estoque volta após confirmação OL)
+      security: [{ motoboy_token: [] }]
+
+  /motoboy/ping:
+    post:
+      tags: [motoboy]
+      summary: Atualizar localização GPS do motoboy
+      security: [{ motoboy_token: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                lat: { type: number, format: float }
+                lng: { type: number, format: float }
+
+  /motoboy/entregar:
+    post:
+      tags: [motoboy]
+      summary: Registrar entrega com pagamento e foto
+      security: [{ motoboy_token: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                pedido_id:      { type: integer }
+                recebedor_nome: { type: string }
+                cpf:            { type: string }
+                pgto_dinheiro:  { type: number }
+                pgto_pix:       { type: number }
+                pgto_cartao:    { type: number }
+                lat:            { type: number }
+                lng:            { type: number }
+
+  /motoboy/frustrar:
+    post:
+      tags: [motoboy]
+      summary: Registrar entrega frustrada
+      security: [{ motoboy_token: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                pedido_id: { type: integer }
+                motivo:    { type: string }
+
+  /motoboy/fechamento:
+    get:
+      tags: [motoboy]
+      summary: Fechamento financeiro do motoboy (saldo, histórico)
+      security: [{ motoboy_token: [] }]
+
+  /motoboy/confirmar-repasse:
+    post:
+      tags: [motoboy]
+      summary: Confirmar recebimento de repasse
+      security: [{ motoboy_token: [] }]
+
+  /motoboy/pendentes-confirmacao:
+    get:
+      tags: [motoboy]
+      summary: Listar pedidos aguardando confirmação de repasse
+      security: [{ motoboy_token: [] }]
+
+  /motoboy/comprovante:
+    post:
+      tags: [motoboy]
+      summary: Upload de foto comprovante de entrega
+      security: [{ motoboy_token: [] }]
+
+  "/motoboy/comprovantes/{order_id}":
+    get:
+      tags: [motoboy]
+      summary: Listar comprovantes de um pedido
+      security: [{ motoboy_token: [] }]
+      parameters:
+        - name: order_id
+          in: path
+          required: true
+          schema: { type: integer }
+
+  /motoboy/push-subscribe:
+    post:
+      tags: [motoboy]
+      summary: Registrar endpoint para notificações push PWA
+      security: [{ motoboy_token: [] }]
+
+  /wallet/saldo:
+    get:
+      tags: [wallet]
+      summary: Saldo da carteira do motoboy
+      security: [{ motoboy_token: [] }]
+
+  /wallet/historico:
+    get:
+      tags: [wallet]
+      summary: Histórico de transações da carteira
+      security: [{ motoboy_token: [] }]
+
+  /wallet/bancario:
+    get:
+      tags: [wallet]
+      summary: Dados bancários/PIX cadastrados do motoboy
+      security: [{ motoboy_token: [] }]
+    post:
+      tags: [wallet]
+      summary: Salvar dados bancários/PIX
+      security: [{ motoboy_token: [] }]
+
+  /zona-cep:
+    get:
+      tags: [public]
+      summary: Verificar zona de entrega para um CEP
+      parameters:
+        - name: cep
+          in: query
+          required: true
+          schema: { type: string, example: "01310100" }
+        - name: real
+          in: query
+          schema: { type: string, enum: ["0","1"], description: "1 = validar CEP via API externa" }
+      responses:
+        "200":
+          description: Zona de cobertura e datas disponíveis
+
+  /link-expedicao:
+    get:
+      tags: [public]
+      summary: Resolver link de expedição pelo slug (token)
+      parameters:
+        - name: sz
+          in: query
+          required: true
+          schema: { type: string }
+
+  /dispensar-cpf:
+    post:
+      tags: [public]
+      summary: Toggle dispensa de CPF na entrega (auth interna via portal session)
+
+  /alan/localizacao:
+    get:
+      tags: [alan]
+      summary: Localização atual dos motoboys
+      security: [{ alan_token: [] }]
+
+  "/alan/historico/{motoboy_id}":
+    get:
+      tags: [alan]
+      summary: Histórico de pedidos de um motoboy
+      security: [{ alan_token: [] }]
+      parameters:
+        - name: motoboy_id
+          in: path
+          required: true
+          schema: { type: integer }
+
+  /alan/etiquetas:
+    get:
+      tags: [alan]
+      summary: Etiquetas prontas para embalagem
+      security: [{ alan_token: [] }]
+
+  /alan/push-subscribe:
+    post:
+      tags: [alan]
+      summary: Registrar push para expedição
+      security: [{ alan_token: [] }]
+
+  /alan/pedidos:
+    get:
+      tags: [alan]
+      summary: Pedidos pendentes de embalagem
+      security: [{ alan_token: [] }]
+
+  /alan/embalar:
+    post:
+      tags: [alan]
+      summary: Marcar pedido como embalado (status embalado)
+      security: [{ alan_token: [] }]
+
+  /alan/confirmar-fechamento:
+    post:
+      tags: [alan]
+      summary: Confirmar fechamento financeiro de motoboy
+      security: [{ alan_token: [] }]
+
+  /alan/dashboard:
+    get:
+      tags: [alan]
+      summary: Dashboard do expedidor (KPIs do dia)
+      security: [{ alan_token: [] }]
+
+  "/tracking/{order_id}":
+    get:
+      tags: [tracking]
+      summary: Rastreio público do pedido (sem auth)
+      parameters:
+        - name: order_id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Status atual e histórico do pedido
+
+  "/tracking/{order_id}/reagendar":
+    post:
+      tags: [tracking]
+      summary: Reagendar entrega (requer order key — V-SEC-03)
+      parameters:
+        - name: order_id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [date, key]
+              properties:
+                date: { type: string, format: date, example: "2026-06-20" }
+                key:  { type: string, description: "WooCommerce order key (wc_order_xxx) do e-mail de confirmação" }
+      responses:
+        "200":
+          description: Entrega reagendada
+        "403":
+          description: Order key inválida (IDOR protection)
+        "422":
+          description: Data inválida ou status não permite reagendamento
+
+  /ol/mudar-status:
+    post:
+      tags: [ol]
+      summary: Mudar status de pedido (OL — qualquer status)
+      security: [{ portal_session: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                pedido_id: { type: integer }
+                status:    { type: string, enum: [entregue, frustrado, em_rota, embalado, agendado, cancelado] }
+                motivo:    { type: string }
+
+  /ol/trocar-motoboy:
+    post:
+      tags: [ol]
+      summary: Trocar motoboy atribuído a um pedido
+      security: [{ portal_session: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                pedido_id:  { type: integer }
+                motoboy_id: { type: integer }
+
+  /ol/motoboys-do-dia:
+    get:
+      tags: [ol]
+      summary: Motoboys com pedidos do dia + KPIs
+      security: [{ portal_session: [] }]
+
+  /ol/motoboys:
+    get:
+      tags: [ol]
+      summary: Lista de motoboys ativos
+      security: [{ portal_session: [] }]
+
+  /ol/pedido-historico:
+    get:
+      tags: [ol]
+      summary: Histórico de um pedido específico
+      security: [{ portal_session: [] }]
+
+components:
+  securitySchemes:
+    motoboy_token:
+      type: apiKey
+      in: header
+      name: X-MB-Token
+      description: token_app da tabela sz_motoboys
+    alan_token:
+      type: apiKey
+      in: header
+      name: X-Alan-Token
+    portal_session:
+      type: apiKey
+      in: cookie
+      name: senderzz_portal_session
+      description: Cookie HttpOnly de sessão do portal (ou header X-Senderzz-Token)

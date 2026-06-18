@@ -1,0 +1,144 @@
+openapi: "3.1.0"
+info:
+  title: Senderzz Labels API (Melhor Envio)
+  version: "1.0"
+  description: |
+    REST API de etiquetas (wc-melhor-envio/v1).
+    Criação, processamento e download de etiquetas de envio via Melhor Envio.
+    Base URL: https://{host}/wp-json/wc-melhor-envio/v1
+
+servers:
+  - url: https://{host}/wp-json/wc-melhor-envio/v1
+
+tags:
+  - name: labels
+    description: CRUD de etiquetas de envio
+  - name: tools
+    description: Ferramentas de manutenção
+
+components:
+  securitySchemes:
+    wp_admin:
+      type: apiKey
+      in: cookie
+      name: wordpress_logged_in
+      description: Requer manage_woocommerce capability
+
+paths:
+  /labels:
+    get:
+      tags: [labels]
+      summary: Listar etiquetas de pedidos
+      security: [{ wp_admin: [] }]
+      parameters:
+        - name: order_id
+          in: query
+          schema: { type: integer }
+        - name: status
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50 }
+      responses:
+        "200":
+          description: Lista de etiquetas
+
+  "/labels/{order_id}":
+    get:
+      tags: [labels]
+      summary: Dados de etiqueta de um pedido específico
+      security: [{ wp_admin: [] }]
+      parameters:
+        - name: order_id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Dados da etiqueta
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  order_id:     { type: integer }
+                  status:       { type: string }
+                  tracking:     { type: string }
+                  print_url:    { type: string }
+                  pdf_url:      { type: string }
+                  me_order_id:  { type: string }
+
+  "/labels/{order_id}/process":
+    post:
+      tags: [labels]
+      summary: Processar etiqueta (comprar + gerar) para um pedido
+      description: |
+        Enfileira o pedido para compra da etiqueta via ME.
+        CRIT-01 — preço é recalculado no servidor via /me/shipment/calculate.
+        Nunca aceita preço enviado pelo cliente.
+      security: [{ wp_admin: [] }]
+      parameters:
+        - name: order_id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                service_id: { type: integer, description: "ID do serviço ME (transportadora)" }
+      responses:
+        "200":
+          description: Etiqueta enfileirada para processamento
+        "402":
+          description: Saldo insuficiente na carteira
+        "422":
+          description: Pedido inválido ou já tem etiqueta
+
+  "/labels/{order_id}/download":
+    get:
+      tags: [labels]
+      summary: URL de download do PDF da etiqueta
+      security: [{ wp_admin: [] }]
+      parameters:
+        - name: order_id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: URL do PDF
+        "404":
+          description: Etiqueta não disponível
+
+  /labels/batch-print:
+    post:
+      tags: [labels]
+      summary: Gerar PDF consolidado de múltiplas etiquetas
+      security: [{ wp_admin: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                order_ids:
+                  type: array
+                  items: { type: integer }
+      responses:
+        "200":
+          description: URL do PDF consolidado
+
+  /tools/migrate-labels:
+    post:
+      tags: [tools]
+      summary: Migrar etiquetas antigas para novo formato de metadados
+      description: Ferramenta de manutenção. Requer manage_woocommerce.
+      security: [{ wp_admin: [] }]
+      responses:
+        "200":
+          description: Resultado da migração

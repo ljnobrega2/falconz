@@ -1,0 +1,98 @@
+name: Go Services CI
+
+on:
+  push:
+    paths:
+      - 'go/**'
+  pull_request:
+    paths:
+      - 'go/**'
+
+jobs:
+  test-motoboy:
+    name: Motoboy Service
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: senderzz_test
+          POSTGRES_USER: senderzz
+          POSTGRES_PASSWORD: test-pass
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache-dependency-path: go/motoboy/go.sum
+
+      - name: Apply schema
+        run: psql postgresql://senderzz:test-pass@localhost:5432/senderzz_test -f infra/postgres/schema-motoboy.sql
+
+      - name: Test
+        working-directory: go/motoboy
+        env:
+          DATABASE_URL: postgresql://senderzz:test-pass@localhost:5432/senderzz_test
+          WP_SALT_AUTH: test-salt-for-ci-only
+          ALAN_TOKEN: test-alan-token
+          PORT: "8080"
+        run: go test ./...
+
+      - name: Build
+        working-directory: go/motoboy
+        run: go build ./cmd/server
+
+  test-wallet:
+    name: Wallet Service
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: senderzz_test
+          POSTGRES_USER: senderzz
+          POSTGRES_PASSWORD: test-pass
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache-dependency-path: go/wallet/go.sum
+
+      - name: Test
+        working-directory: go/wallet
+        env:
+          DATABASE_URL: postgresql://senderzz:test-pass@localhost:5432/senderzz_test
+          JWT_SECRET: test-jwt-secret-ci
+          WEBHOOK_SECRET: test-webhook-secret-ci
+          PORT: "8081"
+        run: go test ./...
+
+      - name: Build
+        working-directory: go/wallet
+        run: go build ./cmd/server
+
+  lint:
+    name: Lint Go
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+      - uses: golangci/golangci-lint-action@v4
+        with:
+          working-directory: go/motoboy
+          version: latest

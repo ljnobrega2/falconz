@@ -1,0 +1,2641 @@
+/**
+ * Senderzz Dashboard V2 — Layout (Fase 1)
+ * Tudo escopado em .sz-dashboard-v2. Sem !important contra o legado.
+ */
+
+/* ── Base ────────────────────────────────────────────────────── */
+.sz-dashboard-v2 {
+  font-family: var(--szv2-font-ui);
+  font-size: var(--szv2-text-md);
+  color: var(--szv2-text);
+  background: var(--szv2-bg);
+  min-height: 100vh;
+  display: flex;
+  -webkit-font-smoothing: antialiased;
+  line-height: 1.45;
+  box-sizing: border-box;
+}
+.sz-dashboard-v2 *,
+.sz-dashboard-v2 *::before,
+.sz-dashboard-v2 *::after { box-sizing: inherit; }
+
+.sz-dashboard-v2 a { color: var(--szv2-brand); text-decoration: none; }
+.sz-dashboard-v2 a:hover { color: var(--szv2-brand-hover); }
+
+.sz-dashboard-v2 :focus-visible {
+  outline: none;
+  box-shadow: var(--szv2-shadow-focus);
+  border-radius: var(--szv2-radius-sm);
+}
+
+.sz-dashboard-v2 .szv2-num { font-family: var(--szv2-font-mono); font-variant-numeric: tabular-nums; }
+
+/* ── Sidebar ─────────────────────────────────────────────────── */
+.szv2-sidebar {
+  width: var(--szv2-sidebar-w);
+  min-width: var(--szv2-sidebar-w);
+  background: var(--szv2-surface);
+  border-right: 1px solid var(--szv2-border);
+  display: flex;
+  flex-direction: column;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  z-index: var(--szv2-z-sidebar);
+  transition: width var(--szv2-transition), min-width var(--szv2-transition);
+}
+.sz-dashboard-v2[data-sidebar="collapsed"] .szv2-sidebar {
+  width: var(--szv2-sidebar-w-min);
+  min-width: var(--szv2-sidebar-w-min);
+}
+
+.szv2-sidebar-head {
+  display: flex;
+  align-items: center;
+  gap: var(--szv2-space-3);
+  padding: var(--szv2-space-4);
+  min-height: 64px;
+}
+.szv2-logo-full { display: block; height: 28px; width: auto; color: var(--szv2-text); }
+.szv2-logo-full svg { display: block; height: 28px; width: auto; }
+.szv2-logo-mark { display: none; height: 30px; width: 30px; }
+.szv2-logo-mark svg { display: block; width: 30px; height: 30px; }
+.sz-dashboard-v2[data-sidebar="collapsed"] .szv2-logo-full { display: none; }
+.sz-dashboard-v2[data-sidebar="collapsed"] .szv2-logo-mark { display: block; margin: 0 auto; }
+
+.szv2-sidebar-hello {
+  padding: 0 var(--szv2-space-4) var(--szv2-space-3);
+  border-bottom: 1px solid var(--szv2-divider);
+}
+.szv2-sidebar-hello strong { display: block; font-size: var(--szv2-text-lg); font-weight: 700; }
+.szv2-sidebar-hello span { font-size: var(--szv2-text-sm); color: var(--szv2-text-muted); }
+.sz-dashboard-v2[data-sidebar="collapsed"] .szv2-sidebar-hello { display: none; }
+
+.szv2-nav { flex: 1; overflow-y: auto; padding: var(--szv2-space-2) var(--szv2-space-1); min-height: 0; scrollbar-width: none; }
+.szv2-nav::-webkit-scrollbar { display: none; }
+.szv2-nav-group { margin-bottom: var(--szv2-space-3); }
+.szv2-nav-kicker {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--szv2-text-faint);
+  padding: 4px var(--szv2-space-2);
+}
+.sz-dashboard-v2[data-sidebar="collapsed"] .szv2-nav-kicker { display: none; }
+
+.sz-dashboard-v2 .szv2-nav .sz-ni {
+  display: flex;
+  align-items: center;
+  gap: var(--szv2-space-2);
+  width: 100%;
+  padding: 7px var(--szv2-space-2);
+  border: 0;
+  border-left: 3px solid transparent;
+  border-radius: var(--szv2-radius-sm);
+  background: transparent;
+  color: var(--szv2-text-soft);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--szv2-transition), color var(--szv2-transition);
+  line-height: 1.3;
+}
+.sz-dashboard-v2 .szv2-nav .sz-ni:hover { background: var(--szv2-brand-muted); color: var(--szv2-text); }
+.sz-dashboard-v2 .szv2-nav .sz-ni[aria-current="true"] {
+  background: var(--szv2-brand-light);
+  border-left-color: var(--szv2-brand);
+  color: var(--szv2-brand);
+  font-weight: 700;
+}
+.szv2-ni-icon { width: 20px; height: 20px; flex: 0 0 20px; display: inline-flex; }
+.szv2-ni-icon svg { width: 100%; height: 100%; fill: currentColor; }
+.szv2-ni-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sz-dashboard-v2[data-sidebar="collapsed"] .szv2-ni-label { display: none; }
+.sz-dashboard-v2[data-sidebar="collapsed"] .szv2-nav .sz-ni { justify-content: center; padding: 9px 0; border-left-width: 0; }
+.sz-dashboard-v2[data-sidebar="collapsed"] .szv2-nav .sz-ni[aria-current="true"] { border-left-width: 0; }
+
+/* ── Rodapé da sidebar: ranking, saldo, tema, sair ───────────── */
+
+/* ── Área principal ──────────────────────────────────────────── */
+.szv2-main { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: clip; }
+
+.szv2-topbar {
+  height: var(--szv2-topbar-h);
+  background: var(--szv2-surface);
+  border-bottom: 1px solid var(--szv2-border);
+  display: flex;
+  align-items: center;
+  gap: var(--szv2-space-4);
+  padding: 0 var(--szv2-space-6);
+  position: sticky;
+  top: 0;
+  z-index: var(--szv2-z-topbar);
+}
+.szv2-topbar-toggle {
+  border: 1px solid var(--szv2-border);
+  background: transparent;
+  border-radius: var(--szv2-radius-sm);
+  width: 32px; height: 32px;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--szv2-text-soft);
+  cursor: pointer;
+}
+.szv2-topbar-toggle svg { width: 16px; height: 16px; fill: currentColor; }
+.szv2-topbar-title { font-family: var(--szv2-font-brand); font-size: var(--szv2-text-lg); font-weight: 700; }
+.szv2-topbar-spacer { flex: 1; }
+.szv2-beta-pill {
+  font-size: var(--szv2-text-xs);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--szv2-brand);
+  background: var(--szv2-brand-light);
+  border: 1px solid var(--szv2-brand);
+  border-radius: var(--szv2-radius-pill);
+  padding: 3px 10px;
+  white-space: nowrap;
+}
+.szv2-topbar-link { font-size: var(--szv2-text-sm); color: var(--szv2-text-muted); white-space: nowrap; }
+.szv2-avatar {
+  width: 32px; height: 32px;
+  border-radius: var(--szv2-radius-pill);
+  background: var(--szv2-brand);
+  color: var(--szv2-on-brand);
+  display: inline-flex; align-items: center; justify-content: center;
+  font-weight: 700;
+  font-size: var(--szv2-text-sm);
+}
+
+.szv2-content { padding: var(--szv2-space-6); max-width: none; width: 100%; flex: 1; overflow-y: auto; }
+
+/* ── Seções (mesmos #sec-* do contrato) ──────────────────────── */
+.sz-dashboard-v2 .sz-sec { display: none; }
+/* .sz-sec.szv2-active — consolidated below (v459) */
+
+.szv2-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--szv2-space-4);
+  margin-bottom: var(--szv2-space-5);
+}
+.szv2-section-head > div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.szv2-section-head h1 {
+  font-family: var(--szv2-font-brand);
+  font-size: var(--szv2-text-xl);
+  font-weight: 700;
+  margin: 0;
+  line-height: 1.2;
+}
+.szv2-section-head > div > p,
+.szv2-section-head p { margin: 0; font-size: var(--szv2-text-sm); color: var(--szv2-text-muted); line-height: 1.4; }
+
+/* ── Grid de KPIs ────────────────────────────────────────────── */
+.szv2-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--szv2-space-4);
+  margin-bottom: var(--szv2-space-6);
+}
+.szv2-kpi-grid-3col { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+@media (max-width: 1280px) { .szv2-kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 1280px) { .szv2-kpi-grid-3col { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+/* ── Breakpoints da sidebar ──────────────────────────────────── */
+@media (max-width: 1280px) {
+  .sz-dashboard-v2:not([data-sidebar="open"]) .szv2-sidebar { width: var(--szv2-sidebar-w-min); min-width: var(--szv2-sidebar-w-min); }
+  .sz-dashboard-v2:not([data-sidebar="open"]) .szv2-ni-label,
+  .sz-dashboard-v2:not([data-sidebar="open"]) .szv2-nav-kicker,
+  .sz-dashboard-v2:not([data-sidebar="open"]) .szv2-sidebar-hello,
+  .sz-dashboard-v2:not([data-sidebar="open"]) .szv2-logo-full { display: none; }
+  .sz-dashboard-v2:not([data-sidebar="open"]) .szv2-logo-mark { display: block; margin: 0 auto; }
+}
+
+/* ── Atalhos visuais (Fase 2) ────────────────────────────────── */
+.sz-dashboard-v2 .szv2-shortcuts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--szv2-space-3);
+  margin-top: var(--szv2-space-5);
+}
+.sz-dashboard-v2 .szv2-shortcut {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--szv2-space-2);
+  padding: var(--szv2-space-3) var(--szv2-space-4);
+  background: var(--szv2-surface);
+  border: 1px solid var(--szv2-border);
+  border-radius: var(--szv2-radius-md);
+  color: var(--szv2-text-soft);
+  font: inherit;
+  font-weight: 600;
+  font-size: var(--szv2-text-md);
+  cursor: pointer;
+  transition: background var(--szv2-transition), border-color var(--szv2-transition), color var(--szv2-transition);
+}
+.sz-dashboard-v2 .szv2-shortcut:hover {
+  background: var(--szv2-brand-muted);
+  border-color: var(--szv2-brand);
+  color: var(--szv2-brand);
+}
+.sz-dashboard-v2 .szv2-shortcut-icon { width: 20px; height: 20px; display: inline-flex; }
+.sz-dashboard-v2 .szv2-shortcut-icon svg { width: 100%; height: 100%; fill: currentColor; }
+
+/* ── Ranking V2 (Fase 2.1) ───────────────────────────────────────
+   Componente próprio — sem class legada, sem style inline, sem emoji.
+   Badge SVG vem de sz_aff_tier_badge_svg() (já limpo).
+   ──────────────────────────────────────────────────────────────── */
+.sz-dashboard-v2 .szv2-rank-card { margin-top: var(--szv2-space-5); }
+
+.sz-dashboard-v2 .szv2-rank-body { display: flex; flex-direction: column; gap: var(--szv2-space-4); }
+
+.sz-dashboard-v2 .szv2-rank-head {
+  display: flex;
+  align-items: center;
+  gap: var(--szv2-space-3);
+}
+.sz-dashboard-v2 .szv2-rank-badge { width: 40px; height: 40px; flex: 0 0 40px; display: inline-flex; }
+.sz-dashboard-v2 .szv2-rank-badge svg { width: 40px; height: 40px; }
+.sz-dashboard-v2 .szv2-rank-tier {
+  display: block;
+  font-size: var(--szv2-text-lg);
+  font-weight: 700;
+  color: var(--szv2-text);
+}
+.sz-dashboard-v2 .szv2-rank-total {
+  display: block;
+  font-size: var(--szv2-text-sm);
+  color: var(--szv2-text-muted);
+  font-family: var(--szv2-font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.sz-dashboard-v2 .szv2-rank-progress-wrap { display: flex; flex-direction: column; gap: 6px; }
+.sz-dashboard-v2 .szv2-rank-progress-bar {
+  height: 7px;
+  background: var(--szv2-brand-muted);
+  border-radius: var(--szv2-radius-pill);
+  overflow: hidden;
+}
+.sz-dashboard-v2 .szv2-rank-progress-fill {
+  height: 100%;
+  background: var(--szv2-brand);
+  border-radius: var(--szv2-radius-pill);
+  transition: width 0.6s ease;
+}
+.sz-dashboard-v2 .szv2-rank-progress-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--szv2-space-3);
+  font-size: var(--szv2-text-sm);
+}
+.sz-dashboard-v2 .szv2-rank-pct {
+  font-weight: 700;
+  color: var(--szv2-brand);
+  font-family: var(--szv2-font-mono);
+  background: var(--szv2-brand-light);
+  border-radius: var(--szv2-radius-pill);
+  padding: 2px 10px;
+  white-space: nowrap;
+}
+.sz-dashboard-v2 .szv2-rank-next { color: var(--szv2-text-muted); }
+.sz-dashboard-v2 .szv2-rank-next strong { color: var(--szv2-text); font-weight: 700; }
+
+.sz-dashboard-v2 .szv2-rank-tiers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--szv2-space-2);
+}
+.sz-dashboard-v2 .szv2-rank-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 12px;
+  border-radius: var(--szv2-radius-pill);
+  font-size: var(--szv2-text-xs);
+  font-weight: 700;
+  border: 1px solid var(--szv2-border);
+  background: var(--szv2-surface-alt);
+  color: var(--szv2-text-muted);
+}
+.sz-dashboard-v2 .szv2-rank-pill svg { width: 10px; height: 10px; }
+.sz-dashboard-v2 .szv2-rank-pill--done {
+  background: var(--szv2-brand-muted);
+  border-color: var(--szv2-brand);
+  color: var(--szv2-brand-ember);
+  opacity: 0.7;
+}
+.sz-dashboard-v2 .szv2-rank-pill--current {
+  background: var(--szv2-brand);
+  border-color: var(--szv2-brand);
+  color: var(--szv2-on-brand);
+}
+.sz-dashboard-v2 .szv2-rank-pill--next { opacity: 0.55; }
+
+/* ── Tabela de pedidos (Fase 2) ─────────────────────────────── */
+.sz-dashboard-v2 .szv2-orders-table-wrap {
+  border: 0;
+  border-radius: 0;
+  margin: 0 calc(-1 * var(--szv2-space-5));
+  width: calc(100% + 2 * var(--szv2-space-5));
+}
+.sz-dashboard-v2 .szv2-order-num {
+  white-space: nowrap;
+  color: var(--szv2-text-muted);
+  font-size: var(--szv2-text-sm);
+}
+.sz-dashboard-v2 .szv2-order-client {
+  display: block;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 180px;
+}
+.sz-dashboard-v2 .szv2-order-product {
+  display: block;
+  font-size: var(--szv2-text-sm);
+  color: var(--szv2-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 180px;
+}
+.sz-dashboard-v2 .szv2-order-address {
+  font-size: var(--szv2-text-sm);
+  color: var(--szv2-text-soft);
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sz-dashboard-v2 .szv2-order-date {
+  color: var(--szv2-text-muted);
+  font-size: var(--szv2-text-sm);
+  white-space: nowrap;
+}
+
+/* ── Filtros de seção (Fase 3) ────────────────────────────────── */
+.sz-dashboard-v2 .szv2-filter-chip {
+  padding: 7px 14px;
+  background: var(--szv2-surface);
+  border: 1px solid var(--szv2-border);
+  border-radius: var(--szv2-radius-pill);
+  color: var(--szv2-text-soft);
+  font: inherit;
+  font-size: var(--szv2-text-sm);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--szv2-transition), border-color var(--szv2-transition), color var(--szv2-transition);
+  white-space: nowrap;
+}
+.sz-dashboard-v2 .szv2-filter-chip[aria-pressed="true"],
+.sz-dashboard-v2 .szv2-filter-chip.szv2-chip-active {
+  background: var(--szv2-brand-light);
+  border-color: var(--szv2-brand);
+  color: var(--szv2-brand);
+}
+.sz-dashboard-v2 .szv2-chip-count {
+  font-weight: 400;
+  color: inherit;
+  opacity: 0.75;
+}
+.sz-dashboard-v2 .szv2-section-search {
+  height: 36px;
+  min-width: 220px;
+  flex: 1 1 220px;
+  max-width: 320px;
+}
+.sz-dashboard-v2 .szv2-filter-result {
+  min-height: 1.5em;
+}
+
+/* ── Células da tabela de pedidos (Fase 3) ────────────────────── */
+.sz-dashboard-v2 .szv2-order-phone {
+  font-size: var(--szv2-text-sm);
+  color: var(--szv2-text-soft);
+  white-space: nowrap;
+  font-family: var(--szv2-font-mono);
+}
+.sz-dashboard-v2 .szv2-order-product-cell {
+  font-size: var(--szv2-text-sm);
+  color: var(--szv2-text-muted);
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Topbar compacta — ranking/saldo/tema/sair (Fase 3 consolidação) ── */
+.sz-dashboard-v2 .szv2-topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--szv2-space-2);
+  flex-shrink: 0;
+}
+
+/* Pill compacta (ranking / saldo) */
+.sz-dashboard-v2 .szv2-topbar-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 32px;
+  padding: 0 10px;
+  background: var(--szv2-surface-alt);
+  border: 1px solid var(--szv2-border);
+  border-radius: var(--szv2-radius-pill);
+  font-size: var(--szv2-text-sm);
+  font-weight: 600;
+  color: var(--szv2-text-soft);
+  white-space: nowrap;
+}
+.sz-dashboard-v2 .szv2-topbar-pill-icon {
+  width: 16px; height: 16px;
+  display: inline-flex; align-items: center; flex-shrink: 0;
+}
+.sz-dashboard-v2 .szv2-topbar-pill-icon svg { width: 16px; height: 16px; fill: currentColor; }
+.sz-dashboard-v2 .szv2-topbar-rank { color: var(--szv2-brand); background: var(--szv2-brand-light); border-color: var(--szv2-brand); }
+
+/* Botão ícone compacto (tema / sair) */
+.sz-dashboard-v2 .szv2-topbar-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px; height: 32px;
+  border: 1px solid var(--szv2-border);
+  border-radius: var(--szv2-radius-md);
+  background: transparent;
+  color: var(--szv2-text-soft);
+  cursor: pointer;
+  text-decoration: none;
+}
+.sz-dashboard-v2 .szv2-topbar-icon-btn:hover {
+  background: var(--szv2-brand-muted);
+  border-color: var(--szv2-brand);
+  color: var(--szv2-brand);
+}
+.sz-dashboard-v2 .szv2-topbar-icon-btn svg { width: 16px; height: 16px; fill: currentColor; }
+
+/* Ocultar texto do saldo em topbars estreitas */
+@media (max-width: 1100px) {
+  .sz-dashboard-v2 .szv2-topbar-pill-text { display: none; }
+  .sz-dashboard-v2 .szv2-topbar-pill { padding: 0 8px; }
+}
+
+/* ── Sidebar sem rodapé — ajuste da altura da nav ───────────────── */
+.sz-dashboard-v2 .szv2-sidebar-head { min-height: 56px; }
+.sz-dashboard-v2 .szv2-nav { flex: 1; overflow-y: auto; }
+
+/* ── Seções com tabela embutida sem padding/border extra ────────── */
+.sz-dashboard-v2 .szv2-card-table { padding: 0; overflow: hidden; }
+.sz-dashboard-v2 .szv2-table-flush { border: 0; border-radius: 0; }
+.sz-dashboard-v2 .szv2-card-orders { margin-top: var(--szv2-space-5); }
+
+/* ── Badge pequeno ──────────────────────────────────────────────── */
+.sz-dashboard-v2 .szv2-badge-sm { font-size: var(--szv2-text-xs); }
+
+/* ── Células de transportadora e rastreio (Expedição) ───────────── */
+.sz-dashboard-v2 .szv2-order-carrier {
+  font-size: var(--szv2-text-sm);
+  color: var(--szv2-text-soft);
+}
+.sz-dashboard-v2 .szv2-order-tracking { font-size: var(--szv2-text-sm); }
+.sz-dashboard-v2 .szv2-text-faint-val { color: var(--szv2-text-faint); }
+
+/* ── Resultado de filtro ─────────────────────────────────────────── */
+.sz-dashboard-v2 .szv2-filter-result {
+  margin-top: var(--szv2-space-3);
+  font-size: var(--szv2-text-sm);
+  color: var(--szv2-text-muted);
+  min-height: 1.5em;
+}
+
+/* ── Dashboard seletor COD/Expedição (Fase 3 consolidação) ─────── */
+.sz-dashboard-v2 .szv2-dash-switcher {
+  display: flex;
+  gap: var(--szv2-space-1);
+  margin-bottom: var(--szv2-space-5);
+  background: var(--szv2-surface);
+  border: 1px solid var(--szv2-border);
+  border-radius: var(--szv2-radius-md);
+  padding: 3px;
+  width: fit-content;
+}
+.sz-dashboard-v2 .szv2-dash-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 16px;
+  border: 0;
+  border-radius: calc(var(--szv2-radius-md) - 2px);
+  background: transparent;
+  color: var(--szv2-text-muted);
+  font: inherit;
+  font-size: var(--szv2-text-sm);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--szv2-transition), color var(--szv2-transition);
+}
+.sz-dashboard-v2 .szv2-dash-tab svg { width: 16px; height: 16px; fill: currentColor; }
+.sz-dashboard-v2 .szv2-dash-tab--active,
+.sz-dashboard-v2 .szv2-dash-tab[aria-selected="true"] {
+  background: var(--szv2-brand);
+  color: var(--szv2-on-brand);
+}
+
+/* Panel: hidden handled by the [hidden] attribute (set by JS) */
+.sz-dashboard-v2 .szv2-dash-panel[hidden] { display: none; }
+
+/* KPI grid gutter for dashboard panels */
+.sz-dashboard-v2 .szv2-dash-panel .szv2-kpi-grid { margin-bottom: var(--szv2-space-4); }
+
+/* Two-column row for operation cards */
+.sz-dashboard-v2 .szv2-dash-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--szv2-space-4);
+  margin-bottom: var(--szv2-space-4);
+}
+@media (max-width: 1100px) {
+  .sz-dashboard-v2 .szv2-dash-row { grid-template-columns: 1fr; }
+}
+.sz-dashboard-v2 .szv2-dash-opcard { min-width: 0; }
+
+/* Operation card grid */
+.sz-dashboard-v2 .szv2-opcard-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--szv2-space-3);
+  margin-top: var(--szv2-space-2);
+}
+.sz-dashboard-v2 .szv2-opcard-item { display: flex; flex-direction: column; gap: 3px; }
+.sz-dashboard-v2 .szv2-opcard-val {
+  font-family: var(--szv2-font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--szv2-text);
+}
+.sz-dashboard-v2 .szv2-opcard-item--warn .szv2-opcard-val { color: var(--szv2-danger); }
+.sz-dashboard-v2 .szv2-opcard-item--muted .szv2-opcard-val { color: var(--szv2-text-muted); }
+.sz-dashboard-v2 .szv2-opcard-label { font-size: var(--szv2-text-sm); color: var(--szv2-text-muted); }
+
+/* Efficiency bar */
+.sz-dashboard-v2 .szv2-eff-row {
+  display: flex;
+  align-items: center;
+  gap: var(--szv2-space-3);
+  margin-top: var(--szv2-space-2);
+}
+.sz-dashboard-v2 .szv2-eff-pct {
+  font-family: var(--szv2-font-mono);
+  font-size: var(--szv2-text-xl);
+  font-weight: 700;
+  color: var(--szv2-brand);
+  min-width: 54px;
+}
+.sz-dashboard-v2 .szv2-eff-bar-wrap {
+  flex: 1;
+  height: 8px;
+  background: var(--szv2-brand-muted);
+  border-radius: var(--szv2-radius-pill);
+  overflow: hidden;
+}
+.sz-dashboard-v2 .szv2-eff-bar-fill {
+  height: 100%;
+  background: var(--szv2-brand);
+  border-radius: var(--szv2-radius-pill);
+}
+.sz-dashboard-v2 .szv2-eff-label { font-size: var(--szv2-text-sm); color: var(--szv2-text-muted); }
+
+/* Meta row (ticket médio etc) */
+.sz-dashboard-v2 .szv2-meta-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-top: var(--szv2-space-3);
+  margin-top: var(--szv2-space-3);
+  border-top: 1px solid var(--szv2-divider);
+  font-size: var(--szv2-text-sm);
+}
+.sz-dashboard-v2 .szv2-meta-label { color: var(--szv2-text-muted); }
+.sz-dashboard-v2 .szv2-meta-val { font-weight: 600; }
+
+/* Region bars */
+.sz-dashboard-v2 .szv2-region-list { display: flex; flex-direction: column; gap: var(--szv2-space-3); }
+.sz-dashboard-v2 .szv2-region-row {
+  display: grid;
+  grid-template-columns: 140px 1fr auto;
+  align-items: center;
+  gap: var(--szv2-space-3);
+}
+.sz-dashboard-v2 .szv2-region-name {
+  font-size: var(--szv2-text-sm);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sz-dashboard-v2 .szv2-region-bar-wrap {
+  height: 6px;
+  background: var(--szv2-brand-muted);
+  border-radius: var(--szv2-radius-pill);
+  overflow: hidden;
+}
+.sz-dashboard-v2 .szv2-region-bar-fill {
+  height: 100%;
+  background: var(--szv2-brand);
+  border-radius: var(--szv2-radius-pill);
+}
+.sz-dashboard-v2 .szv2-region-meta {
+  font-size: var(--szv2-text-sm);
+  color: var(--szv2-text-muted);
+  white-space: nowrap;
+  text-align: right;
+  min-width: 80px;
+}
+.sz-dashboard-v2 .szv2-region-meta small { opacity: 0.7; }
+
+/* Subtle nav link below panels */
+.sz-dashboard-v2 .szv2-dash-nav-link { margin-top: var(--szv2-space-4); }
+.sz-dashboard-v2 .szv2-link-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--szv2-brand);
+  font: inherit;
+  font-size: var(--szv2-text-sm);
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: none;
+}
+.sz-dashboard-v2 .szv2-link-btn:hover { text-decoration: underline; }
+
+/* Inter-card spacing in dash panels */
+.sz-dashboard-v2 .szv2-dash-panel > .szv2-card { margin-bottom: var(--szv2-space-4); }
+
+/* ── Filtros de período (Fase 3 consolidação final) ──────────── */
+.sz-dashboard-v2 .szv2-period-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--szv2-space-2);
+  margin-bottom: var(--szv2-space-4);
+  flex-wrap: wrap;
+}
+.sz-dashboard-v2 .szv2-period-label {
+  font-size: var(--szv2-text-sm);
+  color: var(--szv2-text-muted);
+  font-weight: 600;
+}
+.sz-dashboard-v2 .szv2-period-btn {
+  padding: 5px 12px;
+  border: 1px solid var(--szv2-border);
+  border-radius: var(--szv2-radius-pill);
+  background: var(--szv2-surface);
+  color: var(--szv2-text-soft);
+  font: inherit;
+  font-size: var(--szv2-text-sm);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--szv2-transition), border-color var(--szv2-transition), color var(--szv2-transition);
+}
+.sz-dashboard-v2 .szv2-period-btn:hover { border-color: var(--szv2-brand); color: var(--szv2-brand); }
+.sz-dashboard-v2 .szv2-period-btn--active {
+  background: var(--szv2-brand-light);
+  border-color: var(--szv2-brand);
+  color: var(--szv2-brand);
+}
+
+/* ── Highlight row (transportadora destaque) ──────────────────── */
+.sz-dashboard-v2 .szv2-highlight-row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--szv2-space-3);
+  margin-top: var(--szv2-space-2);
+  padding-bottom: var(--szv2-space-3);
+  border-bottom: 1px solid var(--szv2-divider);
+}
+.sz-dashboard-v2 .szv2-highlight-name {
+  font-size: var(--szv2-text-xl);
+  font-weight: 700;
+  color: var(--szv2-text);
+}
+.sz-dashboard-v2 .szv2-highlight-meta {
+  font-size: var(--szv2-text-sm);
+  color: var(--szv2-text-muted);
+}
+
+/* ── Card placeholder text ─────────────────────────────────────── */
+.sz-dashboard-v2 .szv2-card-placeholder {
+  font-family: var(--szv2-font-mono);
+  font-size: var(--szv2-text-xl);
+  color: var(--szv2-text-muted);
+  margin: var(--szv2-space-3) 0;
+}
+.sz-dashboard-v2 .szv2-card-placeholder small { font-size: var(--szv2-text-sm); font-family: var(--szv2-font-ui); }
+.sz-dashboard-v2 .szv2-card-sub {
+  font-size: var(--szv2-text-sm);
+  color: var(--szv2-text-muted);
+  margin: calc(-1 * var(--szv2-space-2)) 0 var(--szv2-space-2);
+}
+
+/* ── 3-col opcard grid ─────────────────────────────────────────── */
+.sz-dashboard-v2 .szv2-opcard-grid-3 { grid-template-columns: repeat(3, 1fr); }
+
+/* ── Region list with top margin ──────────────────────────────── */
+.sz-dashboard-v2 .szv2-region-list-mt { margin-top: var(--szv2-space-3); }
+
+/* ── Empty state helpers para listas geradas pelo JS (v425) ──── */
+.sz-dashboard-v2 .szv2-empty-inline {
+  color: var(--szv2-text-muted);
+  font-size: var(--szv2-text-sm);
+  padding: 8px 0;
+  margin: 0;
+}
+.sz-dashboard-v2 .szv2-empty-cell {
+  text-align: center;
+  color: var(--szv2-text-muted);
+  padding: 12px var(--szv2-space-4);
+  font-size: var(--szv2-text-sm);
+}
+
+/* ── Motoboy — ações operacionais (Fase 4) ──────────────────────── */
+.sz-dashboard-v2 .szv2-mb-actions-col { width: 130px; }
+.sz-dashboard-v2 .szv2-mb-actions {
+  display: flex;
+  gap: var(--szv2-space-2);
+  flex-wrap: wrap;
+  align-items: center;
+}
+.sz-dashboard-v2 .szv2-mb-actions .szv2-btn-sm { min-width: 70px; }
+.sz-dashboard-v2 .szv2-mb-resched-note {
+  font-size: var(--szv2-text-sm);
+  color: var(--szv2-text-muted);
+  margin: var(--szv2-space-3) 0 0;
+}
+
+/* ── Checkouts & Links (Fase 6) ─────────────────────────────── */
+.sz-dashboard-v2 .szv2-links-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: var(--szv2-space-4);
+}
+.sz-dashboard-v2 .szv2-link-card {
+  background: var(--szv2-surface);
+  border: 1px solid var(--szv2-border);
+  border-radius: var(--szv2-radius-lg);
+  padding: var(--szv2-space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--szv2-space-3);
+}
+.sz-dashboard-v2 .szv2-link-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--szv2-space-2);
+}
+/* szv2-link-card-meta: consolidado */
+.sz-dashboard-v2 .szv2-link-price {
+  font-size: var(--szv2-text-sm);
+  font-weight: 700;
+  color: var(--szv2-text);
+}
+.sz-dashboard-v2 .szv2-link-name {
+  font-size: var(--szv2-text-base);
+  font-weight: 700;
+  color: var(--szv2-text);
+  margin: 0;
+  line-height: 1.3;
+}
+.sz-dashboard-v2 .szv2-link-components {
+  font-size: var(--szv2-text-sm);
+  color: var(--szv2-text-muted);
+  margin: 0;
+}
+/* szv2-link-url-row: consolidado */
+
+.sz-dashboard-v2 .szv2-link-url-text:hover { color: var(--szv2-brand); text-decoration: underline; }
+.sz-dashboard-v2 .szv2-link-del-btn {
+  background: none;
+  border: none;
+  color: var(--szv2-text-faint);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: var(--szv2-radius-sm);
+  flex-shrink: 0;
+}
+/* szv2-link-del-btn:hover: consolidado */
+.sz-dashboard-v2 .szv2-link-card-foot {
+  display: flex;
+  flex-direction: column;
+  gap: var(--szv2-space-2);
+  padding-top: var(--szv2-space-3);
+  border-top: 1px solid var(--szv2-divider);
+}
+.sz-dashboard-v2 .szv2-link-toggle-label {
+  display: flex;
+  align-items: center;
+  gap: var(--szv2-space-2);
+  font-size: var(--szv2-text-sm);
+  color: var(--szv2-text-soft);
+  cursor: pointer;
+  user-select: none;
+}
+.sz-dashboard-v2 .szv2-link-comm-row {
+  display: flex;
+  align-items: center;
+  gap: var(--szv2-space-2);
+}
+.sz-dashboard-v2 .szv2-link-comm-row .szv2-label { font-size: var(--szv2-text-sm); white-space: nowrap; margin: 0; }
+.sz-dashboard-v2 .szv2-link-comm-input { width: 80px; height: 32px; }
+.sz-dashboard-v2 .szv2-link-info-label {
+  font-size: var(--szv2-text-sm);
+  color: var(--szv2-text-muted);
+}
+/* szv2-link-date: consolidado */
+
+/* ── Afiliados (Fase 7) ─────────────────────────────────────── */
+.sz-dashboard-v2 .szv2-aff-count-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: var(--szv2-radius-pill);
+  background: var(--szv2-danger);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  margin-left: 4px;
+}
+.sz-dashboard-v2 .szv2-aff-comm-row {
+  display: flex;
+  align-items: center;
+  gap: var(--szv2-space-2);
+}
+
+.sz-dashboard-v2 .szv2-aff-config-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: var(--szv2-space-4);
+  margin-top: var(--szv2-space-3);
+}
+/* szv2-aff-config-item: consolidado */
+
+/* szv2-aff-config-val: consolidado */
+.sz-dashboard-v2 .szv2-aff-links-list { display: flex; flex-direction: column; gap: var(--szv2-space-3); }
+
+.sz-dashboard-v2 .szv2-aff-link-row:last-child { border-bottom: 0; }
+/* szv2-aff-link-info: consolidado */
+
+
+/* ── Configurações (Fase 9) ──────────────────────────────────── */
+.sz-dashboard-v2 .szv2-settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--szv2-space-3);
+  max-width: 480px;
+  margin-top: var(--szv2-space-3);
+}
+.sz-dashboard-v2 .szv2-settings-btn { align-self: flex-start; }
+
+/* ── Suporte — tickets (Fase 9) ──────────────────────────────── */
+.sz-dashboard-v2 .szv2-ticket-msgs {
+  display: flex;
+  flex-direction: column;
+  gap: var(--szv2-space-3);
+  max-height: 420px;
+  overflow-y: auto;
+  padding: var(--szv2-space-3) 0;
+}
+.sz-dashboard-v2 .szv2-ticket-msg {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 80%;
+  padding: var(--szv2-space-3);
+  border-radius: var(--szv2-radius-md);
+}
+.sz-dashboard-v2 .szv2-ticket-msg-client {
+  align-self: flex-end;
+  background: var(--szv2-brand-light);
+  border: 1px solid var(--szv2-brand);
+}
+.sz-dashboard-v2 .szv2-ticket-msg-staff {
+  align-self: flex-start;
+  background: var(--szv2-surface-alt);
+  border: 1px solid var(--szv2-border);
+}
+.sz-dashboard-v2 .szv2-ticket-msg-author {
+  font-size: var(--szv2-text-xs);
+  font-weight: 700;
+  color: var(--szv2-text-muted);
+}
+.sz-dashboard-v2 .szv2-ticket-msg-text {
+  margin: 0;
+  font-size: var(--szv2-text-sm);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.sz-dashboard-v2 .szv2-ticket-msg-date {
+  font-size: var(--szv2-text-xs);
+  color: var(--szv2-text-faint);
+  align-self: flex-end;
+}
+.sz-dashboard-v2 .szv2-ticket-reply-row {
+  display: flex;
+  gap: var(--szv2-space-3);
+  align-items: flex-end;
+  padding-top: var(--szv2-space-3);
+  border-top: 1px solid var(--szv2-divider);
+  margin-top: var(--szv2-space-3);
+}
+.sz-dashboard-v2 .szv2-ticket-textarea {
+  flex: 1;
+  min-height: 72px;
+  resize: vertical;
+  font-family: var(--szv2-font-ui);
+  padding: var(--szv2-space-2) var(--szv2-space-3);
+}
+
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Saque COD V2 (v442)
+ * ─────────────────────────────────────────────────────────────────────────────*/
+.sz-dashboard-v2 .szv2-wd-summary-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--szv2-space-2) 0;
+  border-bottom: 1px solid var(--szv2-divider);
+  margin-bottom: var(--szv2-space-3);
+  font-size: var(--szv2-text-sm);
+}
+
+
+.sz-dashboard-v2 .szv2-field {
+  margin-bottom: var(--szv2-space-4);
+}
+.sz-dashboard-v2 .szv2-field-hint {
+  display: block;
+  font-size: var(--szv2-text-xs);
+  margin-top: var(--szv2-space-1);
+  color: var(--szv2-text-muted);
+}
+.sz-dashboard-v2 .szv2-wd-hint-err {
+  color: var(--szv2-danger, #dc2626);
+}
+
+.sz-dashboard-v2 .szv2-wd-confirm-label {
+  font-size: var(--szv2-text-sm);
+  font-weight: 700;
+  color: var(--szv2-text-muted);
+  margin: 0 0 var(--szv2-space-3);
+}
+.sz-dashboard-v2 .szv2-wd-confirm-block {
+  border: 1px solid var(--szv2-divider);
+  border-radius: var(--szv2-radius-md);
+  overflow: hidden;
+  margin-bottom: var(--szv2-space-4);
+}
+.sz-dashboard-v2 .szv2-wd-confirm-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: var(--szv2-space-3) var(--szv2-space-4);
+  font-size: var(--szv2-text-sm);
+  border-bottom: 1px solid var(--szv2-divider);
+}
+.sz-dashboard-v2 .szv2-wd-confirm-row:last-child { border-bottom: none; }
+.sz-dashboard-v2 .szv2-wd-confirm-row-total {
+  background: var(--szv2-neutral-bg, #f8fafc);
+  font-weight: 700;
+}
+.sz-dashboard-v2 .szv2-wd-confirm-row-total strong {
+  font-size: var(--szv2-text-base);
+  color: var(--szv2-text);
+}
+
+/* ── /Saque COD V2 ─────────────────────────────────────────────────────────── */
+
+/* ── v448: Responsividade ≤980px + overflow de tabelas ──────────────────────
+   Garante que a V2 seja utilizável em tablets e janelas estreitas.
+   Sem menu mobile novo. Sem impacto no fluxo PWA/OL/V1.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+/* Overflow seguro em TODAS as tabelas V2 — aplica em qualquer tamanho de tela */
+.sz-dashboard-v2 .szv2-table-wrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.sz-dashboard-v2 .szv2-table {
+  min-width: 560px; /* evita colapso de colunas em telas médias */
+}
+
+@media (max-width: 980px) {
+
+  /* Seção: padding lateral menor */
+  .sz-dashboard-v2 .sz-sec {
+    padding: var(--szv2-space-4) var(--szv2-space-3);
+  }
+
+  /* Section-head: empilha título e botão */
+  .sz-dashboard-v2 .szv2-section-head {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--szv2-space-2);
+  }
+
+  /* KPI grid: 1 coluna em mobile */
+  .sz-dashboard-v2 .szv2-kpi-grid,
+  .sz-dashboard-v2 .szv2-kpi-grid-3col {
+    grid-template-columns: 1fr;
+    gap: var(--szv2-space-3);
+  }
+
+  /* KPI card: compacto */
+  .sz-dashboard-v2 .szv2-kpi {
+    padding: var(--szv2-space-3) var(--szv2-space-4);
+  }
+
+  /* Cards: padding reduzido */
+  .sz-dashboard-v2 .szv2-card {
+    padding: var(--szv2-space-4);
+  }
+
+  /* Dash-row: empilha lado-a-lado → colunas */
+  .sz-dashboard-v2 .szv2-dash-row {
+    flex-direction: column;
+  }
+
+  /* Filter bar: empilha filtros verticalmente */
+  .sz-dashboard-v2 .szv2-filter-bar,
+  .sz-dashboard-v2 .szv2-filter-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--szv2-space-2);
+  }
+  .sz-dashboard-v2 .szv2-filter-bar input,
+  .sz-dashboard-v2 .szv2-filter-bar select,
+  .sz-dashboard-v2 .szv2-filter-bar .szv2-input,
+  .sz-dashboard-v2 .szv2-filter-bar .szv2-select {
+    width: 100%;
+    max-width: none;
+  }
+
+  /* Modais: largura total com margens mínimas */
+  .sz-dashboard-v2 .szv2-modal-overlay .szv2-modal {
+    width: calc(100vw - var(--szv2-space-6));
+    max-width: calc(100vw - var(--szv2-space-6));
+    margin: var(--szv2-space-4) auto;
+  }
+
+  /* Modal foot: botões empilhados */
+  .sz-dashboard-v2 .szv2-modal-foot {
+    flex-direction: column-reverse;
+    gap: var(--szv2-space-2);
+  }
+  .sz-dashboard-v2 .szv2-modal-foot .szv2-btn {
+    width: 100%;
+    justify-content: center;
+  }
+
+  /* Opcard grid: 2 colunas em mobile (já estava 3/4 no desktop) */
+  .sz-dashboard-v2 .szv2-opcard-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  /* Period bar: scroll horizontal se não couber */
+  .sz-dashboard-v2 .szv2-period-bar {
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    -webkit-overflow-scrolling: touch;
+    padding-bottom: var(--szv2-space-1);
+  }
+
+  /* Dashboard row empilhado */
+  .sz-dashboard-v2 .szv2-dash-row > .szv2-card {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+
+  /* Tabela: scroll lateral claro */
+  .sz-dashboard-v2 .szv2-table-wrap {
+    margin: 0 calc(-1 * var(--szv2-space-4));
+    padding: 0 var(--szv2-space-4);
+    width: calc(100% + var(--szv2-space-8));
+  }
+
+  /* Wallet confirm-block: colunas estreitas não esmagam */
+  .sz-dashboard-v2 .szv2-wd-confirm-row {
+    flex-direction: column;
+    gap: var(--szv2-space-1);
+    align-items: flex-start;
+  }
+
+}
+
+/* ── /v448 ──────────────────────────────────────────────────────────────── */
+
+/* ── v450: Visual Operacional — Frete, Motoboy, Expedição ───────────────────
+   Ajustes de apresentação. Sem !important. Sem alteração de lógica.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+/* ── Frete V2 ───────────────────────────────────────────────────────────── */
+.sz-dashboard-v2 .szv2-freight-row {
+  align-items: flex-start;
+}
+.sz-dashboard-v2 .szv2-freight-card {
+  flex: 1 1 calc(50% - var(--szv2-space-4));
+  min-width: 0;
+}
+.sz-dashboard-v2 .szv2-freight-note {
+  margin-top: var(--szv2-space-4);
+}
+.sz-dashboard-v2 .szv2-freight-edit-btn {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+/* Lista de transportadoras */
+.sz-dashboard-v2 .szv2-carrier-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--szv2-space-2);
+}
+.sz-dashboard-v2 .szv2-carrier-item {
+  display: flex;
+  align-items: center;
+  gap: var(--szv2-space-3);
+  padding: var(--szv2-space-3) var(--szv2-space-4);
+  border-radius: var(--szv2-radius-sm);
+  border: 1px solid var(--szv2-border);
+  background: var(--szv2-surface-alt);
+}
+.sz-dashboard-v2 .szv2-carrier-item--preferred {
+  border-color: var(--szv2-success-bg);
+  background: var(--szv2-success-bg);
+}
+.sz-dashboard-v2 .szv2-carrier-item--preferred .szv2-carrier-icon {
+  color: var(--szv2-success);
+}
+.sz-dashboard-v2 .szv2-carrier-item--blocked {
+  border-color: var(--szv2-neutral-bg);
+  background: var(--szv2-neutral-bg);
+  opacity: 0.8;
+}
+.sz-dashboard-v2 .szv2-carrier-item--blocked .szv2-carrier-icon {
+  color: var(--szv2-neutral);
+}
+.sz-dashboard-v2 .szv2-carrier-icon {
+  flex-shrink: 0;
+  display: inline-flex;
+}
+.sz-dashboard-v2 .szv2-carrier-label {
+  font-size: var(--szv2-text-md);
+  font-weight: 600;
+  color: var(--szv2-text-soft);
+  flex: 1 1 auto;
+}
+.sz-dashboard-v2 .szv2-carrier-meta {
+  font-size: var(--szv2-text-xs);
+  color: var(--szv2-text-muted);
+  white-space: nowrap;
+}
+
+/* ── Ações Motoboy/Expedição: agrupadas e sem quebra ────────────────────── */
+.sz-dashboard-v2 .szv2-mb-actions,
+.sz-dashboard-v2 .szv2-exp-actions {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: var(--szv2-space-1);
+  align-items: center;
+  justify-content: flex-end;
+}
+.sz-dashboard-v2 .szv2-mb-actions-col,
+.sz-dashboard-v2 .szv2-exp-actions-col {
+  width: 160px;
+  min-width: 160px;
+}
+
+/* Botões de ação pequenos: hierarquia clara */
+.sz-dashboard-v2 .szv2-btn-sm {
+  padding: 5px 10px;
+  font-size: var(--szv2-text-sm);
+  border-radius: var(--szv2-radius-sm);
+  font-weight: 600;
+  white-space: nowrap;
+  line-height: 1.4;
+  min-width: 0;
+}
+/* btn-primary: definido em senderzz-components-v2.css */
+.sz-dashboard-v2 .szv2-btn-secondary {
+  background: var(--szv2-surface);
+  color: var(--szv2-text-soft);
+  border: 1px solid var(--szv2-border);
+}
+.sz-dashboard-v2 .szv2-btn-secondary:hover {
+  background: var(--szv2-divider);
+  border-color: var(--szv2-border-strong);
+}
+.sz-dashboard-v2 .szv2-btn-danger {
+  background: var(--szv2-danger);
+  color: #fff;
+  border: 1px solid transparent;
+}
+.sz-dashboard-v2 .szv2-btn-danger:hover {
+  background: #b91c1c;
+  border-color: transparent;
+}
+
+/* Célula de endereço: trunca com reticências, mostra completo no title */
+.sz-dashboard-v2 .szv2-order-address {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--szv2-text-sm);
+  color: var(--szv2-text-muted);
+}
+
+/* Célula de transportadora na Expedição */
+.sz-dashboard-v2 .szv2-order-carrier {
+  font-size: var(--szv2-text-sm);
+  font-weight: 600;
+  color: var(--szv2-text-soft);
+  white-space: nowrap;
+}
+
+/* Rastreio: mono + botão de copiar inline */
+.sz-dashboard-v2 .szv2-order-tracking {
+  font-size: var(--szv2-text-sm);
+  font-family: var(--szv2-font-mono);
+  white-space: nowrap;
+}
+/* szv2-text-faint-val: duplicata removida */
+
+/* Tabela operacional: min-width maior para acomodar ações */
+.sz-dashboard-v2 #szv2-motoboy-table,
+.sz-dashboard-v2 #szv2-expedicao-table {
+  min-width: 720px;
+}
+
+/* ── Responsivo: operacional <980px ─────────────────────────────────────── */
+@media (max-width: 980px) {
+  .sz-dashboard-v2 .szv2-freight-row {
+    flex-direction: column;
+  }
+  .sz-dashboard-v2 .szv2-freight-card {
+    flex: 1 1 100%;
+  }
+  .sz-dashboard-v2 .szv2-mb-actions,
+  .sz-dashboard-v2 .szv2-exp-actions {
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+}
+
+/* ── /v450 ─────────────────────────────────────────────────────────────── */
+
+/* ── v451: Visual Fase 3 — Links, Afiliados, Carteira ───────────────────────
+   Polimento visual sem !important e sem alteração de lógica.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+/* ── Checkouts & Links ───────────────────────────────────────────────────── */
+
+/* Card de link: cabeçalho mais estruturado */
+.sz-dashboard-v2 .szv2-link-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--szv2-space-3);
+  margin-bottom: var(--szv2-space-2);
+}
+.sz-dashboard-v2 .szv2-link-card-meta {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-wrap: wrap;
+  flex-direction: column;
+  min-width: 0;
+}
+
+/* Nome da oferta: destaque */
+.sz-dashboard-v2 .szv2-link-name {
+  font-size: var(--szv2-text-lg);
+  font-weight: 700;
+  color: var(--szv2-text);
+  margin: 0 0 var(--szv2-space-1);
+  line-height: 1.3;
+}
+
+/* Componentes da oferta */
+.sz-dashboard-v2 .szv2-link-components {
+  font-size: var(--szv2-text-sm);
+  color: var(--szv2-text-muted);
+  margin: 0 0 var(--szv2-space-3);
+}
+
+/* Linha de URL: badge tipo + link + botão copiar */
+.sz-dashboard-v2 .szv2-link-urls {
+  display: flex;
+  flex-direction: column;
+  gap: var(--szv2-space-2);
+  margin-bottom: var(--szv2-space-4);
+}
+.sz-dashboard-v2 .szv2-link-url-row {
+  display: flex;
+  align-items: center;
+  gap: var(--szv2-space-2);
+  min-width: 0;
+}
+.sz-dashboard-v2 .szv2-link-tipo-badge {
+  flex-shrink: 0;
+  font-size: var(--szv2-text-xs);
+}
+.sz-dashboard-v2 .szv2-link-url-text {
+  font-size: var(--szv2-text-sm);
+  color: var(--szv2-text-muted);
+  text-decoration: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: var(--szv2-font-mono);
+}
+
+/* Footer do card: separação limpa */
+.sz-dashboard-v2 .szv2-link-card-foot {
+  border-top: 1px solid var(--szv2-divider);
+  padding-top: var(--szv2-space-3);
+  margin-top: var(--szv2-space-3);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--szv2-space-3);
+}
+
+/* Label informativo (comissão, visibilidade, data) */
+.sz-dashboard-v2 .szv2-link-info-label {
+  font-size: var(--szv2-text-xs);
+  color: var(--szv2-text-muted);
+  white-space: nowrap;
+}
+.sz-dashboard-v2 .szv2-link-date {
+  font-size: var(--szv2-text-xs);
+  color: var(--szv2-text-faint);
+  align-self: flex-end;
+  margin-left: auto;
+}
+
+/* Input de comissão: alinhamento */
+.sz-dashboard-v2 .szv2-link-comm-row {
+  display: flex;
+  align-items: center;
+  gap: var(--szv2-space-2);
+}
+
+/* Botão excluir: discreto por padrão */
+.sz-dashboard-v2 .szv2-link-del-btn {
+  font-size: var(--szv2-text-sm);
+  color: var(--szv2-text-faint);
+  background: none;
+  border: none;
+  padding: 4px 6px;
+  border-radius: var(--szv2-radius-sm);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: color 0.15s, background 0.15s;
+}
+.sz-dashboard-v2 .szv2-link-del-btn:hover {
+  color: var(--szv2-danger);
+  background: var(--szv2-danger-muted);
+}
+
+/* ── Afiliados ───────────────────────────────────────────────────────────── */
+
+/* Coluna de ações própria */
+.sz-dashboard-v2 .szv2-aff-actions-col {
+  width: 160px;
+  min-width: 160px;
+}
+.sz-dashboard-v2 .szv2-aff-actions {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: var(--szv2-space-1);
+  align-items: center;
+}
+
+/* Input + botão salvar comissão */
+.sz-dashboard-v2 .szv2-aff-comm-row {
+  display: flex;
+  align-items: center;
+  gap: var(--szv2-space-2);
+}
+.sz-dashboard-v2 .szv2-aff-comm-input {
+  width: 80px;
+  height: 32px;
+  font-size: var(--szv2-text-sm);
+}
+
+/* Grid de configurações read-only: 3 colunas compactas */
+.sz-dashboard-v2 .szv2-aff-config-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--szv2-space-4);
+  margin-top: var(--szv2-space-4);
+}
+.sz-dashboard-v2 .szv2-aff-config-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: var(--szv2-space-3) var(--szv2-space-4);
+  background: var(--szv2-surface-alt);
+  border: 1px solid var(--szv2-border);
+  border-radius: var(--szv2-radius-sm);
+}
+.sz-dashboard-v2 .szv2-aff-config-label {
+  font-size: var(--szv2-text-xs);
+  color: var(--szv2-text-muted);
+  font-weight: 500;
+}
+.sz-dashboard-v2 .szv2-aff-config-val {
+  font-size: var(--szv2-text-base);
+  font-weight: 700;
+  color: var(--szv2-text);
+}
+
+/* Badge de contagem na tab */
+.sz-dashboard-v2 .szv2-aff-count-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: var(--szv2-radius-pill);
+  background: var(--szv2-brand);
+  color: var(--szv2-on-brand);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+/* Links de afiliados: lista compacta */
+.sz-dashboard-v2 .szv2-aff-links-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--szv2-space-2);
+}
+.sz-dashboard-v2 .szv2-aff-link-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--szv2-space-3);
+  padding: var(--szv2-space-3) var(--szv2-space-4);
+  border-bottom: 1px solid var(--szv2-divider);
+  background: var(--szv2-surface-alt);
+  border: 1px solid var(--szv2-border);
+  border-radius: var(--szv2-radius-sm);
+}
+.sz-dashboard-v2 .szv2-aff-link-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.sz-dashboard-v2 .szv2-aff-link-name {
+  font-weight: 600;
+  font-size: var(--szv2-text-md);
+  color: var(--szv2-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Carteira ────────────────────────────────────────────────────────────── */
+
+/* Separador entre blocos da Carteira */
+.sz-dashboard-v2 #sec-wallet .szv2-card {
+  margin-bottom: var(--szv2-space-2);
+}
+
+/* Nota de rodapé da Carteira */
+.sz-dashboard-v2 .szv2-finance-note {
+  font-size: var(--szv2-text-sm);
+  color: var(--szv2-text-muted);
+  padding: var(--szv2-space-3) 0;
+}
+
+/* Tabela de saques: min-width seguro */
+.sz-dashboard-v2 #szv2-wd-history-card .szv2-table {
+  min-width: 600px;
+}
+
+/* Extrato: min-width */
+.sz-dashboard-v2 #sec-wallet .szv2-table {
+  min-width: 480px;
+}
+
+/* Resumo do modal saque: linha compacta */
+.sz-dashboard-v2 .szv2-wd-summary-row {
+  padding: var(--szv2-space-2) 0;
+  font-size: var(--szv2-text-sm);
+}
+.sz-dashboard-v2 .szv2-wd-summary-row strong {
+  font-weight: 700;
+  font-size: var(--szv2-text-md);
+  color: var(--szv2-text);
+}
+
+/* ── Responsivo <980px: v451 ─────────────────────────────────────────────── */
+@media (max-width: 980px) {
+  /* Links: stack URL rows */
+  .sz-dashboard-v2 .szv2-link-url-row {
+    flex-wrap: wrap;
+  }
+  .sz-dashboard-v2 .szv2-link-url-text {
+    white-space: normal;
+    word-break: break-all;
+    max-width: 100%;
+  }
+
+  /* Afiliados: config grid em 1 coluna */
+  .sz-dashboard-v2 .szv2-aff-config-grid {
+    grid-template-columns: 1fr;
+  }
+
+  /* Aff actions: wrap */
+  .sz-dashboard-v2 .szv2-aff-actions {
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+}
+
+/* ── /v451 ──────────────────────────────────────────────────────────────── */
+
+/* ── v452: Visual Fase 4 — Relatórios, Webhooks, Integrações ───────────────
+   Polimento visual. Sem !important. Sem alteração de lógica.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+/* ── Relatórios ────────────────────────────────────────────────────────────── */
+.sz-dashboard-v2 .szv2-report-total {
+  font-size: var(--szv2-text-sm);
+  color: var(--szv2-text-muted);
+}
+.sz-dashboard-v2 .szv2-report-note {
+  margin-top: var(--szv2-space-4);
+}
+/* Row com badge de status: mais espaço para o badge */
+.sz-dashboard-v2 .szv2-region-row--badge {
+  grid-template-columns: 140px 1fr auto;
+  align-items: center;
+}
+.sz-dashboard-v2 .szv2-region-row--badge .szv2-region-name {
+  overflow: visible;
+  white-space: normal;
+}
+
+/* ── Webhooks ────────────────────────────────────────────────────────────── */
+.sz-dashboard-v2 .szv2-wh-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--szv2-space-3);
+  margin-bottom: var(--szv2-space-4);
+}
+.sz-dashboard-v2 .szv2-wh-item {
+  padding: var(--szv2-space-4);
+  background: var(--szv2-surface-alt);
+  border: 1px solid var(--szv2-border);
+  border-radius: var(--szv2-radius-sm);
+}
+.sz-dashboard-v2 .szv2-wh-item-head {
+  display: flex;
+  align-items: center;
+  gap: var(--szv2-space-2);
+  margin-bottom: var(--szv2-space-2);
+}
+.sz-dashboard-v2 .szv2-wh-item-label {
+  font-size: var(--szv2-text-xs);
+  color: var(--szv2-text-muted);
+  font-weight: 500;
+}
+/* URL em bloco mono legível */
+.sz-dashboard-v2 .szv2-wh-endpoint-block {
+  background: var(--szv2-surface);
+  border: 1px solid var(--szv2-border);
+  border-radius: var(--szv2-radius-sm);
+  padding: var(--szv2-space-2) var(--szv2-space-3);
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.sz-dashboard-v2 .szv2-wh-url {
+  font-family: var(--szv2-font-mono);
+  font-size: var(--szv2-text-sm);
+  color: var(--szv2-text-soft);
+  white-space: nowrap;
+  word-break: keep-all;
+  background: none;
+  border: none;
+  padding: 0;
+}
+
+/* ── Integrações ─────────────────────────────────────────────────────────── */
+.sz-dashboard-v2 .szv2-integration-card {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--szv2-space-5);
+  padding: var(--szv2-space-6);
+}
+.sz-dashboard-v2 .szv2-integration-icon {
+  flex-shrink: 0;
+  width: 52px;
+  height: 52px;
+  border-radius: var(--szv2-radius-md);
+  background: var(--szv2-brand-light);
+  color: var(--szv2-brand);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.sz-dashboard-v2 .szv2-integration-body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.sz-dashboard-v2 .szv2-integration-title {
+  font-size: var(--szv2-text-lg);
+  font-weight: 700;
+  color: var(--szv2-text);
+  margin: 0 0 var(--szv2-space-2);
+}
+.sz-dashboard-v2 .szv2-integration-text {
+  font-size: var(--szv2-text-md);
+  color: var(--szv2-text-muted);
+  margin: 0 0 var(--szv2-space-4);
+  line-height: 1.5;
+}
+.sz-dashboard-v2 .szv2-classic-cta-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--szv2-space-2);
+}
+
+/* CTA inline para painel clássico */
+.sz-dashboard-v2 .szv2-classic-cta {
+  margin-top: var(--szv2-space-3);
+  font-size: var(--szv2-text-sm);
+  color: var(--szv2-text-muted);
+}
+
+/* ── Responsivo <980px: v452 ─────────────────────────────────────────────── */
+@media (max-width: 980px) {
+  .sz-dashboard-v2 .szv2-integration-card {
+    flex-direction: column;
+    gap: var(--szv2-space-4);
+  }
+  .sz-dashboard-v2 .szv2-wh-endpoint-block {
+    max-width: 100%;
+  }
+  .sz-dashboard-v2 .szv2-region-row--badge {
+    grid-template-columns: auto 1fr auto;
+  }
+}
+
+/* ── /v452 ──────────────────────────────────────────────────────────────── */
+
+/* ── v453: Seção Produtos (unificada funcional) ────────────────────────────
+   Abas de produto, KPIs 5-col, sub-abas e listas. Sem !important.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+/* Abas de produto (topo) */
+.sz-dashboard-v2 .szv2-prod-tabs {
+  display: flex;
+  gap: var(--szv2-space-1);
+  flex-wrap: wrap;
+  border-bottom: 1px solid var(--szv2-border);
+  margin-bottom: var(--szv2-space-5);
+  padding-bottom: 0;
+}
+.sz-dashboard-v2 .szv2-prod-tab {
+  padding: 10px var(--szv2-space-4);
+  font-size: var(--szv2-text-base);
+  font-weight: 600;
+  color: var(--szv2-text-muted);
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color var(--szv2-transition), border-color var(--szv2-transition);
+}
+.sz-dashboard-v2 .szv2-prod-tab:hover {
+  color: var(--szv2-text);
+}
+.sz-dashboard-v2 .szv2-prod-tab--active {
+  color: var(--szv2-brand);
+  border-bottom-color: var(--szv2-brand);
+}
+
+/* Painel por produto */
+.sz-dashboard-v2 .szv2-prod-panel--hidden {
+  display: none;
+}
+
+/* Cabeçalho do produto */
+.sz-dashboard-v2 .szv2-prod-head-card {
+  display: flex;
+  align-items: center;
+  gap: var(--szv2-space-4);
+  margin-bottom: var(--szv2-space-4);
+}
+.sz-dashboard-v2 .szv2-prod-thumb {
+  width: 64px;
+  height: 64px;
+  border-radius: var(--szv2-radius-md);
+  object-fit: cover;
+  border: 1px solid var(--szv2-border);
+  flex-shrink: 0;
+}
+.sz-dashboard-v2 .szv2-prod-thumb--ph {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--szv2-surface-alt);
+  color: var(--szv2-text-faint);
+}
+.sz-dashboard-v2 .szv2-prod-head-meta h2 {
+  font-size: var(--szv2-text-xl);
+  font-weight: 700;
+  color: var(--szv2-text);
+  margin: 0 0 2px;
+}
+.sz-dashboard-v2 .szv2-prod-head-meta p {
+  font-size: var(--szv2-text-sm);
+  color: var(--szv2-text-muted);
+  margin: 0 0 6px;
+}
+.sz-dashboard-v2 .szv2-prod-sku {
+  display: inline-block;
+  font-size: var(--szv2-text-xs);
+  font-family: var(--szv2-font-mono);
+  color: var(--szv2-text-muted);
+  background: var(--szv2-surface-alt);
+  border: 1px solid var(--szv2-border);
+  border-radius: var(--szv2-radius-sm);
+  padding: 2px 8px;
+}
+
+/* Grade de KPIs 5 colunas (produto) */
+.sz-dashboard-v2 .szv2-kpi-grid-5 {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: var(--szv2-space-5);
+  margin-bottom: var(--szv2-space-5);
+}
+
+/* Sub-abas */
+.sz-dashboard-v2 .szv2-prod-subtabs {
+  display: flex;
+  gap: var(--szv2-space-1);
+  border-bottom: 1px solid var(--szv2-border);
+  margin-bottom: var(--szv2-space-4);
+  width: 100%;
+  box-sizing: border-box;
+}
+.sz-dashboard-v2 .szv2-prod-subtab {
+  padding: 9px var(--szv2-space-4);
+  font-size: var(--szv2-text-base);
+  font-weight: 600;
+  color: var(--szv2-text-muted);
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  cursor: pointer;
+  transition: color var(--szv2-transition), border-color var(--szv2-transition);
+}
+.sz-dashboard-v2 .szv2-prod-subtab:hover {
+  color: var(--szv2-text);
+}
+.sz-dashboard-v2 .szv2-prod-subtab--active {
+  color: var(--szv2-brand);
+  border-bottom-color: var(--szv2-brand);
+}
+.sz-dashboard-v2 .szv2-prod-sub--hidden {
+  display: none;
+}
+
+/* Linha de envio */
+.sz-dashboard-v2 .szv2-ship-row {
+  display: flex;
+  align-items: center;
+  gap: var(--szv2-space-3);
+  padding: var(--szv2-space-3) 0;
+  border-bottom: 1px solid var(--szv2-divider);
+}
+.sz-dashboard-v2 .szv2-ship-row:last-child {
+  border-bottom: none;
+}
+.sz-dashboard-v2 .szv2-ship-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.sz-dashboard-v2 .szv2-ship-title {
+  font-size: var(--szv2-text-md);
+  font-weight: 600;
+  color: var(--szv2-text);
+}
+.sz-dashboard-v2 .szv2-ship-meta {
+  font-size: var(--szv2-text-sm);
+  color: var(--szv2-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sz-dashboard-v2 .szv2-ship-qty {
+  font-size: var(--szv2-text-md);
+  font-weight: 700;
+  color: var(--szv2-brand);
+  white-space: nowrap;
+}
+
+.sz-dashboard-v2 .szv2-code-mono {
+  font-family: var(--szv2-font-mono);
+  font-size: var(--szv2-text-xs);
+  color: var(--szv2-text-muted);
+}
+
+/* Responsivo <980px */
+@media (max-width: 980px) {
+  .sz-dashboard-v2 .szv2-kpi-grid-5 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .sz-dashboard-v2 .szv2-prod-head-card {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}
+
+/* ── /v453 ─────────────────────────────────────────────────────────────── */
+
+/* ── v454: Checkouts dentro de Produtos ────────────────────────────────────
+   Link cards com Expedição/Motoboy, comissão e afiliado.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+/* Grid de link cards */
+.sz-dashboard-v2 .szv2-lk-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--szv2-space-4);
+}
+
+/* Card individual */
+.sz-dashboard-v2 .szv2-lk-card {
+  background: var(--szv2-surface);
+  border: 1px solid var(--szv2-border);
+  border-radius: var(--szv2-radius-lg);
+  padding: var(--szv2-space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--szv2-space-3);
+  position: relative;
+}
+
+/* Topo do card */
+.sz-dashboard-v2 .szv2-lk-card-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--szv2-space-2);
+}
+.sz-dashboard-v2 .szv2-lk-price {
+  font-size: var(--szv2-text-xl);
+  font-weight: 700;
+  color: var(--szv2-text);
+  font-variant-numeric: tabular-nums;
+}
+.sz-dashboard-v2 .szv2-lk-name {
+  font-size: var(--szv2-text-lg);
+  font-weight: 700;
+  color: var(--szv2-text);
+}
+.sz-dashboard-v2 .szv2-lk-comps {
+  font-size: var(--szv2-text-sm);
+  color: var(--szv2-text-muted);
+}
+
+/* Linha de URL */
+.sz-dashboard-v2 .szv2-lk-url-row {
+  display: flex;
+  align-items: center;
+  gap: var(--szv2-space-2);
+  padding: var(--szv2-space-2) 0;
+  border-top: 1px solid var(--szv2-divider);
+}
+.sz-dashboard-v2 .szv2-lk-tipo {
+  flex-shrink: 0;
+  font-size: 10px;
+  padding: 2px 7px;
+}
+.sz-dashboard-v2 .szv2-lk-url {
+  flex: 1 1 auto;
+  font-size: var(--szv2-text-xs);
+  font-family: var(--szv2-font-mono);
+  color: var(--szv2-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Rodapé do card */
+.sz-dashboard-v2 .szv2-lk-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--szv2-space-3);
+  padding-top: var(--szv2-space-3);
+  border-top: 1px solid var(--szv2-divider);
+}
+.sz-dashboard-v2 .szv2-lk-date {
+  margin-left: auto;
+  font-size: var(--szv2-text-xs);
+  color: var(--szv2-text-faint);
+}
+.sz-dashboard-v2 .szv2-lk-aff-toggle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: var(--szv2-text-sm);
+  color: var(--szv2-text-muted);
+  cursor: pointer;
+}
+.sz-dashboard-v2 .szv2-lk-comm-row {
+  display: flex;
+  align-items: center;
+  gap: var(--szv2-space-2);
+}
+.sz-dashboard-v2 .szv2-lk-comm-label {
+  font-size: var(--szv2-text-sm);
+  color: var(--szv2-text-muted);
+  white-space: nowrap;
+}
+.sz-dashboard-v2 .szv2-lk-comm-input {
+  width: 72px;
+  padding: 4px 8px;
+  font-size: var(--szv2-text-sm);
+  border: 1px solid var(--szv2-border);
+  border-radius: var(--szv2-radius-sm);
+  background: var(--szv2-surface);
+}
+.sz-dashboard-v2 .szv2-lk-comm-pct {
+  font-size: var(--szv2-text-sm);
+  color: var(--szv2-text-muted);
+}
+.sz-dashboard-v2 .szv2-lk-del-btn {
+  width: 24px;
+  height: 24px;
+  border-radius: var(--szv2-radius-sm);
+  border: none;
+  background: none;
+  color: var(--szv2-text-faint);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: background 0.12s, color 0.12s;
+}
+.sz-dashboard-v2 .szv2-lk-del-btn:hover {
+  background: var(--szv2-danger-muted);
+  color: var(--szv2-danger);
+}
+
+/* Badge de count nas sub-abas */
+.sz-dashboard-v2 .szv2-prod-subtab-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: var(--szv2-radius-pill);
+  background: var(--szv2-brand-muted);
+  color: var(--szv2-brand);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  margin-left: 4px;
+}
+
+/* Modal overlay para tela inteira */
+.sz-dashboard-v2 .szv2-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+/* Responsivo */
+@media (max-width: 980px) {
+  .sz-dashboard-v2 .szv2-lk-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ── /v454 ─────────────────────────────────────────────────────────────── */
+
+/* ── v455: Modal detalhes, reagendamento, info-grid, ticket ──────────────────── */
+
+.sz-dashboard-v2 .szv2-detail-grid { display: flex; flex-direction: column; gap: 1px; }
+.sz-dashboard-v2 .szv2-detail-row { display: flex; gap: var(--szv2-space-4); padding: 10px 0; border-bottom: 1px solid var(--szv2-divider); }
+.sz-dashboard-v2 .szv2-detail-row:last-child { border-bottom: none; }
+.sz-dashboard-v2 .szv2-detail-label { width: 110px; flex-shrink: 0; font-size: var(--szv2-text-sm); color: var(--szv2-text-muted); font-weight: 500; }
+.sz-dashboard-v2 .szv2-detail-val { flex: 1; font-size: var(--szv2-text-sm); color: var(--szv2-text); word-break: break-word; }
+
+/* Reagendamento: 3 botões de dias */
+.sz-dashboard-v2 .szv2-resched-days { display: flex; gap: var(--szv2-space-3); flex-direction: column; }
+.sz-dashboard-v2 .szv2-resched-day-btn {
+    padding: 16px 20px; font-size: var(--szv2-text-lg); font-weight: 600;
+    background: var(--szv2-surface); border: 2px solid var(--szv2-border);
+    border-radius: var(--szv2-radius-md); cursor: pointer; text-align: left;
+    transition: border-color 0.12s, background 0.12s, color 0.12s;
+    color: var(--szv2-text);
+}
+.sz-dashboard-v2 .szv2-resched-day-btn:hover { border-color: var(--szv2-brand); color: var(--szv2-brand); }
+.sz-dashboard-v2 .szv2-resched-day-btn--selected {
+    border-color: var(--szv2-brand); background: var(--szv2-brand-muted);
+    color: var(--szv2-brand);
+}
+
+/* Info grid (configurações) */
+.sz-dashboard-v2 .szv2-info-grid { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: var(--szv2-space-3); }
+.sz-dashboard-v2 .szv2-info-cell { background: var(--szv2-surface-alt); border: 1px solid var(--szv2-border); border-radius: var(--szv2-radius-md); padding: var(--szv2-space-3) var(--szv2-space-4); }
+.sz-dashboard-v2 .szv2-info-label { font-size: var(--szv2-text-xs); color: var(--szv2-text-muted); text-transform: uppercase; letter-spacing: .04em; margin-bottom: 4px; }
+.sz-dashboard-v2 .szv2-info-value { font-size: var(--szv2-text-md); font-weight: 600; color: var(--szv2-text); }
+
+/* icon btn (olho) */
+.sz-dashboard-v2 .szv2-icon-btn {
+    width: 30px; height: 30px; border-radius: var(--szv2-radius-sm);
+    border: 1px solid var(--szv2-border); background: var(--szv2-surface);
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer; color: var(--szv2-text-muted); transition: color .12s, border-color .12s;
+}
+.sz-dashboard-v2 .szv2-icon-btn:hover { color: var(--szv2-brand); border-color: var(--szv2-brand); }
+
+/* Suporte: mensagens */
+.sz-dashboard-v2 .szv2-ticket-msgs {
+    max-height: 380px; overflow-y: auto; padding: var(--szv2-space-3);
+    background: var(--szv2-surface-alt); border-radius: var(--szv2-radius-md);
+    border: 1px solid var(--szv2-border);
+}
+
+/* Code pre (webhooks) */
+.sz-dashboard-v2 .szv2-code-pre {
+    background: #0f172a; color: #e2e8f0; font-family: var(--szv2-font-mono);
+    font-size: 12px; line-height: 1.6; padding: var(--szv2-space-4);
+    border-radius: var(--szv2-radius-md); overflow-x: auto;
+    white-space: pre; max-height: 260px; overflow-y: auto;
+}
+
+/* wh-url-link */
+.sz-dashboard-v2 .szv2-wh-url-link {
+    color: var(--szv2-brand); text-decoration: none; font-size: var(--szv2-text-sm);
+    font-family: var(--szv2-font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* Dash row (2 cols) */
+/* szv2-dash-row: consolidado acima */
+
+/* Input group */
+.sz-dashboard-v2 .szv2-input-group { display: flex; flex-direction: column; gap: 6px; margin-bottom: var(--szv2-space-3); }
+.sz-dashboard-v2 .szv2-label { font-size: var(--szv2-text-sm); font-weight: 600; color: var(--szv2-text-soft); }
+
+@media (max-width: 980px) {
+    .sz-dashboard-v2 .szv2-info-grid { grid-template-columns: repeat(2, minmax(0,1fr)); }
+    .sz-dashboard-v2 .szv2-dash-row { grid-template-columns: 1fr; }
+}
+/* ── /v455 ─────────────────────────────────────────────────────────────── */
+
+/* ── v456: Frete checkboxes, seletor de produto, toggle, misc ───────────────── */
+
+/* Freight carrier grid */
+.sz-dashboard-v2 .szv2-fr-carrier-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0,1fr));
+    gap: var(--szv2-space-3);
+}
+.sz-dashboard-v2 .szv2-fr-carrier-card {
+    background: var(--szv2-surface-alt);
+    border: 1px solid var(--szv2-border);
+    border-radius: var(--szv2-radius-md);
+    padding: var(--szv2-space-3) var(--szv2-space-4);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+.sz-dashboard-v2 .szv2-fr-carrier-name {
+    font-size: var(--szv2-text-md);
+    font-weight: 700;
+    color: var(--szv2-text);
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--szv2-border);
+    margin-bottom: 2px;
+}
+.sz-dashboard-v2 .szv2-fr-method-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    font-size: var(--szv2-text-sm);
+    color: var(--szv2-text-soft);
+}
+.sz-dashboard-v2 .szv2-fr-method-label input[type="checkbox"] { cursor: pointer; accent-color: var(--szv2-brand); }
+.sz-dashboard-v2 .szv2-fr-cheapest-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: var(--szv2-text-sm);
+    color: var(--szv2-text-muted);
+    padding: 8px 12px;
+    border: 1px solid var(--szv2-border);
+    border-radius: var(--szv2-radius-pill);
+    cursor: pointer;
+    margin-bottom: var(--szv2-space-3);
+}
+.sz-dashboard-v2 .szv2-fr-cheapest-toggle input { accent-color: var(--szv2-brand); }
+
+/* Produto seletor no modal checkout */
+.sz-dashboard-v2 .szv2-prod-select-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 200px;
+    overflow-y: auto;
+    padding: var(--szv2-space-2) 0;
+}
+.sz-dashboard-v2 .szv2-prod-select-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    padding: 6px 8px;
+    border-radius: var(--szv2-radius-sm);
+    transition: background .1s;
+}
+.sz-dashboard-v2 .szv2-prod-select-item:hover { background: var(--szv2-surface-alt); }
+.sz-dashboard-v2 .szv2-prod-select-item input[type="checkbox"] { accent-color: var(--szv2-brand); flex-shrink:0; }
+.sz-dashboard-v2 .szv2-prod-select-name { flex: 1; font-size: var(--szv2-text-sm); font-weight: 600; color: var(--szv2-text); }
+.sz-dashboard-v2 .szv2-prod-select-qty { font-size: var(--szv2-text-sm); color: var(--szv2-text-muted); display: flex; align-items: center; gap: 4px; }
+
+/* Toggle switch (notificações) */
+.sz-dashboard-v2 .szv2-toggle-lbl { position: relative; display: inline-block; width: 40px; height: 22px; flex-shrink: 0; }
+.sz-dashboard-v2 .szv2-toggle-lbl input { opacity: 0; width: 0; height: 0; position: absolute; }
+.sz-dashboard-v2 .szv2-toggle-slider {
+    position: absolute; inset: 0;
+    background: var(--szv2-border);
+    border-radius: 22px;
+    cursor: pointer;
+    transition: background .15s;
+}
+.sz-dashboard-v2 .szv2-toggle-slider::before {
+    content: '';
+    position: absolute;
+    width: 16px; height: 16px;
+    left: 3px; top: 3px;
+    background: #fff;
+    border-radius: 50%;
+    transition: transform .15s;
+    box-shadow: 0 1px 3px rgba(0,0,0,.18);
+}
+.sz-dashboard-v2 .szv2-toggle-lbl input:checked + .szv2-toggle-slider { background: var(--szv2-brand); }
+.sz-dashboard-v2 .szv2-toggle-lbl input:checked + .szv2-toggle-slider::before { transform: translateX(18px); }
+
+/* Badge count genérico */
+.sz-dashboard-v2 .szv2-badge { display:inline-flex; align-items:center; justify-content:center; padding:2px 8px; border-radius:var(--szv2-radius-pill); font-size:var(--szv2-text-xs); font-weight:700; line-height:1.4; }
+.sz-dashboard-v2 .szv2-badge-neutral { background:var(--szv2-surface-alt); color:var(--szv2-text-muted); border:1px solid var(--szv2-border); }
+.sz-dashboard-v2 .szv2-badge-success { background:#dcfce7; color:#16a34a; }
+.sz-dashboard-v2 .szv2-badge-warning { background:#fef9c3; color:#a16207; }
+.sz-dashboard-v2 .szv2-badge-brand   { background:var(--szv2-brand-muted); color:var(--szv2-brand); }
+.sz-dashboard-v2 .szv2-badge-info    { background:#dbeafe; color:#1d4ed8; }
+.sz-dashboard-v2 .szv2-badge-danger  { background:var(--szv2-danger-muted); color:var(--szv2-danger); }
+
+@media (max-width:980px) {
+    .sz-dashboard-v2 .szv2-fr-carrier-grid { grid-template-columns: repeat(2, minmax(0,1fr)); }
+}
+
+/* ── /v456 ─────────────────────────────────────────────────────────────── */
+
+/* ── v457: page-actions, report bars, input-sm, var-row ─────────────────────── */
+
+/* Page-actions bar (substituiu section-head sem título) */
+.sz-dashboard-v2 .szv2-page-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: var(--szv2-space-3);
+    margin-bottom: var(--szv2-space-4);
+}
+
+/* Input small */
+.sz-dashboard-v2 .szv2-input-sm {
+    height: 34px;
+    padding: 0 10px;
+    font-size: var(--szv2-text-sm);
+}
+
+/* Report filter bar */
+.sz-dashboard-v2 .szv2-report-filter-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: var(--szv2-space-3);
+    padding: var(--szv2-space-3) var(--szv2-space-4);
+    margin-bottom: var(--szv2-space-4);
+}
+
+/* Report status bars */
+.sz-dashboard-v2 .szv2-report-status-row {
+    display: flex;
+    align-items: center;
+    gap: var(--szv2-space-3);
+    padding: 8px 0;
+    border-bottom: 1px solid var(--szv2-divider);
+}
+.sz-dashboard-v2 .szv2-report-status-row:last-child { border-bottom: none; }
+.sz-dashboard-v2 .szv2-report-status-badge { flex-shrink: 0; min-width: 90px; justify-content: center; }
+.sz-dashboard-v2 .szv2-report-region { flex-shrink: 0; min-width: 120px; font-size: var(--szv2-text-sm); font-weight: 500; color: var(--szv2-text); }
+.sz-dashboard-v2 .szv2-report-bar-track { flex: 1; height: 8px; background: var(--szv2-surface-alt); border-radius: 4px; overflow: hidden; }
+.sz-dashboard-v2 .szv2-report-bar { height: 100%; border-radius: 4px; transition: width .3s; }
+.sz-dashboard-v2 .szv2-report-bar--success { background: var(--szv2-brand); }
+.sz-dashboard-v2 .szv2-report-bar--info { background: #3b82f6; }
+.sz-dashboard-v2 .szv2-report-bar--danger { background: #ef4444; }
+.sz-dashboard-v2 .szv2-report-bar--warning { background: #f59e0b; }
+.sz-dashboard-v2 .szv2-report-bar--neutral { background: #94a3b8; }
+.sz-dashboard-v2 .szv2-report-bar--brand { background: var(--szv2-brand); }
+.sz-dashboard-v2 .szv2-report-count { flex-shrink: 0; min-width: 80px; text-align: right; font-size: var(--szv2-text-sm); color: var(--szv2-text-muted); }
+
+/* KPI danger variant */
+.sz-dashboard-v2 .szv2-kpi-danger { color: var(--szv2-danger); }
+
+/* Variation row no modal */
+.sz-dashboard-v2 .szv2-np-var-row {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+}
+
+/* section-head sem título: manter apenas action buttons lado a lado com topbar implícito */
+.sz-dashboard-v2 .szv2-section-head:not(:has(h1)):not(:has(h2)) {
+    justify-content: flex-end;
+}
+
+/* ── /v457 ─────────────────────────────────────────────────────────────── */
+
+/* ── v458: Card spacing, prod-tabs-row, dash-top-tabs ─────────────────────────
+   PADRONIZAÇÃO: espaçamento consistente entre cards em todas as telas.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+/* Cards dentro de seções: gap padrão via flex column */
+.sz-dashboard-v2 .sz-sec.szv2-active {
+    display: flex;
+    flex-direction: column;
+    gap: var(--szv2-space-4);
+    min-height: 200px;
+}
+/* Painéis dentro de szv2-active também ganham gap */
+.sz-dashboard-v2 .szv2-conn-panel:not(.szv2-prod-sub--hidden),
+.sz-dashboard-v2 .szv2-dash-panel,
+.sz-dashboard-v2 #szv2-dash-top-visao,
+.sz-dashboard-v2 #szv2-dash-top-relatorios {
+    display: flex;
+    flex-direction: column;
+    gap: var(--szv2-space-4);
+    width: 100%;
+    min-height: 80px;
+}
+/* Painel COD/EXP que já tinha margin-bottom nos cards: zeramos o antigo */
+.sz-dashboard-v2 .szv2-dash-panel > .szv2-card { margin-bottom: 0; }
+
+/* Linha de abas + botão Adicionar */
+.sz-dashboard-v2 .szv2-prod-tabs-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    border-bottom: 1px solid var(--szv2-border);
+    margin-bottom: var(--szv2-space-4);
+    gap: var(--szv2-space-3);
+}
+.sz-dashboard-v2 .szv2-prod-tabs-row .szv2-prod-tabs {
+    flex: 1;
+    border-bottom: none;
+    margin-bottom: 0;
+}
+
+/* Dashboard + Relatórios top tabs */
+.sz-dashboard-v2 .szv2-dash-top-tabs {
+    display: flex;
+    gap: 0;
+    border-bottom: 1px solid var(--szv2-border);
+    margin-bottom: var(--szv2-space-4);
+    flex-shrink: 0;
+}
+.sz-dashboard-v2 .szv2-dash-top-tab {
+    padding: 10px 20px;
+    font-size: var(--szv2-text-md);
+    font-weight: 600;
+    color: var(--szv2-text-muted);
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+    cursor: pointer;
+    transition: color .12s, border-color .12s;
+}
+.sz-dashboard-v2 .szv2-dash-top-tab:hover { color: var(--szv2-text); }
+.sz-dashboard-v2 .szv2-dash-top-tab--active { color: var(--szv2-brand); border-bottom-color: var(--szv2-brand); }
+
+/* ── /v458 ─────────────────────────────────────────────────────────────── */
+
+
+
+
+/* v459c: Force full-width cards inside conn-panels and freight section */
+.sz-dashboard-v2 .szv2-conn-panel > .szv2-card,
+.sz-dashboard-v2 .szv2-conn-panel > .szv2-dash-row {
+  width: 100%;
+}
+
+/* v459e: Sidebar footer (tema/clássica/sair) */
+.sz-dashboard-v2 .szv2-sidebar-foot {
+    padding: var(--szv2-space-2) var(--szv2-space-2) var(--szv2-space-3);
+    border-top: 1px solid var(--szv2-divider);
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+.sz-dashboard-v2 .szv2-sidebar-foot-btn {
+    display: flex;
+    align-items: center;
+    gap: var(--szv2-space-3);
+    padding: 8px 10px;
+    border-radius: var(--szv2-radius-md);
+    color: var(--szv2-text-muted);
+    font-size: var(--szv2-text-md);
+    font-weight: 500;
+    background: none;
+    border: none;
+    cursor: pointer;
+    text-decoration: none;
+    width: 100%;
+    transition: background 0.12s, color 0.12s;
+}
+.sz-dashboard-v2 .szv2-sidebar-foot-btn:hover {
+    background: var(--szv2-surface-alt);
+    color: var(--szv2-text);
+}
+.sz-dashboard-v2 .szv2-sidebar-foot-btn svg {
+    width: 18px; height: 18px; fill: currentColor; flex-shrink: 0;
+}
+.sz-dashboard-v2[data-sidebar="collapsed"] .szv2-sidebar-foot-btn .szv2-ni-label {
+    display: none;
+}
+
+/* v459f: Notification bell + panel */
+.sz-dashboard-v2 .szv2-notif-wrap {
+    position: relative;
+}
+.sz-dashboard-v2 .szv2-notif-badge {
+    position: absolute;
+    top: 0; right: 0;
+    background: var(--szv2-danger);
+    color: #fff;
+    font-size: 10px;
+    font-weight: 700;
+    border-radius: 99px;
+    min-width: 16px; height: 16px;
+    display: flex; align-items: center; justify-content: center;
+    padding: 0 3px;
+    pointer-events: none;
+}
+.sz-dashboard-v2 .szv2-notif-panel {
+    position: absolute;
+    top: calc(100% + 8px);
+    right: 0;
+    width: 320px;
+    background: var(--szv2-surface);
+    border: 1px solid var(--szv2-border);
+    border-radius: var(--szv2-radius-lg);
+    box-shadow: 0 8px 24px rgba(0,0,0,.12);
+    z-index: calc(var(--szv2-z-topbar) + 1);
+    overflow: hidden;
+}
+.sz-dashboard-v2 .szv2-notif-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 14px 8px;
+    font-size: var(--szv2-text-sm);
+    font-weight: 700;
+    border-bottom: 1px solid var(--szv2-divider);
+}
+.sz-dashboard-v2 .szv2-notif-list {
+    max-height: 320px;
+    overflow-y: auto;
+}
+.sz-dashboard-v2 .szv2-notif-empty {
+    padding: 24px;
+    text-align: center;
+    font-size: var(--szv2-text-sm);
+    color: var(--szv2-text-muted);
+}
+.sz-dashboard-v2 .szv2-notif-item {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--szv2-divider);
+    font-size: var(--szv2-text-sm);
+    cursor: pointer;
+    transition: background 0.1s;
+}
+.sz-dashboard-v2 .szv2-notif-item:hover { background: var(--szv2-surface-alt); }
+.sz-dashboard-v2 .szv2-notif-item.szv2-notif-unread { background: var(--szv2-brand-muted); }
+.sz-dashboard-v2 .szv2-notif-item-title { font-weight: 600; margin-bottom: 2px; }
+.sz-dashboard-v2 .szv2-notif-item-meta { color: var(--szv2-text-muted); font-size: 11px; }
+
+/* v459f: Sidebar saldo display */
+.sz-dashboard-v2 .szv2-sidebar-saldo {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 6px;
+    padding: 6px 10px;
+    background: var(--szv2-surface-alt);
+    border-radius: var(--szv2-radius-md);
+    font-size: var(--szv2-text-sm);
+}
+.sz-dashboard-v2 .szv2-sidebar-saldo-label { color: var(--szv2-text-muted); }
+.sz-dashboard-v2 .szv2-sidebar-saldo-value { font-weight: 700; color: var(--szv2-brand); }
+
+/* v459g: Custom confirm dialog */
+.szv2-confirm-overlay {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    width: 100vw; height: 100vh;
+    background: rgba(0,0,0,.45);
+    z-index: 99999;
+    display: flex; align-items: center; justify-content: center;
+}
+.szv2-confirm-box {
+    background: #fff;
+    border-radius: 12px;
+    padding: 32px 28px;
+    max-width: 380px; width: 90%;
+    box-shadow: 0 20px 60px rgba(0,0,0,.2);
+    text-align: center;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+.szv2-confirm-icon {
+    width: 48px; height: 48px;
+    border-radius: 50%;
+    background: rgba(234,88,12,.12);
+    display: flex; align-items: center; justify-content: center;
+    margin: 0 auto 16px;
+}
+.szv2-confirm-icon svg { width: 24px; height: 24px; fill: #ea580c; }
+.szv2-confirm-title {
+    font-size: 17px; font-weight: 700;
+    color: #111; margin-bottom: 8px;
+}
+.szv2-confirm-msg {
+    font-size: 13px; color: #6b7280;
+    margin-bottom: 24px; line-height: 1.5;
+}
+.szv2-confirm-actions {
+    display: flex; gap: 10px; justify-content: center;
+}
+.szv2-confirm-actions .szv2-btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    height: 40px; padding: 0 20px; border-radius: 8px;
+    font-size: 14px; font-weight: 600; cursor: pointer;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    border-width: 1px; border-style: solid; transition: background .15s, border-color .15s;
+}
+.szv2-confirm-actions .szv2-btn-secondary {
+    background: #f3f4f6; color: #374151; border-color: #d1d5db;
+}
+.szv2-confirm-actions .szv2-btn-secondary:hover { background: #e5e7eb; }
+.szv2-confirm-actions .szv2-btn-danger {
+    background: #dc2626; color: #fff; border-color: transparent;
+}
+.szv2-confirm-actions .szv2-btn-danger:hover { background: #b91c1c; }
+.szv2-confirm-actions .szv2-btn-brand {
+    background: #ea580c; color: #fff; border-color: transparent;
+}
+.szv2-confirm-actions .szv2-btn-brand:hover { background: #c2410c; }
+.szv2-confirm-actions .szv2-btn-primary {
+    background: #ea580c; color: #fff; border-color: transparent;
+}
+.szv2-confirm-actions .szv2-btn-primary:hover { background: #c2410c; }
+
+/* ── Classes utilitárias — substituem inline styles conflitantes ─────────── */
+/* Botão de ícone limpar (X) — sem aparência de botão */
+.sz-dashboard-v2 .szv2-btn-icon-clear {
+  color: var(--szv2-brand);
+  background: none;
+  border: none;
+  padding: 0 4px;
+  cursor: pointer;
+  font-size: 14px;
+}
+/* code-pre expandido (altura livre, no histórico de webhooks) */
+.sz-dashboard-v2 .szv2-code-pre--full {
+  font-size: 11px;
+  line-height: 1.6;
+  max-height: none;
+  flex: 1;
+  min-height: 340px;
+}
+/* code-pre compacto (integrations, font menor) */
+.sz-dashboard-v2 .szv2-code-pre--compact {
+  font-size: 11px;
+  line-height: 1.5;
+  max-height: 320px;
+}
+
+/* ── Payload details (webhooks) ──────────────────────────────── */
+.sz-dashboard-v2 .szv2-payload-details {
+  border: 1px solid var(--szv2-border);
+  border-radius: var(--szv2-radius-lg);
+  overflow: hidden;
+  margin-bottom: var(--szv2-space-4);
+}
+.sz-dashboard-v2 .szv2-payload-summary {
+  padding: 12px var(--szv2-space-5);
+  cursor: pointer;
+  font-size: var(--szv2-text-sm);
+  font-weight: 600;
+  color: var(--szv2-text);
+  background: var(--szv2-surface-alt);
+  user-select: none;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.sz-dashboard-v2 .szv2-payload-summary::-webkit-details-marker { display: none; }
+.sz-dashboard-v2 .szv2-payload-hint {
+  font-size: var(--szv2-text-xs);
+  font-weight: 400;
+  color: var(--szv2-text-muted);
+}
+
+/* ── v459: Motoboy filter chips – dark-mode safe ───────────────────────── */
+.sz-dashboard-v2 .szv2-filter-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 13px; border-radius: 99px;
+  border: 1.5px solid var(--szv2-border, #e5e7eb);
+  background: var(--szv2-surface, #fff);
+  color: var(--szv2-text, #374151);
+  font-size: 13px; font-weight: 600; cursor: pointer;
+  white-space: nowrap; transition: all .12s;
+}
+.sz-dashboard-v2 .szv2-filter-chip.szv2-chip-active {
+  border-color: var(--szv2-brand, #EA580C) !important;
+  background: var(--szv2-brand, #EA580C) !important;
+  color: #fff !important;
+}
+.sz-dashboard-v2 .szv2-filter-chip .szv2-chip-count {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 20px; height: 20px; padding: 0 5px;
+  font-size: 11px; font-weight: 700; border-radius: 99px;
+  background: var(--szv2-neutral-bg, rgba(0,0,0,.08));
+}
+.sz-dashboard-v2 .szv2-filter-chip.szv2-chip-active .szv2-chip-count {
+  background: rgba(255,255,255,.25) !important;
+}
+/* Commission input dark-mode */
+.sz-dashboard-v2 .szv2-lk-comm-input {
+  background: var(--szv2-surface-alt) !important;
+  color: var(--szv2-text) !important;
+  border: 1px solid var(--szv2-border) !important;
+}

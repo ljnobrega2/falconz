@@ -1,0 +1,181 @@
+openapi: "3.1.0"
+info:
+  title: Senderzz Panel API
+  version: "1.0"
+  description: |
+    REST API do painel externo (senderzz/v1).
+    Usada pelo painel de cliente externo para dashboard, pedidos, relatórios e carteira.
+    Base URL: https://{host}/wp-json/senderzz/v1
+
+servers:
+  - url: https://{host}/wp-json/senderzz/v1
+
+tags:
+  - name: dashboard
+    description: KPIs e resumo do painel
+  - name: orders
+    description: Pedidos do usuário
+  - name: reports
+    description: Relatórios financeiros
+  - name: wallet
+    description: Carteira de frete
+
+components:
+  securitySchemes:
+    jwt_bearer:
+      type: http
+      scheme: bearer
+      description: JWT do tp-carteira/v1 (/auth/token)
+    wp_session:
+      type: apiKey
+      in: cookie
+      name: wordpress_logged_in
+
+paths:
+  /dashboard:
+    get:
+      tags: [dashboard]
+      summary: KPIs do dashboard (pedidos, frete, saldo)
+      security: [{ jwt_bearer: [] }, { wp_session: [] }]
+      parameters:
+        - name: from
+          in: query
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          schema: { type: string, format: date }
+      responses:
+        "200":
+          description: KPIs do período
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total_orders:    { type: integer }
+                  total_value:     { type: number }
+                  total_shipping:  { type: number }
+                  avg_margin:      { type: number }
+                  wallet_balance:  { type: number }
+
+  /orders:
+    get:
+      tags: [orders]
+      summary: Listar pedidos do usuário autenticado
+      security: [{ jwt_bearer: [] }, { wp_session: [] }]
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string }
+        - name: from
+          in: query
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          schema: { type: string, format: date }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, maximum: 500 }
+      responses:
+        "200":
+          description: Lista de pedidos formatados para o painel
+
+  "/orders/{order_id}":
+    get:
+      tags: [orders]
+      summary: Detalhes de um pedido específico
+      security: [{ jwt_bearer: [] }, { wp_session: [] }]
+      parameters:
+        - name: order_id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Detalhes do pedido
+        "403":
+          description: Pedido não pertence ao usuário autenticado
+        "404":
+          description: Pedido não encontrado
+
+  "/orders/{order_id}/status":
+    post:
+      tags: [orders]
+      summary: Atualizar status do pedido (CRIT-02)
+      description: |
+        Cliente só pode mover pedidos em pending/on-hold/pendente/aguardando para emcancelamento.
+        Admin (manage_woocommerce) tem acesso irrestrito.
+        CRIT-02: aprovado/approved/erro NÃO podem ser movidos por cliente.
+      security: [{ jwt_bearer: [] }, { wp_session: [] }]
+      parameters:
+        - name: order_id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { type: string, example: "emcancelamento" }
+      responses:
+        "200":
+          description: Status atualizado
+        "403":
+          description: Transição não permitida (CRIT-02)
+
+  /reports:
+    get:
+      tags: [reports]
+      summary: Relatório financeiro do período
+      security: [{ jwt_bearer: [] }, { wp_session: [] }]
+      parameters:
+        - name: from
+          in: query
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          schema: { type: string, format: date }
+        - name: group_by
+          in: query
+          schema: { type: string, enum: [day, week, month] }
+      responses:
+        "200":
+          description: Dados agrupados por período
+
+  /wallet:
+    get:
+      tags: [wallet]
+      summary: Saldo e movimentações da carteira de frete
+      security: [{ jwt_bearer: [] }, { wp_session: [] }]
+      responses:
+        "200":
+          description: Saldo e histórico resumido
+
+  /transactions:
+    get:
+      tags: [wallet]
+      summary: Extrato completo de transações
+      security: [{ jwt_bearer: [] }, { wp_session: [] }]
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0 }
+      responses:
+        "200":
+          description: Lista de transações paginada
+
+  /producer-margin:
+    get:
+      tags: [reports]
+      summary: Margem do produtor por produto/classe
+      security: [{ jwt_bearer: [] }, { wp_session: [] }]
+      responses:
+        "200":
+          description: Margens por produto
