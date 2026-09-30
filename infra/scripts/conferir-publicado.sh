@@ -17,9 +17,10 @@ PASTAS="admin-ui/src portal-ui/src checkout-ui/src go infra"
 # Ruido que nao deve entrar no repositorio: backups feitos no servidor e
 # segredos (o .env fica no .gitignore de proposito).
 IGNORAR='node_modules|/dist/|\.git/|\.bak|\.backup|codex-backup|/\.env$'
-# Ferramentas que rodam NA MAQUINA de quem publica, nunca no servidor. Nao sao
-# divergencia: e onde elas devem estar. Qualquer outra coisa so no repositorio
-# significa codigo que nunca subiu, e isso o script precisa acusar.
+# Ferramentas de quem publica. Ficam versionadas (e util te-las no historico) e
+# por isso tambem chegam ao servidor quando ele puxa o repositorio — mas rodam
+# na maquina de quem publica, nao la. Sao ignoradas dos DOIS lados: se sobrarem
+# na comparacao, viram alarme falso todo dia e o alerta perde o valor.
 LOCAIS='infra/scripts/conferir-publicado.sh|infra/scripts/deploy-admin.sh|infra/scripts/publicar.sh'
 
 cd "$(dirname "$0")/../.." || exit 2
@@ -27,7 +28,7 @@ tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 
 ssh -i "$CHAVE" -o BatchMode=yes "$HOST" \
   "cd $RAIZ && find $PASTAS -type f 2>/dev/null | grep -vE '$IGNORAR' | sort | xargs md5sum 2>/dev/null" \
-  > "$tmp/servidor.raw"
+  | grep -vE "$LOCAIS" > "$tmp/servidor.raw"
 find $PASTAS -type f 2>/dev/null | grep -vE "$IGNORAR" | grep -vE "$LOCAIS" | sort \
   | xargs md5 -r 2>/dev/null > "$tmp/repo.raw"
 
