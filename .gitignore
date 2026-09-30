@@ -6,6 +6,10 @@ node_modules/
 # Build / cache
 .phpunit.result.cache
 admin-ui/dist/
+# Compilados: o Dockerfile de cada UI roda `npm run build` no servidor, entao
+# versionar o resultado so cria divergencia permanente entre repo e producao.
+checkout-ui/dist/
+portal-ui/dist/
 admin-ui/*.tsbuildinfo
 admin-ui/tsconfig*.tsbuildinfo
 *.log

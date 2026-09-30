@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Avisa antes de enviar codigo que ainda nao esta publicado.
+#
+# Nao bloqueia: ha momentos legitimos de commitar antes de publicar. Mas obriga
+# a ver a divergencia, em vez de descobri-la semanas depois sem saber qual lado
+# e o certo.
+if [ -x infra/scripts/conferir-publicado.sh ]; then
+  if ! bash infra/scripts/conferir-publicado.sh >/tmp/falk-conferencia 2>&1; then
+    echo
+    echo "ATENCAO: o repositorio e o servidor nao estao iguais."
+    sed 's/^/  /' /tmp/falk-conferencia
+    echo
+    echo "  Publique com: bash infra/scripts/publicar.sh <servico> \"mensagem\""
+    echo "  (o envio segue mesmo assim)"
+    echo
+  fi
+fi
+exit 0
