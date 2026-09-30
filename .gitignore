@@ -16,6 +16,8 @@ admin-ui/tsconfig*.tsbuildinfo
 
 # Segredos / ambiente (NUNCA versionar — usar .env.example como referência)
 .env
+# Webhook de aviso do vigia de alinhamento: fica so no servidor.
+.vigia-env
 .env.local
 *.pem
 *.key
