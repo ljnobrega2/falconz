@@ -192,13 +192,15 @@ const FILTER_GROUPS: Record<string, string[]> = {
   // Abas financeiras: a linha entra por financial_status, não pelo status de
   // expedição, por isso a lista de slugs fica vazia (ver FINANCIAL_GROUPS).
   pagamento_agendado: [],
+  bloqueio: [],
   vencido: [],
   concluido: [],
   alerta: ['cancelled', 'em_cancelamento', 'frustrado', 'reembolsado'],
 }
-const FINANCIAL_GROUPS = ['pagamento_agendado', 'vencido', 'concluido']
+const FINANCIAL_GROUPS = ['pagamento_agendado', 'bloqueio', 'vencido', 'concluido']
 const FINANCIAL_LABELS: Record<string, string> = {
   pagamento_agendado: 'Pagamento agendado',
+  bloqueio: 'Bloqueio',
   vencido: 'Vencido',
   concluido: 'Pago',
 }
@@ -209,6 +211,7 @@ function fmtDateBR(iso?: string): string {
 }
 const FINANCIAL_COLORS: Record<string, string> = {
   pagamento_agendado: '#9333EA',
+  bloqueio: '#7C3AED',
   vencido: '#DC2626',
   concluido: '#15803D',
 }
@@ -221,11 +224,12 @@ const FILTER_LABELS: Record<string, string> = {
   enviado: 'Enviado',
   entregue: 'Entregue',
   pagamento_agendado: 'Pagamento Agendado',
+  bloqueio: 'Bloqueio',
   vencido: 'Vencidos',
   concluido: 'Concluídos',
   alerta: 'Alerta',
 }
-const GROUP_ORDER = ['todos', 'pendente', 'em_andamento', 'aprovado', 'separado', 'enviado', 'a_caminho', 'entregue', 'pagamento_agendado', 'vencido', 'concluido', 'alerta']
+const GROUP_ORDER = ['todos', 'pendente', 'em_andamento', 'aprovado', 'separado', 'enviado', 'a_caminho', 'entregue', 'pagamento_agendado', 'bloqueio', 'vencido', 'concluido', 'alerta']
 
 function normStatus(s: string): string {
   let slug = (s || '').toLowerCase()
@@ -397,7 +401,7 @@ export default function ExpedicaoOrders() {
   const [quotesBusy, setQuotesBusy] = useState(false)
   // Alteração do estado financeiro pelo painel: o endpoint já existia
   // (POST /orders/{id}/financial-status), faltava a interface.
-  const [finAcao, setFinAcao] = useState<'pagamento_agendado' | 'vencido' | 'concluido' | null>(null)
+  const [finAcao, setFinAcao] = useState<'pagamento_agendado' | 'bloqueio' | 'vencido' | 'concluido' | null>(null)
   const [finData, setFinData] = useState('')
   const [finBusy, setFinBusy] = useState(false)
   const [finErr, setFinErr] = useState('')
@@ -1315,11 +1319,11 @@ export default function ExpedicaoOrders() {
                 Pagamento
               </span>
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                {(['pagamento_agendado', 'vencido', 'concluido'] as const).map(acao => (
+                {(['pagamento_agendado', 'bloqueio', 'concluido'] as const).map(acao => (
                   <button
                     key={acao}
                     type="button"
-                    className={`szv2-btn szv2-btn-sm ${finAcao === acao ? (acao === 'vencido' ? 'szv2-btn-danger' : 'szv2-btn-brand') : 'szv2-btn-secondary'}`}
+                    className={`szv2-btn szv2-btn-sm ${finAcao === acao ? 'szv2-btn-brand' : 'szv2-btn-secondary'}`}
                     onClick={() => {
                       setFinErr('')
                       setFinAcao(finAcao === acao ? null : acao)

@@ -1600,7 +1600,7 @@ var allowedForceStatus = map[string]bool{
 
 var allowedFinancialStatus = map[string]bool{
 	"pagamento_agendado": true,
-	"vencido":            true,
+	"bloqueio":           true,
 	"concluido":          true,
 }
 
@@ -1953,7 +1953,9 @@ func (h *OrderDetailHandler) ForceMotoboyStatus(w http.ResponseWriter, r *http.R
 
 // UpdateFinancialStatus — altera apenas o status financeiro pós-entrega de Expedição.
 // Não toca em sz_orders.status: "entregue/completo" permanece logístico, e
-// pagamento_agendado/vencido/concluido vivem no campo separado financial_status.
+// pagamento_agendado/bloqueio/concluido vivem no campo separado financial_status.
+// "vencido" e automatico: a rotina de vencimento move pagamento_agendado
+// para vencido quando scheduled_payment_date passa sem virar concluido.
 func (h *OrderDetailHandler) UpdateFinancialStatus(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
@@ -1971,7 +1973,7 @@ func (h *OrderDetailHandler) UpdateFinancialStatus(w http.ResponseWriter, r *htt
 	}
 	target := strings.TrimSpace(strings.ToLower(body.FinancialStatus))
 	if !allowedFinancialStatus[target] {
-		httpx.Err(w, 400, "bad_request", "financial_status inválido — aceitos: pagamento_agendado, vencido, concluido")
+		httpx.Err(w, 400, "bad_request", "financial_status inválido — aceitos: pagamento_agendado, bloqueio, concluido")
 		return
 	}
 	if target == "pagamento_agendado" && strings.TrimSpace(body.ScheduledPaymentDate) == "" {
@@ -2083,35 +2085,20 @@ func (h *OrderDetailHandler) UpdateFinancialStatus(w http.ResponseWriter, r *htt
 	switch target {
 	case "pagamento_agendado":
 		dateArg = body.ScheduledPaymentDate
-	case "vencido":
-		if body.ScheduledPaymentDate != "" {
-			dateArg = body.ScheduledPaymentDate
-		} else {
-			dateArg = nil
-		}
+	case "bloqueio":
+		dateArg = nil
 	case "concluido":
 		dateArg = nil
 	}
 
-	if target == "vencido" && dateArg == nil {
-		_, err = tx.Exec(ctx, `
-			UPDATE sz_orders
-			   SET financial_status = $1,
-			       scheduled_payment_date = scheduled_payment_date,
-			       financial_status_updated_at = NOW(),
-			       financial_status_updated_by = $2,
-			       updated_at = NOW()
-			 WHERE id = $3`, target, actorID, id)
-	} else {
-		_, err = tx.Exec(ctx, `
-			UPDATE sz_orders
-			   SET financial_status = $1,
-			       scheduled_payment_date = $2::date,
-			       financial_status_updated_at = NOW(),
-			       financial_status_updated_by = $3,
-			       updated_at = NOW()
-			 WHERE id = $4`, target, dateArg, actorID, id)
-	}
+	_, err = tx.Exec(ctx, `
+		UPDATE sz_orders
+		   SET financial_status = $1,
+		       scheduled_payment_date = $2::date,
+		       financial_status_updated_at = NOW(),
+		       financial_status_updated_by = $3,
+		       updated_at = NOW()
+		 WHERE id = $4`, target, dateArg, actorID, id)
 	if err != nil {
 		httpx.Err(w, 500, "db_error", err.Error())
 		return
