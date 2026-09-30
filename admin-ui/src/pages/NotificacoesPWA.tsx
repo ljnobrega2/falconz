@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useToast } from '../hooks/useToast'
 import { api } from '../api'
+import FalkSelect from '../components/FalkSelect'
 
 // Tela Senderzz · Notificações PWA — paridade com
 // sz_app_pwa_render_notifications_admin() (includes/senderzz-app-pwa.php:397).
@@ -82,6 +84,70 @@ function fieldKeys(role: Role): { title: keyof Template; body: keyof Template } 
   return { title: 'admin_title', body: 'admin_body' }
 }
 
+// ----- agrupamento de eventos (pedido do dono #71) ----------------------------
+// Os eventos vêm do backend Go (eventList) como array plano [key,label,status].
+// Aqui apenas BUCKETIZAMOS por chave para renderizar a sidebar em três seções —
+// não reshape do estado `events` (a ordem do array Go é load-bearing para o
+// desempate de status duplicado em usedStatusesByOther/setStatusForActive).
+type EventGroup = 'fulfillment' | 'cod' | 'geral'
+
+const GROUP_LABEL: Record<EventGroup, string> = {
+  fulfillment: 'Fulfillment',
+  cod: 'Cash on Delivery',
+  geral: 'Geral',
+}
+
+// Ordem de exibição das seções na sidebar.
+const GROUP_ORDER: EventGroup[] = ['fulfillment', 'cod', 'geral']
+
+// Chaves COD (motoboy): agendado/em rota/completo/frustrado + cobrança pendente.
+const COD_KEYS = new Set([
+  'agendamento_cod',
+  'em_rota_cod',
+  'completo_cod',
+  'frustrado_cod',
+  'cobranca_pendente',
+])
+
+// Chaves Fulfillment (expedição/Melhor Envio): pedido feito/enviado/entregue/etiqueta.
+const FULFILLMENT_KEYS = new Set([
+  'pedido_feito',
+  'enviado_pad',
+  'entregue',
+  'label_gerada',
+])
+
+// eventGroup classifica uma chave. Catch-all → 'geral' para que um evento
+// futuro adicionado no Go nunca suma da sidebar (ficaria inconfigurável).
+function eventGroup(key: string): EventGroup {
+  if (COD_KEYS.has(key)) return 'cod'
+  if (FULFILLMENT_KEYS.has(key)) return 'fulfillment'
+  return 'geral' // saldo_baixo, manutencao e qualquer chave nova
+}
+
+// LABEL_OVERRIDE — rótulo de exibição na sidebar. Pedido do dono (#77): os eventos
+// do grupo COD/Motoboy devem ler EXATAMENTE igual ao menu de Pedidos (Orders.tsx →
+// filterStatusLabel + statusLabel). Aqui só muda o LABEL exibido; a chave do evento
+// e o status binding (wc-agendado/wc-emrota/wc-completo/wc-frustrado) permanecem
+// intactos para não quebrar o desempate de status em statusMap.
+//   agendamento_cod → "Agendado"   (Orders: agendado)
+//   em_rota_cod     → "A caminho"  (Orders: em_rota → "A caminho", override do dono)
+//   completo_cod    → "Entregue"   (Orders: entregue)
+//   frustrado_cod   → "Frustrado"  (Orders: frustrado)
+// Os status do menu de Pedidos que NÃO têm evento de notificação cadastrado
+// (embalado, pre_agendado, cancelado — sem entrada em eventList/wcStatuses no Go)
+// não aparecem aqui: "(o que estiver cadastrado)" = só os que existem como evento.
+const LABEL_OVERRIDE: Record<string, string> = {
+  agendamento_cod: 'Agendado',
+  em_rota_cod: 'A caminho',
+  completo_cod: 'Entregue',
+  frustrado_cod: 'Frustrado',
+}
+
+function displayLabel(ev: EventDef): string {
+  return LABEL_OVERRIDE[ev.key] ?? ev.label
+}
+
 // ----- componente -------------------------------------------------------------
 
 export default function NotificacoesPWA() {
@@ -104,7 +170,7 @@ export default function NotificacoesPWA() {
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
-  const [toast, setToast] = useState<{ kind: 'ok' | 'err'; msg: string } | null>(null)
+  const showToast = useToast() // AUDIT-2026-06-18 Onda3
 
   // refs para inserir variáveis na posição do cursor.
   const producerBodyRef = useRef<HTMLTextAreaElement | null>(null)
@@ -147,10 +213,6 @@ export default function NotificacoesPWA() {
 
   useEffect(() => { loadAll() /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [])
 
-  function showToast(kind: 'ok' | 'err', msg: string) {
-    setToast({ kind, msg })
-    setTimeout(() => setToast(null), 5000)
-  }
 
   // ----- save -----------------------------------------------------------------
 
@@ -264,6 +326,17 @@ export default function NotificacoesPWA() {
 
   // ----- derivados ------------------------------------------------------------
 
+  // Eventos agrupados para a sidebar (preserva a ordem do array plano dentro de
+  // cada grupo; grupos vazios são omitidos no render). Não altera `events`.
+  const groupedEvents = useMemo(() => {
+    const buckets: Record<EventGroup, EventDef[]> = { fulfillment: [], cod: [], geral: [] }
+    for (const ev of events) {
+      buckets[eventGroup(ev.key)].push(ev)
+    }
+    return GROUP_ORDER.map(g => ({ group: g, label: GROUP_LABEL[g], items: buckets[g] }))
+      .filter(sec => sec.items.length > 0)
+  }, [events])
+
   // Status já usados em OUTROS eventos — usados para desabilitar no select.
   const usedStatusesByOther = useMemo(() => {
     const used = new Set<string>()
@@ -312,12 +385,6 @@ export default function NotificacoesPWA() {
   return (
     <div>
       {err && <div className="sz-alert-danger" style={{ marginBottom: 16 }}>{err}</div>}
-      {toast && (
-        <div className={toast.kind === 'ok' ? 'sz-alert-success' : 'sz-alert-danger'} style={{ marginBottom: 16 }}>
-          {toast.msg}
-        </div>
-      )}
-
       {/* Top bar — Salvar tudo */}
       <div className="szv2-card">
         <div className="szv2-card-head">
@@ -335,42 +402,46 @@ export default function NotificacoesPWA() {
 
       {/* Layout: sidebar (eventos) + main (configuração do evento ativo) */}
       <div style={{ display: 'grid', gridTemplateColumns: '220px 1fr', gap: 16, marginTop: 16 }}>
-        {/* Sidebar — lista de eventos */}
+        {/* Sidebar — lista de eventos agrupada (Fulfillment / Cash on Delivery / Geral) */}
         <div className="szv2-card" style={{ padding: 8 }}>
-          <div style={{ padding: '8px 8px 4px', fontSize: 12, fontWeight: 700, color: 'var(--szv2-text-muted)', textTransform: 'uppercase', letterSpacing: 0.5 }}>
-            Eventos
-          </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-            {events.map(ev => {
-              const isActive = ev.key === activeEvent
-              const slug = statusMap[ev.key] || ''
-              return (
-                <button
-                  key={ev.key}
-                  type="button"
-                  onClick={() => setActiveEvent(ev.key)}
-                  style={{
-                    textAlign: 'left',
-                    padding: '8px 10px',
-                    border: 'none',
-                    borderRadius: 8,
-                    cursor: 'pointer',
-                    background: isActive ? 'rgba(234,88,12,.10)' : 'transparent',
-                    color: isActive ? 'var(--szv2-brand)' : 'var(--szv2-text)',
-                    fontWeight: isActive ? 700 : 500,
-                    fontSize: 13,
-                  }}
-                >
-                  <div>{ev.label}</div>
-                  {slug && (
-                    <div style={{ fontSize: 10, color: 'var(--szv2-text-muted)', marginTop: 2 }}>
-                      {slug}
-                    </div>
-                  )}
-                </button>
-              )
-            })}
-          </div>
+          {groupedEvents.map((section, idx) => (
+            <div key={section.group} style={{ marginTop: idx === 0 ? 0 : 10 }}>
+              <div style={{ padding: '8px 8px 4px', fontSize: 11, fontWeight: 700, color: 'var(--szv2-text-muted)', textTransform: 'uppercase', letterSpacing: 0.6 }}>
+                {section.label}
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                {section.items.map(ev => {
+                  const isActive = ev.key === activeEvent
+                  const slug = statusMap[ev.key] || ''
+                  return (
+                    <button
+                      key={ev.key}
+                      type="button"
+                      onClick={() => setActiveEvent(ev.key)}
+                      style={{
+                        textAlign: 'left',
+                        padding: '8px 10px',
+                        border: 'none',
+                        borderRadius: 8,
+                        cursor: 'pointer',
+                        background: isActive ? 'rgba(30, 111, 242,.10)' : 'transparent',
+                        color: isActive ? 'var(--szv2-brand)' : 'var(--szv2-text)',
+                        fontWeight: isActive ? 700 : 500,
+                        fontSize: 13,
+                      }}
+                    >
+                      <div>{displayLabel(ev)}</div>
+                      {slug && (
+                        <div style={{ fontSize: 10, color: 'var(--szv2-text-muted)', marginTop: 2 }}>
+                          {slug}
+                        </div>
+                      )}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          ))}
         </div>
 
         {/* Main area */}
@@ -430,22 +501,15 @@ export default function NotificacoesPWA() {
                     Variáveis disponíveis (clique para inserir no corpo)
                   </label>
                   <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                    <select
-                      className="szv2-select"
-                      onChange={e => {
-                        if (e.target.value) {
-                          insertVariable(e.target.value)
-                          e.target.value = ''
-                        }
-                      }}
-                      style={{ minWidth: 280 }}
-                      defaultValue=""
-                    >
-                      <option value="">Inserir variável…</option>
-                      {availableVars.map(v => (
-                        <option key={v.key} value={v.key}>{`{{${v.key}}} — ${v.label}`}</option>
-                      ))}
-                    </select>
+                    <FalkSelect
+                      value=""
+                      onChange={v => { if (v) insertVariable(v) }}
+                      options={[
+                        { value: '', label: 'Inserir variável…' },
+                        ...availableVars.map(v => ({ value: v.key, label: `{{${v.key}}} — ${v.label}` })),
+                      ]}
+                      aria-label="Inserir variável no corpo da mensagem"
+                    />
                   </div>
                 </div>
 
@@ -469,8 +533,8 @@ export default function NotificacoesPWA() {
                 <div style={{
                   marginTop: 4,
                   padding: 14,
-                  background: 'rgba(234,88,12,.06)',
-                  border: '1px solid rgba(234,88,12,.20)',
+                  background: 'rgba(30, 111, 242,.06)',
+                  border: '1px solid rgba(30, 111, 242,.20)',
                   borderRadius: 10,
                 }}>
                   <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--szv2-brand)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>
@@ -496,22 +560,22 @@ export default function NotificacoesPWA() {
                   </p>
                 </div>
               </div>
-              <select
+              <FalkSelect
                 value={currentStatus}
-                onChange={e => setStatusForActive(e.target.value)}
-                className="szv2-select"
-                style={{ width: '100%', maxWidth: 480 }}
-              >
-                <option value="">— Não disparar por status —</option>
-                {wcStatuses.map(s => {
-                  const usedByOther = usedStatusesByOther.has(s.slug)
-                  return (
-                    <option key={s.slug} value={s.slug} disabled={usedByOther}>
-                      {s.label} — {s.slug}{usedByOther ? ' (em uso)' : ''}
-                    </option>
-                  )
-                })}
-              </select>
+                onChange={v => setStatusForActive(v)}
+                options={[
+                  { value: '', label: '— Não disparar por status —' },
+                  ...wcStatuses.map(s => {
+                    const usedByOther = usedStatusesByOther.has(s.slug)
+                    return {
+                      value: s.slug,
+                      label: `${s.label} — ${s.slug}${usedByOther ? ' (em uso)' : ''}`,
+                      disabled: usedByOther,
+                    }
+                  }),
+                ]}
+                style={{ maxWidth: 480 }}
+              />
             </div>
 
             {/* --- Section: Recipients --- */}
@@ -535,7 +599,7 @@ export default function NotificacoesPWA() {
                       padding: '8px 12px',
                       border: '1px solid var(--szv2-border)',
                       borderRadius: 10,
-                      background: rec[field] ? 'rgba(234,88,12,.06)' : '#fff',
+                      background: rec[field] ? 'rgba(30, 111, 242,.06)' : '#fff',
                       cursor: 'pointer',
                     }}
                   >
@@ -579,7 +643,7 @@ export default function NotificacoesPWA() {
                             padding: '8px 12px',
                             border: '1px solid var(--szv2-border)',
                             borderRadius: 10,
-                            background: checked ? 'rgba(234,88,12,.06)' : '#fff',
+                            background: checked ? 'rgba(30, 111, 242,.06)' : '#fff',
                             cursor: 'pointer',
                           }}
                         >
@@ -614,7 +678,7 @@ export default function NotificacoesPWA() {
                   padding: '8px 12px',
                   border: '1px solid var(--szv2-border)',
                   borderRadius: 10,
-                  background: orderNumberOn ? 'rgba(234,88,12,.06)' : '#fff',
+                  background: orderNumberOn ? 'rgba(30, 111, 242,.06)' : '#fff',
                   cursor: 'pointer',
                 }}
               >

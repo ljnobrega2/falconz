@@ -54,13 +54,7 @@ type MotoboyDashboardResp struct {
 // tableExists — verifica existência da tabela no schema public.
 // Cópia do helper de audit.go para manter o handler auto-contido.
 func (h *MotoboyDashboardHandler) tableExists(ctx context.Context, name string) bool {
-	var ok bool
-	_ = h.Pool.QueryRow(ctx,
-		`SELECT EXISTS (
-			SELECT FROM information_schema.tables
-			WHERE table_schema='public' AND table_name=$1
-		)`, name).Scan(&ok)
-	return ok
+	return tableExistsCached(ctx, h.Pool, name) // AUDIT-2026-06-18 Onda2 (go-infoschema-cache)
 }
 
 // resolveDate — lê o query param "date" ou usa hoje em America/Sao_Paulo
@@ -93,12 +87,14 @@ func (h *MotoboyDashboardHandler) Dashboard(w http.ResponseWriter, r *http.Reque
 	}
 
 	// ── KPIs por status do dia ────────────────────────────────────────────
-	// SELECT status, COUNT(*) FROM sz_motoboy_pedidos WHERE created_at::date = $1 GROUP BY status
+	// AUDIT-2026-06-18 Onda2 (go-date-sargable): range sargável no lugar de
+	// created_at::date = $1 (cast na coluna impede uso de índice). Mesmo resultado.
 	if h.tableExists(ctx, "sz_motoboy_pedidos") {
 		rows, err := h.Pool.Query(ctx,
 			`SELECT status, COUNT(*)::bigint
 			   FROM sz_motoboy_pedidos
-			  WHERE created_at::date = $1::date
+			  WHERE created_at >= $1::date
+			    AND created_at <  $1::date + interval '1 day'
 			  GROUP BY status`, date)
 		if err == nil {
 			for rows.Next() {
@@ -179,7 +175,9 @@ func (h *MotoboyDashboardHandler) Dashboard(w http.ResponseWriter, r *http.Reque
 			  FROM sz_motoboys m` + cdJoin + zonaJoin + `
 			  LEFT JOIN sz_motoboy_pedidos mp
 			    ON mp.motoboy_id = m.id
-			   AND mp.created_at::date = $1::date
+			   -- AUDIT-2026-06-18 Onda2 (go-date-sargable): range sargável (sem cast na coluna)
+			   AND mp.created_at >= $1::date
+			   AND mp.created_at <  $1::date + interval '1 day'
 			 WHERE m.ativo = TRUE
 			 GROUP BY 1, 2, 3, 4
 			 ORDER BY entregues DESC, pedidos DESC, m.nome ASC`

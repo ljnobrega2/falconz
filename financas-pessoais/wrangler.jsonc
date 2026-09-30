@@ -1,0 +1,14 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "finanz",
+  "pages_build_output_dir": "./dist",
+  "compatibility_date": "2026-08-16",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "finanz-data",
+      "database_id": "130b85d6-7295-4149-9bd8-0e99842584ac",
+      "migrations_dir": "./migrations"
+    }
+  ]
+}

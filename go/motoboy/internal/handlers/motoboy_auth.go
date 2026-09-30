@@ -113,8 +113,13 @@ func (h *MobAuthHandler) OTPSolicitar(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// TODO: integrar SMS (Twilio/ZenviaAPI). Por ora loga (dev).
-	slog.Info("[auth] OTP gerado (dev — não enviado por SMS)", "motoboy_id", motoboyID, "otp", otp, "expires", expiry)
+	// TODO: integrar SMS (Twilio/ZenviaAPI).
+	// SEC (SEGREDOS/AUTH-CONFIG): NUNCA logar o `otp` em texto puro — é uma
+	// credencial de login; qualquer um com acesso a log/journald entraria como o
+	// motoboy. Logamos só motoboy_id + expires. Enquanto o SMS real não existe, o
+	// valor pode ser obtido em DEV direto na tabela sz_motoboy_otps (acesso já
+	// privilegiado), sem expô-lo no stream de logs.
+	slog.Info("[auth] OTP gerado (pendente envio por SMS)", "motoboy_id", motoboyID, "expires", expiry)
 
 	httpx.WriteOK(w, map[string]any{"ok": true, "msg": "OTP enviado."})
 }

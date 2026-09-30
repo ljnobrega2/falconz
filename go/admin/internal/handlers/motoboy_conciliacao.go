@@ -83,13 +83,7 @@ type ConcResponse struct {
 // ─── Helpers ─────────────────────────────────────────────────────────────
 
 func (h *MotoboyConciliacaoHandler) tableExists(ctx context.Context, name string) bool {
-	var ok bool
-	_ = h.Pool.QueryRow(ctx,
-		`SELECT EXISTS (
-			SELECT FROM information_schema.tables
-			WHERE table_schema='public' AND table_name=$1
-		)`, name).Scan(&ok)
-	return ok
+	return tableExistsCached(ctx, h.Pool, name) // AUDIT-2026-06-18 Onda2 (go-infoschema-cache)
 }
 
 // parseConcDateRange — aceita date_from/date_to em YYYY-MM-DD.

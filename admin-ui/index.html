@@ -3,7 +3,39 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Senderzz Admin</title>
+    <!--
+      Defesa-em-profundidade no proprio bundle (ENDURECEDOR-2026-06-20).
+      Aplica-se TAMBEM no stack dev (Vite servindo este index.html via cloudflared),
+      onde o nginx fica fora do caminho de request. CSP via <meta> so cobre as
+      diretivas de RECURSO (script/style/img/connect/...). Headers que o browser
+      IGNORA em <meta> — X-Frame-Options, X-Content-Type-Options (nosniff), HSTS,
+      Permissions-Policy e CSP frame-ancestors — continuam exigindo o middleware
+      Go de headers ou o nginx na frente (clickjacking/MIME-sniffing/HSTS NAO sao
+      mitigados por este arquivo). 'unsafe-eval'/ws: sao concessao do HMR do Vite
+      em dev; a policy estrita (sem eval) pertence ao caminho de header Go/nginx.
+      Multiplas CSPs sao aplicadas como INTERSECAO — esta meta permissiva nunca
+      enfraquece uma CSP de header mais estrita adicionada depois.
+      unpkg = Leaflet (JS/CSS/marcadores); qrserver = QR; openstreetmap = tiles.
+    -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://unpkg.com https://www.googletagmanager.com; style-src 'self' 'unsafe-inline' https://unpkg.com; img-src 'self' data: https://api.qrserver.com https://*.tile.openstreetmap.org https://unpkg.com https:; connect-src 'self' https://www.google-analytics.com https://region1.google-analytics.com https://analytics.google.com https://stats.g.doubleclick.net https://www.google.com ws: wss:; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'" />
+    <meta name="referrer" content="strict-origin-when-cross-origin" />
+    <!-- favicon FALK — FALCÃO da marca (ícone real). Asset servido na raiz
+         /falk-falcon.png (verificado 200; o gateway redireciona /admin/ asset → raiz).
+         Caminho ABSOLUTO = independe da rota. Título setado por PÁGINA no Layout.
+         ?v=2 — browsers cacheiam favicon por origem de forma muito agressiva
+         (ignora cache-control comum); só um novo caminho/query força refetch
+         (bug reportado 2026-07-14: aba seguia mostrando ícone antigo). -->
+    <link rel="icon" type="image/png" href="/falk-falcon.png?v=2" />
+    <link rel="apple-touch-icon" href="/falk-falcon.png?v=2" />
+    <title>FALK · Admin</title>
+    <!-- Google tag (gtag.js) — tag da propriedade; não envia page_view do painel. -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-22GCCY3KMP"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'G-22GCCY3KMP');
+    </script>
   </head>
   <body class="bg-slate-50">
     <div id="root"></div>

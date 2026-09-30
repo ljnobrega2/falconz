@@ -1,0 +1,39 @@
+-- BACKUP de sz_order_financeiro (pre FRUST-V2). Restaurável: roda CREATE OR REPLACE.
+-- Gerado em: 2026-06-20T08:31:38Z
+CREATE OR REPLACE VIEW sz_order_financeiro AS
+ SELECT id AS order_id,
+    wp_order_id,
+    status,
+    produtor_id,
+    affiliate_id,
+    total AS valor_pedido,
+    (COALESCE(affiliate_amount, 0::numeric) + COALESCE(transaction_fee, 0::numeric))::numeric(12,2) AS comissao_afiliado_bruta,
+    COALESCE(transaction_fee, 0::numeric)::numeric(12,2) AS taxa_transacao_afiliado,
+    COALESCE(affiliate_amount, 0::numeric)::numeric(12,2) AS comissao_afiliado_liquida,
+    COALESCE(delivery_fee, 0::numeric)::numeric(12,2) AS taxa_entrega,
+    (status::text = ANY (ARRAY['frustrado'::character varying, 'cancelled'::character varying, 'reembolsado'::character varying]::text[])) AND NOT (EXISTS ( SELECT 1
+           FROM sz_motoboy_pedidos m
+          WHERE m.wc_order_id = o.wp_order_id AND m.status::text <> 'cancelado'::text)) AS frustrado,
+        CASE
+            WHEN (status::text = ANY (ARRAY['frustrado'::character varying, 'cancelled'::character varying, 'reembolsado'::character varying]::text[])) AND NOT (EXISTS ( SELECT 1
+               FROM sz_motoboy_pedidos m
+              WHERE m.wc_order_id = o.wp_order_id AND m.status::text <> 'cancelado'::text)) THEN 0::numeric(12,2)
+            ELSE round(COALESCE(total, 0::numeric) * COALESCE(( SELECT NULLIF(senderzz_options.value, ''::text)::numeric AS "nullif"
+               FROM senderzz_options
+              WHERE senderzz_options.name::text = 'sz_producer_transaction_fee_pct'::text), 4.99) / 100::numeric, 2)::numeric(12,2)
+        END AS taxa_transacao_produtor,
+        CASE
+            WHEN (status::text = ANY (ARRAY['frustrado'::character varying, 'cancelled'::character varying, 'reembolsado'::character varying]::text[])) AND NOT (EXISTS ( SELECT 1
+               FROM sz_motoboy_pedidos m
+              WHERE m.wc_order_id = o.wp_order_id AND m.status::text <> 'cancelado'::text)) THEN 0::numeric(12,2)
+            ELSE (COALESCE(total, 0::numeric) - (COALESCE(affiliate_amount, 0::numeric) + COALESCE(transaction_fee, 0::numeric)) - COALESCE(delivery_fee, 0::numeric) - round(COALESCE(total, 0::numeric) * COALESCE(( SELECT NULLIF(senderzz_options.value, ''::text)::numeric AS "nullif"
+               FROM senderzz_options
+              WHERE senderzz_options.name::text = 'sz_producer_transaction_fee_pct'::text), 4.99) / 100::numeric, 2))::numeric(12,2)
+        END AS liquido_produtor,
+    (COALESCE(transaction_fee, 0::numeric) + round(COALESCE(total, 0::numeric) * COALESCE(( SELECT NULLIF(senderzz_options.value, ''::text)::numeric AS "nullif"
+           FROM senderzz_options
+          WHERE senderzz_options.name::text = 'sz_producer_transaction_fee_pct'::text), 4.99) / 100::numeric, 2) + GREATEST(COALESCE(delivery_fee, 0::numeric) - COALESCE(( SELECT NULLIF(senderzz_options.value, ''::text)::numeric AS "nullif"
+           FROM senderzz_options
+          WHERE senderzz_options.name::text = 'motoboy_repasse_padrao'::text), 18::numeric), 0::numeric))::numeric(12,2) AS take_falk
+   FROM sz_orders o;
+;

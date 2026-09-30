@@ -1,0 +1,11 @@
+-- Unifica sz_products.status: 'aprovado' (produto aprovado pela fila do admin)
+-- e 'active' (produto criado direto) significavam a MESMA coisa — vendável,
+-- mas com 2 tokens diferentes, mostrando "Aprovado"/"Ativo" como se fossem
+-- estados distintos no admin (bug reportado 2026-07-14). O código (go/admin
+-- product_approval.go Approve, go/portal products.go auto-aprovação) foi
+-- alterado pra gravar 'active' daqui pra frente — este backfill migra as
+-- linhas já existentes com status='aprovado'.
+--
+-- 'a_aprovar' (pendente) e 'reprovado' NÃO mudam — são estados distintos de
+-- verdade (produto ainda não é vendável).
+UPDATE sz_products SET status = 'active', updated_at = NOW() WHERE status = 'aprovado';

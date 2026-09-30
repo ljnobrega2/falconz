@@ -4,9 +4,11 @@
 // permite emitir/cancelar recargas PIX e oferece reset total das tabelas TPC.
 //
 // Convenções:
-//   - Joins: tpc_carteira.user_id, tpc_transacoes.user_id e tpc_recargas.user_id
-//     guardam o ID do WordPress (wp_user_id). Portanto JOIN em
-//     senderzz_portal_users.wp_user_id (NUNCA em u.id, que é o ID do portal).
+//   - Joins (MIGRAÇÃO 2026-07-28): tpc_carteira.user_id, tpc_transacoes.user_id e
+//     tpc_recargas.user_id guardam o id NATIVO do portal (senderzz_portal_users.id)
+//     — migrado de wp_user_id porque produtor 100% FALK (sem WordPress) nunca tem
+//     wp_user_id e ficava com carteira/PIX permanentemente inacessível. JOIN em
+//     senderzz_portal_users.id (NUNCA em u.wp_user_id).
 //   - Graceful degradation: se senderzz_portal_users não existir, retorna apenas
 //     o user_id (sem nome/email) e o filtro `q` passa a casar contra user_id::text.
 //   - Recarga real é emitida pelo wallet-service. Aqui só insere a linha pendente
@@ -20,7 +22,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"net/http"
-	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -29,9 +31,48 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/senderzz/admin-service/internal/httpx"
+	"github.com/senderzz/admin-service/internal/melhorenvio"
 )
 
 type TpcClientesHandler struct{ Pool *pgxpool.Pool }
+
+// meClient — instância única do cliente ME (lê ME_TOKEN/ME_API_URL do ambiente
+// uma vez; HasToken() é checado a cada emissão, então funciona mesmo se a env
+// var só for setada depois do processo subir via reload).
+var tpcMeClient = melhorenvio.NewClient()
+
+// sqlExcluiCOD — predicado SQL que isola Expedição (frete) de COD em tpc_transacoes.
+// (FALK) A Carteira Expedição é EXCLUSIVA de frete pré-pago; transações COD
+// (Cash-on-Delivery) vazaram para tpc_transacoes com referencia 'sz_cod_produtor_*'
+// e descricao "Venda COD Senderzz ...". O dono pediu COD fora das telas de Expedição.
+// referencia é NULLABLE → NULL é tratado como NÃO-COD (linha legítima de frete).
+// Usa o alias `t` (igual em todas as subqueries de tpc_transacoes deste handler).
+// As linhas COD continuam visíveis nas telas próprias (sz_cod_*, Carteira/Transações COD).
+// Referência estruturada tem precedência sobre texto livre. `freight_transfer:*`
+// é crédito legítimo da Expedição mesmo que a descrição mencione a carteira COD;
+// o fallback pela descrição só vale para lançamentos legados sem referência.
+const sqlExcluiCOD = `(t.referencia IS NULL OR t.referencia NOT LIKE 'sz_cod%')
+	AND (COALESCE(t.referencia, '') <> '' OR COALESCE(t.descricao, '') NOT ILIKE '%cod%')`
+
+// sqlSaldoExpedicao — saldo de Expedição DERIVADO das transações de frete confirmadas
+// (credito − reserva), excluindo COD. NÃO usa o c.saldo armazenado porque ele está
+// contaminado pelo vazamento COD (ex.: cliente #15 tinha saldo=1770,08 = soma exata
+// dos 27 créditos COD).
+// AUDIT-2026-07-28: tipo='debito' NUNCA existiu em tpc_transacoes (só 'credito' e
+// 'reserva' — confirmado via SELECT DISTINCT tipo). A fórmula original subtraía um
+// tipo inexistente → reservas de frete nunca eram descontadas, só créditos (incluindo
+// estornos de etiqueta cancelada) somavam puro. Cliente #51 (Lucas/sac@gestao.io):
+// recarga R$50 + 3 estornos (28,54+28,54+20,89) = R$127,97 exibido, quando o saldo
+// real (recarga − reservas ainda ativas) era R$8,89. Corrigido pro tipo real.
+// AUDIT-2026-07-29: 'debito' É permitido pelo CHECK da tabela mesmo não sendo usado
+// na prática — subtrai também por robustez (achado ao vivo: ajuste manual usou
+// 'debito' e ficou invisível nesta fórmula até ser corrigido pra 'reserva').
+const sqlSaldoExpedicao = `COALESCE((
+	SELECT COALESCE(SUM(CASE WHEN t.tipo='credito' THEN t.valor ELSE 0 END),0)
+	     - COALESCE(SUM(CASE WHEN t.tipo IN ('reserva','debito') THEN t.valor ELSE 0 END),0)
+	FROM tpc_transacoes t
+	WHERE t.user_id = c.user_id AND t.status = 'confirmado'
+	  AND ` + sqlExcluiCOD + `), 0)`
 
 // clienteRow — linha exibida na listagem.
 type clienteRow struct {
@@ -67,19 +108,13 @@ type clienteRecarga struct {
 }
 
 func (h *TpcClientesHandler) tableExists(ctx context.Context, name string) bool {
-	var ok bool
-	_ = h.Pool.QueryRow(ctx,
-		`SELECT EXISTS (
-			SELECT FROM information_schema.tables
-			WHERE table_schema='public' AND table_name=$1
-		)`, name).Scan(&ok)
-	return ok
+	return tableExistsCached(ctx, h.Pool, name) // AUDIT-2026-06-18 Onda2 (go-infoschema-cache)
 }
 
 // List — GET /tpc-clientes?q=&limit=100&page=1
 //
 // Lista carteiras com nome/email vindos de senderzz_portal_users via JOIN em
-// wp_user_id. Filtro `q` casa email/nome (LIKE case-insensitive). Quando
+// id nativo. Filtro `q` casa email/nome (LIKE case-insensitive). Quando
 // portal_users não existe, devolve apenas user_id e o filtro casa user_id::text.
 func (h *TpcClientesHandler) List(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -113,56 +148,107 @@ func (h *TpcClientesHandler) List(w http.ResponseWriter, r *http.Request) {
 	)
 
 	if hasUsers {
-		// Filtro: email/nome via ILIKE.
+		// LISTAR TODAS AS CARTEIRAS: a tabela dirigente é tpc_carteira; o
+		// senderzz_portal_users entra por LEFT JOIN APENAS para enriquecer
+		// nome/email. Antes havia INNER JOIN ... AND u.role='produtor', que
+		// escondia toda carteira cujo dono não fosse 'produtor' OU não tivesse
+		// linha em portal_users — exibindo só 2 de 53 carteiras. O LEFT JOIN sem
+		// filtro de role traz TODAS, inclusive user_id com saldo real cujo papel
+		// é afiliado/operator/cliente ou que ainda não está no portal.
+		//
+		// SEGURANÇA DO SUM (verificado contra a DDL, não inflama saldo):
+		//   - tpc_carteira tem UNIQUE (user_id)  → 1 linha por user_id.
+		//   - senderzz_portal_users tem wp_user_id UNIQUE → cada c.user_id casa
+		//     no máximo 1 usuário. Logo o LEFT JOIN não faz fan-out e
+		//     SUM(c.saldo) sobre o grupo c.user_id é o próprio saldo da carteira.
+		//
+		// user_id DEVOLVIDO = c.user_id (chave canônica das tabelas tpc_*).
+		// Get/CreateRecarga/CancelRecarga consultam tpc_* DIRETO por $1 = c.user_id,
+		// então é c.user_id (não u.wp_user_id) que precisa voltar — e sob LEFT JOIN
+		// u.wp_user_id seria NULL justamente para as carteiras recém-expostas.
+		// GROUP BY c.user_id agrega por carteira; tx_count conta pela MESMA chave
+		// (t.user_id = c.user_id). ultima = MIN(created_at) do grupo.
+		//
+		// Filtro `q`: email/nome via ILIKE (quando há match em portal_users);
+		// user_id::text casa o próprio c.user_id.
+		// saldo EXIBIDO = só Expedição. Quando tpc_transacoes existe, derivamos das
+		// transações de frete confirmadas (sqlSaldoExpedicao) para não exibir COD.
+		// Sem a tabela de transações, caímos no c.saldo armazenado (não há como filtrar).
+		saldoExpr := `COALESCE(SUM(c.saldo), 0)`
+		if hasTx {
+			saldoExpr = sqlSaldoExpedicao
+		}
 		sqlList = `
-			SELECT c.user_id,
-			       COALESCE(u.nome,  '')             AS nome,
-			       COALESCE(u.email, '')             AS email,
-			       COALESCE(c.saldo, 0)              AS saldo,
-			       COALESCE(c.saldo_reservado, 0)    AS saldo_reservado,
-			       c.created_at::text                AS ultima
+			SELECT c.user_id                         AS user_id,
+			       COALESCE(MAX(u.nome),  '')        AS nome,
+			       COALESCE(MAX(u.email), '')        AS email,
+			       ` + saldoExpr + `                 AS saldo,
+			       COALESCE(SUM(c.saldo_reservado),0) AS saldo_reservado,
+			       MIN(c.created_at)::text           AS ultima
 		`
 		if hasTx {
-			sqlList += `, COALESCE((SELECT COUNT(*) FROM tpc_transacoes t WHERE t.user_id = c.user_id), 0) AS tx_count`
+			// Conta SÓ transações de Expedição (exclui COD) pela chave canônica.
+			sqlList += `, COALESCE((SELECT COUNT(*) FROM tpc_transacoes t
+			                         WHERE t.user_id = c.user_id AND ` + sqlExcluiCOD + `), 0) AS tx_count`
 		} else {
 			sqlList += `, 0::bigint AS tx_count`
 		}
 		sqlList += `
 			FROM tpc_carteira c
-			LEFT JOIN senderzz_portal_users u ON u.wp_user_id = c.user_id
+			-- MIGRAÇÃO 2026-07-28: tpc_carteira.user_id foi migrado por completo pro
+			-- id NATIVO do portal (senderzz_portal_users.id) — o mixed-state que
+			-- exigia o LATERAL com fallback wp_user_id/id (AUDIT-2026-07-27) acabou.
+			-- Manter o fallback por wp_user_id agora seria PERIGOSO: c.user_id já é
+			-- sempre id nativo, então um wp_user_id de OUTRA pessoa que coincida
+			-- numericamente venceria o match certo (era exatamente essa colisão que
+			-- o LATERAL com prioridade tentava esquivar antes da migração).
+			LEFT JOIN senderzz_portal_users u ON u.id = c.user_id
 			WHERE ($1 = ''
 			       OR u.email ILIKE '%'||$1||'%'
 			       OR u.nome  ILIKE '%'||$1||'%'
 			       OR c.user_id::text = $1)
-			ORDER BY c.saldo DESC NULLS LAST, c.user_id DESC
+			  AND u.role = 'produtor'
+			GROUP BY c.user_id
+			ORDER BY saldo DESC NULLS LAST, user_id DESC
 			LIMIT $2 OFFSET $3`
 
+		// Total = nº de carteiras distintas que casam o filtro. DISTINCT torna a
+		// contagem robusta independente de qualquer fan-out do join.
 		sqlTotal = `
-			SELECT COUNT(*) FROM tpc_carteira c
-			LEFT JOIN senderzz_portal_users u ON u.wp_user_id = c.user_id
+			SELECT COUNT(DISTINCT c.user_id)
+			FROM tpc_carteira c
+			-- MIGRAÇÃO 2026-07-28: mesmo motivo do sqlList acima (join direto por
+			-- id nativo, sem fallback wp_user_id).
+			LEFT JOIN senderzz_portal_users u ON u.id = c.user_id
 			WHERE ($1 = ''
 			       OR u.email ILIKE '%'||$1||'%'
 			       OR u.nome  ILIKE '%'||$1||'%'
-			       OR c.user_id::text = $1)`
+			       OR c.user_id::text = $1)
+			  AND u.role = 'produtor'`
 	} else {
 		// Sem portal_users: lista só por user_id; `q` casa user_id::text.
+		// saldo EXIBIDO = só Expedição (derivado das tx de frete quando disponível).
+		saldoExpr := `COALESCE(c.saldo, 0)`
+		if hasTx {
+			saldoExpr = sqlSaldoExpedicao
+		}
 		sqlList = `
 			SELECT c.user_id,
 			       ''::text                        AS nome,
 			       ''::text                        AS email,
-			       COALESCE(c.saldo, 0)            AS saldo,
+			       ` + saldoExpr + `              AS saldo,
 			       COALESCE(c.saldo_reservado, 0)  AS saldo_reservado,
 			       c.created_at::text                AS ultima
 		`
 		if hasTx {
-			sqlList += `, COALESCE((SELECT COUNT(*) FROM tpc_transacoes t WHERE t.user_id = c.user_id), 0) AS tx_count`
+			sqlList += `, COALESCE((SELECT COUNT(*) FROM tpc_transacoes t WHERE t.user_id = c.user_id AND ` + sqlExcluiCOD + `), 0) AS tx_count`
 		} else {
 			sqlList += `, 0::bigint AS tx_count`
 		}
 		sqlList += `
 			FROM tpc_carteira c
 			WHERE ($1 = '' OR c.user_id::text = $1)
-			ORDER BY c.saldo DESC NULLS LAST, c.user_id DESC
+			ORDER BY saldo DESC NULLS LAST, c.user_id DESC
 			LIMIT $2 OFFSET $3`
 
 		sqlTotal = `
@@ -221,28 +307,42 @@ func (h *TpcClientesHandler) Get(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var (
-		nome, email                        string
-		saldo, reservado                   float64
-		ultima                             string
+		nome, email      string
+		saldo, reservado float64
+		ultima           string
 	)
 
 	hasUsers := h.tableExists(ctx, "senderzz_portal_users")
 
+	// saldo EXIBIDO no detalhe = só Expedição. Deriva das transações de frete
+	// confirmadas (sqlSaldoExpedicao) quando tpc_transacoes existe, senão usa o
+	// c.saldo armazenado. Mesma lógica do List — mantém a tela de detalhe isolada
+	// de COD (o cliente #15 mostrava 1770,08 = soma exata dos 27 créditos COD).
+	hasTx := h.tableExists(ctx, "tpc_transacoes")
+	saldoSel := `COALESCE(c.saldo, 0)`
+	if hasTx {
+		saldoSel = sqlSaldoExpedicao
+	}
+
 	var queryDetail string
 	if hasUsers {
+		// JOIN CANÔNICO (MIGRAÇÃO 2026-07-28): user_id da URL = id nativo do portal
+		// (List devolve u.id). Casamos a carteira por c.user_id = $1 e o produtor
+		// por u.id = c.user_id. LEFT JOIN para ainda exibir saldo mesmo se o
+		// produtor não estiver em portal_users.
 		queryDetail = `
 			SELECT COALESCE(u.nome,  ''),
 			       COALESCE(u.email, ''),
-			       COALESCE(c.saldo, 0),
+			       ` + saldoSel + `,
 			       COALESCE(c.saldo_reservado, 0),
 			       c.created_at::text
 			FROM tpc_carteira c
-			LEFT JOIN senderzz_portal_users u ON u.wp_user_id = c.user_id
+			LEFT JOIN senderzz_portal_users u ON u.id = c.user_id AND u.role = 'produtor'
 			WHERE c.user_id = $1`
 	} else {
 		queryDetail = `
 			SELECT ''::text, ''::text,
-			       COALESCE(c.saldo, 0),
+			       ` + saldoSel + `,
 			       COALESCE(c.saldo_reservado, 0),
 			       c.created_at::text
 			FROM tpc_carteira c
@@ -270,16 +370,17 @@ func (h *TpcClientesHandler) Get(w http.ResponseWriter, r *http.Request) {
 		UltimaAtualizacao: ultima,
 	}
 
-	// Últimas 50 transações.
+	// Últimas 50 transações — SÓ Expedição (exclui COD via sqlExcluiCOD). Sem esse
+	// filtro, abrir o detalhe de #15 numa tela de Expedição re-exibiria os 27 COD.
 	txs := []clienteTransacao{}
-	if h.tableExists(ctx, "tpc_transacoes") {
+	if hasTx {
 		rows, err := h.Pool.Query(ctx,
-			`SELECT id, tipo, COALESCE(valor,0), COALESCE(saldo_apos,0),
-			        COALESCE(descricao,''), COALESCE(status,''),
-			        created_at::text
-			 FROM tpc_transacoes
-			 WHERE user_id = $1
-			 ORDER BY id DESC LIMIT 50`, userID)
+			`SELECT t.id, t.tipo, COALESCE(t.valor,0), COALESCE(t.saldo_apos,0),
+			        COALESCE(t.descricao,''), COALESCE(t.status,''),
+			        t.created_at::text
+			 FROM tpc_transacoes t
+			 WHERE t.user_id = $1 AND `+sqlExcluiCOD+`
+			 ORDER BY t.id DESC LIMIT 50`, userID)
 		if err == nil {
 			for rows.Next() {
 				var t clienteTransacao
@@ -315,9 +416,9 @@ func (h *TpcClientesHandler) Get(w http.ResponseWriter, r *http.Request) {
 	}
 
 	httpx.JSON(w, 200, map[string]any{
-		"cliente":     cliente,
-		"transacoes":  txs,
-		"recargas":    recargas,
+		"cliente":    cliente,
+		"transacoes": txs,
+		"recargas":   recargas,
 	})
 }
 
@@ -355,38 +456,48 @@ func (h *TpcClientesHandler) CreateRecarga(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// Token de segurança (placeholder até wallet-service emitir real).
+	if !tpcMeClient.HasToken() {
+		httpx.Err(w, 503, "me_sem_token", "ME_TOKEN não configurado — emissão de PIX indisponível")
+		return
+	}
+
+	// Token de segurança (usado no redirect_url — identifica a recarga sem
+	// expor o id cru na URL de retorno).
 	tokenBytes := make([]byte, 16)
 	_, _ = rand.Read(tokenBytes)
 	securityToken := hex.EncodeToString(tokenBytes)
+	redirectURL := strings.TrimRight(os.Getenv("APP_BASE_URL"), "/") + "/tpc-recarga-retorno?t=" + securityToken
 
-	// Copia-e-cola placeholder — formato BRCode-like. Substituído pelo retorno
-	// real de POST /internal/recarga/create quando wallet-service estiver up.
-	copiaCola := "00020126360014BR.GOV.BCB.PIX0114SENDERZZ-STUB-" + securityToken[:12] +
-		"5204000053039865802BR5910SENDERZZ6009SAO PAULO62070503***6304ABCD"
-
-	// QR via api.qrserver.com (mesma estratégia da etiqueta motoboy).
-	qrSrc := "https://api.qrserver.com/v1/create-qr-code/?size=320x320&data=" +
-		url.QueryEscape(copiaCola)
+	pix, err := tpcMeClient.GerarPix(ctx, body.Valor, redirectURL)
+	if err != nil {
+		httpx.Err(w, 502, "me_erro", "Erro ao gerar PIX no Melhor Envio: "+err.Error())
+		return
+	}
 
 	expiresAt := time.Now().UTC().Add(30 * time.Minute)
-	mePixID := "stub-" + securityToken[:16]
+	if pix.ExpiresTS > 0 {
+		expiresAt = time.Unix(pix.ExpiresTS, 0).UTC()
+	}
+	mePixID := pix.PixID
+	if mePixID == "" {
+		mePixID = securityToken // fallback: garante NOT NULL/idempotência mesmo se ME não devolver id
+	}
 
 	var recargaID int64
-	err := h.Pool.QueryRow(ctx,
+	err = h.Pool.QueryRow(ctx,
 		`INSERT INTO tpc_recargas
 		   (user_id, valor, status, me_pix_id, pix_qr, pix_codigo, expires_at, created_at)
 		 VALUES ($1, $2, 'pendente', $3, $4, $5, $6, NOW())
 		 RETURNING id`,
-		userID, body.Valor, mePixID, qrSrc, copiaCola, expiresAt).Scan(&recargaID)
+		userID, body.Valor, mePixID, pix.QRSrc, pix.CopiaCola, expiresAt).Scan(&recargaID)
 	if err != nil {
 		httpx.Err(w, 500, "db_error", err.Error())
 		return
 	}
 	// Nota: tpc_transacoes.tipo é restrito a (credito|debito|reserva) por CHECK
 	// constraint. O motivo só é persistido implicitamente como contexto da recarga
-	// — quando wallet-service confirmar o PIX, ele cria a transação real de
-	// crédito. O motivo informado pelo admin pode ser registrado em auditoria
+	// — a confirmação do PIX (webhook ME → wallet-service) cria a transação real
+	// de crédito. O motivo informado pelo admin pode ser registrado em auditoria
 	// externa (TODO: senderzz_audit_log quando o handler for migrado).
 	_ = body.Motivo
 
@@ -395,12 +506,11 @@ func (h *TpcClientesHandler) CreateRecarga(w http.ResponseWriter, r *http.Reques
 		"recarga_id":     recargaID,
 		"user_id":        userID,
 		"valor":          body.Valor,
-		"qr_src":         qrSrc,
-		"copia_cola":     copiaCola,
-		"link":           qrSrc,
+		"qr_src":         pix.QRSrc,
+		"copia_cola":     pix.CopiaCola,
+		"link":           pix.Link,
 		"expires_at":     expiresAt.Format(time.RFC3339),
 		"security_token": securityToken,
-		"stub":           true, // sinaliza que é placeholder até wallet-service confirmar
 	})
 }
 
@@ -441,13 +551,17 @@ func (h *TpcClientesHandler) CancelRecarga(w http.ResponseWriter, r *http.Reques
 
 // ResetWalletAll — POST /tpc-clientes/reset-wallet-all
 //
-// DANGER. Apaga TODOS os registros financeiros TPC:
-//   - tpc_carteira
-//   - tpc_transacoes
-//   - tpc_recargas
+// DANGER, mas PRESERVA O LEDGER. Zera os saldos sem apagar o histórico:
+//   - tpc_carteira ....... saldo = 0, saldo_reservado = 0 (UPDATE, não DELETE)
+//   - tpc_transacoes ..... PRESERVADA — o ledger/histórico NÃO é apagado.
+//   - tpc_recargas ....... apaga recargas pendentes/registros (DELETE)
+//
+// Antes esse handler fazia DELETE FROM tpc_transacoes, destruindo o ledger.
+// Agora apenas zeramos tpc_carteira.saldo/saldo_reservado, mantendo a trilha
+// contábil intacta para auditoria.
 //
 // Exige body {"confirm":"RESETAR"} EXATO (case-sensitive). Tudo dentro de uma
-// transação — se uma DELETE falhar, rollback total.
+// transação — se uma operação falhar, rollback total.
 func (h *TpcClientesHandler) ResetWalletAll(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	var body struct {
@@ -472,28 +586,29 @@ func (h *TpcClientesHandler) ResetWalletAll(w http.ResponseWriter, r *http.Reque
 	defer tx.Rollback(ctx)
 
 	res := map[string]int64{
-		"carteira_deleted":    0,
-		"transacoes_deleted":  0,
-		"recargas_deleted":    0,
-		"order_meta_deleted":  0,
+		"carteira_zeroed":      0,
+		"transacoes_preserved": 0,
+		"recargas_deleted":     0,
+		"order_meta_deleted":   0,
 	}
 
+	// Zera saldos SEM apagar a carteira — só UPDATE saldo/saldo_reservado.
 	if h.tableExists(ctx, "tpc_carteira") {
-		tag, err := tx.Exec(ctx, `DELETE FROM tpc_carteira`)
+		tag, err := tx.Exec(ctx,
+			`UPDATE tpc_carteira SET saldo = 0, saldo_reservado = 0`)
 		if err != nil {
 			httpx.Err(w, 500, "db_error", err.Error())
 			return
 		}
-		res["carteira_deleted"] = tag.RowsAffected()
+		res["carteira_zeroed"] = tag.RowsAffected()
 	}
 
+	// LEDGER PRESERVADO: tpc_transacoes NÃO é apagada. Apenas contamos as
+	// linhas existentes para sinalizar na resposta que o histórico ficou intacto.
 	if h.tableExists(ctx, "tpc_transacoes") {
-		tag, err := tx.Exec(ctx, `DELETE FROM tpc_transacoes`)
-		if err != nil {
-			httpx.Err(w, 500, "db_error", err.Error())
-			return
-		}
-		res["transacoes_deleted"] = tag.RowsAffected()
+		var n int64
+		_ = tx.QueryRow(ctx, `SELECT COUNT(*) FROM tpc_transacoes`).Scan(&n)
+		res["transacoes_preserved"] = n
 	}
 
 	if h.tableExists(ctx, "tpc_recargas") {
@@ -505,13 +620,9 @@ func (h *TpcClientesHandler) ResetWalletAll(w http.ResponseWriter, r *http.Reque
 		res["recargas_deleted"] = tag.RowsAffected()
 	}
 
-	// Limpa metas de carteira em postmeta / wc_orders_meta (graceful: tabela pode não existir).
-	// Espelha comportamento do WP: "limpa metas antigas de carteira nos pedidos (_senderzz_wallet_*)".
-	if h.tableExists(ctx, "wp_postmeta") {
-		tag, _ := tx.Exec(ctx,
-			`DELETE FROM wp_postmeta WHERE meta_key LIKE '_senderzz_wallet_%'`)
-		res["order_meta_deleted"] += tag.RowsAffected()
-	}
+	// AUDIT-2026-07-31: removido fallback pra wp_postmeta — tabela MySQL nativa
+	// do WordPress, nunca existiu (nem existiria) no Postgres deste projeto;
+	// tableExists() sempre retornava false, branch 100% inalcançável.
 	if h.tableExists(ctx, "sz_order_meta") {
 		tag, _ := tx.Exec(ctx,
 			`DELETE FROM sz_order_meta WHERE meta_key LIKE '_senderzz_wallet_%'`)

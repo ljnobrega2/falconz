@@ -1,0 +1,6 @@
+{
+  "$schema": "https://unpkg.com/wrangler@latest/config-schema.json",
+  "name": "rotacionador-telegram",
+  "pages_build_output_dir": ".",
+  "compatibility_date": "2026-08-05"
+}

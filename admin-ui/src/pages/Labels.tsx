@@ -9,8 +9,26 @@ import FilterTopPanel, {
 } from '../components/FilterTopPanel'
 import TableSkeleton from '../components/TableSkeleton'
 import EmptyState from '../components/EmptyState'
+import FalkSelect from '../components/FalkSelect'
+import FalkDatePicker from '../components/FalkDatePicker'
 
 type L = { id: number; wc_order_id: number; me_shipment_id: string | null; status: string; service_name: string | null; tracking_code: string | null; created_at: string }
+
+// MED34: KPIs vindos de GET /labels/kpis (registrado em main.go:247). São globais
+// (não filtrados por status/data/busca da listagem), por isso ficam em estado e
+// effect próprios — não no useEffect dos filtros.
+type Kpis = { hoje: number; processando: number; entregue: number; cancelado: number }
+
+function KpiCard({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="szv2-card">
+      <div className="szv2-kpi">
+        <span className="szv2-kpi-label">{label}</span>
+        <span className="szv2-kpi-value" style={{ color: 'var(--szv2-brand)' }}>{value}</span>
+      </div>
+    </div>
+  )
+}
 
 const ST_CLS: Record<string, string> = {
   draft:    'szv2-badge-neutral',
@@ -34,6 +52,7 @@ export default function Labels() {
   const [items, setItems] = useState<L[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
+  const [kpis, setKpis] = useState<Kpis | null>(null)
 
   // Filtros aplicados.
   const [status, setStatus] = useState('')
@@ -52,9 +71,13 @@ export default function Labels() {
   function buildQs() {
     const p = new URLSearchParams()
     if (status) p.set('status', status)
+    // NOTA: o backend (go/admin labels.List) ainda NÃO filtra por data — envia
+    // mesmo assim para quando o range for implementado; reportado em backendReqs.
     if (dataIni) p.set('data_ini', dataIni)
     if (dataFim) p.set('data_fim', dataFim)
-    if (q.trim()) p.set('q', q.trim())
+    // Backend lê o parâmetro de busca como `search` (não `q`). Mantemos `q`
+    // como espelho por compatibilidade, mas `search` é o que efetivamente filtra.
+    if (q.trim()) { p.set('search', q.trim()); p.set('q', q.trim()) }
     p.set('limit', '100')
     return p.toString()
   }
@@ -67,6 +90,15 @@ export default function Labels() {
       .finally(() => setLoading(false))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status, dataIni, dataFim, q])
+
+  // KPIs globais — busca única no mount. Falha silenciosa: um erro aqui nunca
+  // pode esvaziar a tabela (conteúdo primário). Backend já devolve zeros se
+  // sz_orders não existir.
+  useEffect(() => {
+    api<Kpis>('/labels/kpis')
+      .then(setKpis)
+      .catch(() => {})
+  }, [])
 
   function openPanel() {
     setDraftStatus(status); setDraftIni(dataIni); setDraftFim(dataFim); setDraftQ(q)
@@ -106,6 +138,18 @@ export default function Labels() {
 
       <ActiveFilterChips chips={chips} onClearAll={clearFilters} />
 
+      {kpis && (
+        <div
+          className="szv2-kpi-grid"
+          style={{ gridTemplateColumns: 'repeat(4, minmax(0,1fr))', marginBottom: 24 }}
+        >
+          <KpiCard label="Hoje" value={kpis.hoje} />
+          <KpiCard label="Processando" value={kpis.processando} />
+          <KpiCard label="Entregue" value={kpis.entregue} />
+          <KpiCard label="Cancelado" value={kpis.cancelado} />
+        </div>
+      )}
+
       {err && <div className="sz-alert-danger">{err}</div>}
 
       {loading && items.length === 0 ? (
@@ -134,7 +178,7 @@ export default function Labels() {
             {items.map(l => (
               <tr key={l.id}>
                 <td style={{ color: 'var(--szv2-text-muted)', fontSize: '12px' }}>#{l.id}</td>
-                <td style={{ fontWeight: 600 }}>#{l.wc_order_id}</td>
+                <td style={{ fontWeight: 600 }}>{l.wc_order_id}</td>
                 <td style={{ fontFamily: 'var(--szv2-font-mono)', fontSize: '11px', color: 'var(--szv2-text-muted)', maxWidth: '120px', overflow: 'hidden', textOverflow: 'ellipsis' }}>{l.me_shipment_id ?? '—'}</td>
                 <td style={{ fontSize: '13px' }}>{l.service_name ?? '—'}</td>
                 <td>
@@ -159,32 +203,31 @@ export default function Labels() {
         title="Filtros"
       >
         <FilterField label="Data inicial">
-          <input
-            type="date"
-            style={filterInputStyle}
+          <FalkDatePicker
             value={draftIni}
             max={draftFim}
-            onChange={e => setDraftIni(e.target.value)}
+            onChange={v => setDraftIni(v)}
+            placeholder="dd/mm/aaaa"
           />
         </FilterField>
         <FilterField label="Data final">
-          <input
-            type="date"
-            style={filterInputStyle}
+          <FalkDatePicker
             value={draftFim}
             min={draftIni}
-            onChange={e => setDraftFim(e.target.value)}
+            onChange={v => setDraftFim(v)}
+            placeholder="dd/mm/aaaa"
           />
         </FilterField>
         <FilterField label="Status">
-          <select
-            style={filterInputStyle}
+          <FalkSelect
             value={draftStatus}
-            onChange={e => setDraftStatus(e.target.value)}
-          >
-            <option value="">Todos status</option>
-            {Object.keys(ST_CLS).map(s => <option key={s} value={s}>{s}</option>)}
-          </select>
+            onChange={v => setDraftStatus(v)}
+            placeholder="Todos status"
+            options={[
+              { value: '', label: 'Todos status' },
+              ...Object.keys(ST_CLS).map(s => ({ value: s, label: s })),
+            ]}
+          />
         </FilterField>
         <FilterField label="Busca">
           <input

@@ -3,14 +3,15 @@
 // Namespace WP: /wp-json/senderzz/v1
 //
 // Rotas implementadas neste arquivo:
-//   POST   /orders                — cria pedido (valida itens, calcula total server-side)
-//   GET    /orders                — lista pedidos do usuário autenticado (com filtros e paginação)
-//   GET    /orders/{id}           — detalhe do pedido com itens, endereço e histórico
-//   PATCH  /orders/{id}/status    — transição de status via statemachine
-//   POST   /orders/{id}/cancel    — atalho: status → cancelled
-//   GET    /orders/{id}/meta      — leitura de metadados do pedido
-//   POST   /orders/{id}/meta      — gravação de metadado (key/value)
-//   GET    /orders/export         — exportação CSV (produtor: próprios; admin: todos)
+//
+//	POST   /orders                — cria pedido (valida itens, calcula total server-side)
+//	GET    /orders                — lista pedidos do usuário autenticado (com filtros e paginação)
+//	GET    /orders/{id}           — detalhe do pedido com itens, endereço e histórico
+//	PATCH  /orders/{id}/status    — transição de status via statemachine
+//	POST   /orders/{id}/cancel    — atalho: status → cancelled
+//	GET    /orders/{id}/meta      — leitura de metadados do pedido
+//	POST   /orders/{id}/meta      — gravação de metadado (key/value)
+//	GET    /orders/export         — exportação CSV (produtor: próprios; admin: todos)
 //
 // Segurança:
 //   - Total nunca é aceito do cliente — recalculado a partir de itens (CRIT-01 equiv.).
@@ -68,18 +69,18 @@ type itemInput struct {
 
 // enderecoInput representa o endereço de envio enviado na criação do pedido.
 type enderecoInput struct {
-	Tipo       string `json:"tipo"`
-	Nome       string `json:"nome"`
-	Email      string `json:"email"`
-	Telefone   string `json:"telefone"`
-	CEP        string `json:"cep"`
-	Logradouro string `json:"logradouro"`
-	Numero     string `json:"numero"`
+	Tipo        string `json:"tipo"`
+	Nome        string `json:"nome"`
+	Email       string `json:"email"`
+	Telefone    string `json:"telefone"`
+	CEP         string `json:"cep"`
+	Logradouro  string `json:"logradouro"`
+	Numero      string `json:"numero"`
 	Complemento string `json:"complemento"`
-	Bairro     string `json:"bairro"`
-	Cidade     string `json:"cidade"`
-	UF         string `json:"uf"`
-	Pais       string `json:"pais"`
+	Bairro      string `json:"bairro"`
+	Cidade      string `json:"cidade"`
+	UF          string `json:"uf"`
+	Pais        string `json:"pais"`
 }
 
 // createOrderRequest representa o payload de criação de pedido.
@@ -165,11 +166,64 @@ func (h *OrderHandler) PostOrders(w http.ResponseWriter, r *http.Request) {
 		req.ProdutorID = userID
 	}
 
-	// Calcula totais server-side — nunca usa valor enviado pelo cliente.
-	subtotal := decimal.Zero
+	ctx := r.Context()
+
+	// SEC (P0-05/assessment 2026-06-18): preco_unit enviado pelo cliente é substituído
+	// pelo preço autoritativo de sz_products.preco — mesma postura de
+	// checkout.go::PostOrder (ignora preço do cliente, lê server-side). EXCEÇÃO: admin
+	// (auth.IsAdmin, fail-closed contra token forjado — ver auth.go) pode enviar
+	// preco_unit customizado (desconto manual/bundle, uso operacional legítimo);
+	// produtor NUNCA pode — sempre trava no catálogo. Produto sem linha em sz_products
+	// (ou preco<=0) rejeita o pedido para não-admin: sem preço autoritativo não há
+	// como cobrar corretamente (fail-closed, não inventa valor).
+	isAdminOverride := auth.IsAdmin(ctx)
+	produtoIDs := make([]int64, 0, len(req.Itens))
 	for _, item := range req.Itens {
+		produtoIDs = append(produtoIDs, item.ProdutoID)
+	}
+	precoAutoritativo := make(map[int64]decimal.Decimal, len(produtoIDs))
+	rows, err := h.db.Query(ctx,
+		`SELECT id, preco FROM sz_products WHERE id = ANY($1)`, produtoIDs)
+	if err != nil {
+		slog.Error("[orders] falha ao carregar preços autoritativos", "err", err)
+		httpx.WriteErr(w, http.StatusInternalServerError, "erro interno")
+		return
+	}
+	for rows.Next() {
+		var pid int64
+		var preco decimal.Decimal
+		if err := rows.Scan(&pid, &preco); err != nil {
+			rows.Close()
+			slog.Error("[orders] falha ao ler preço autoritativo", "err", err)
+			httpx.WriteErr(w, http.StatusInternalServerError, "erro interno")
+			return
+		}
+		precoAutoritativo[pid] = preco
+	}
+	rows.Close()
+
+	subtotal := decimal.Zero
+	for i, item := range req.Itens {
+		catalogo, hasCatalogo := precoAutoritativo[item.ProdutoID]
+		hasCatalogo = hasCatalogo && catalogo.GreaterThan(decimal.Zero)
+
+		var preco decimal.Decimal
+		switch {
+		case isAdminOverride && item.PrecoUnit.GreaterThan(decimal.Zero):
+			// Admin com preco_unit > 0 explícito: override vence, mesmo sem catálogo
+			// (produto legado/sem cadastro) ou divergindo dele (desconto/bundle).
+			preco = item.PrecoUnit
+		case hasCatalogo:
+			// Caso padrão (produtor, ou admin sem override): sempre catálogo.
+			preco = catalogo
+		default:
+			httpx.WriteErr(w, http.StatusBadRequest,
+				fmt.Sprintf("item[%d]: produto_id %d sem preço cadastrado", i, item.ProdutoID))
+			return
+		}
+		req.Itens[i].PrecoUnit = preco
 		qty := decimal.NewFromInt(int64(item.Quantidade))
-		itemSubtotal := item.PrecoUnit.Mul(qty)
+		itemSubtotal := preco.Mul(qty)
 		subtotal = subtotal.Add(itemSubtotal)
 	}
 	if req.Frete.LessThan(decimal.Zero) {
@@ -177,12 +231,10 @@ func (h *OrderHandler) PostOrders(w http.ResponseWriter, r *http.Request) {
 	}
 	total := subtotal.Add(req.Frete)
 
-	ctx := r.Context()
-
 	// Gera order_number único: SZ-{ano}{seq padded}.
 	// Usa sequência do banco para garantir unicidade.
 	var nextVal int64
-	err := h.db.QueryRow(ctx,
+	err = h.db.QueryRow(ctx,
 		`SELECT nextval(pg_get_serial_sequence('sz_orders', 'id'))`,
 	).Scan(&nextVal)
 	if err != nil {
@@ -629,9 +681,9 @@ func (h *OrderHandler) GetOrder(w http.ResponseWriter, r *http.Request) {
 	}
 
 	httpx.WriteOK(w, map[string]any{
-		"pedido":   o,
-		"itens":    itens,
-		"endereco": addr,
+		"pedido":    o,
+		"itens":     itens,
+		"endereco":  addr,
 		"historico": historico,
 	})
 }
@@ -727,6 +779,24 @@ func (h *OrderHandler) PatchOrderStatus(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// Mesma liberação de reserva do /cancel (ver comentário lá) — aqui cobre
+	// 'cancelled' e 'reembolsado' vindos da rota genérica (admin).
+	if req.Status == "cancelled" || req.Status == "reembolsado" {
+		if tag, err := h.db.Exec(ctx, `
+			UPDATE sz_motoboy_pedidos p
+			   SET status = 'cancelado', updated_at = NOW()
+			  FROM sz_orders o
+			 WHERE COALESCE(o.wp_order_id, o.id) = p.wc_order_id
+			   AND o.id = $1
+			   AND p.status NOT IN ('entregue', 'cancelado')`,
+			orderID,
+		); err != nil {
+			slog.Error("[orders] falha ao liberar reserva de estoque na transição", "order_id", orderID, "err", err)
+		} else if tag.RowsAffected() > 0 {
+			slog.Info("[orders] reserva de estoque liberada na transição", "order_id", orderID, "status", req.Status)
+		}
+	}
+
 	httpx.WriteOK(w, map[string]any{
 		"order_id": orderID,
 		"status":   req.Status,
@@ -762,17 +832,23 @@ func (h *OrderHandler) PostOrderCancel(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	isAdmin := auth.IsAdmin(ctx)
 
-	// Cancellable statuses (espelha CRIT-02 do PHP — whitelist explícita).
+	// AUDIT-2026-06-18 (Onda 1): espelha CRIT-02 do PHP — cliente só cancela pré-despacho.
+	// 'processing' removido do conjunto do cliente (só admin). Pedido PAGO é bloqueado
+	// abaixo: 'cancelled' é terminal e NÃO há rota cancelled→reembolsado, então cancelar
+	// um pedido pago o deixaria payment_status='paid' permanente, sem reembolso.
 	cancellableStatuses := map[string]bool{
-		"pending": true, "processing": true, "aguardando": true, "on-hold": true,
+		"pending": true, "aguardando": true, "on-hold": true,
+	}
+	if isAdmin {
+		cancellableStatuses["processing"] = true
 	}
 
-	var currentStatus string
+	var currentStatus, paymentStatus string
 	var ownerUserID, ownerProdutorID int64
 	err = h.db.QueryRow(ctx,
-		`SELECT status, user_id, produtor_id FROM sz_orders WHERE id = $1`,
+		`SELECT status, COALESCE(payment_status,'pending'), user_id, produtor_id FROM sz_orders WHERE id = $1`,
 		orderID,
-	).Scan(&currentStatus, &ownerUserID, &ownerProdutorID)
+	).Scan(&currentStatus, &paymentStatus, &ownerUserID, &ownerProdutorID)
 	if err == pgx.ErrNoRows {
 		httpx.WriteErr(w, http.StatusNotFound, "pedido não encontrado")
 		return
@@ -794,6 +870,15 @@ func (h *OrderHandler) PostOrderCancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// AUDIT-2026-06-18 (Onda 1): pedido pago não pode ser cancelado por esta rota —
+	// ficaria 'cancelled' (terminal) com payment_status='paid' e SEM rota de reembolso.
+	// Deve passar pelo fluxo de reembolso (/refund).
+	if paymentStatus == "paid" {
+		httpx.WriteErr(w, http.StatusConflict,
+			"pedido pago não pode ser cancelado por esta rota; use o fluxo de reembolso")
+		return
+	}
+
 	actorTipo := "cliente"
 	if isAdmin {
 		actorTipo = "admin"
@@ -807,6 +892,27 @@ func (h *OrderHandler) PostOrderCancel(w http.ResponseWriter, r *http.Request) {
 		slog.Error("[orders] falha ao cancelar pedido", "order_id", orderID, "err", err)
 		httpx.WriteErr(w, http.StatusInternalServerError, "erro ao cancelar pedido")
 		return
+	}
+
+	// PARIDADE senderzz-cancel-restock.php: cancelar o pedido precisa liberar a
+	// reserva de estoque. sz_stock_apply_pedido() (trigger em sz_motoboy_pedidos)
+	// já faz isso de forma simétrica e correta — mas só dispara em UPDATE OF status
+	// dessa tabela. Sem este write, cancelar por /orders/{id}/cancel nunca tocava
+	// sz_motoboy_pedidos e a reserva ficava presa. 'entregue' fica de fora de
+	// propósito: baixa já foi commitada (consumiu disponível), restock automático
+	// pós-entrega não é seguro (mercadoria já saiu fisicamente).
+	if tag, err := h.db.Exec(ctx, `
+		UPDATE sz_motoboy_pedidos p
+		   SET status = 'cancelado', updated_at = NOW()
+		  FROM sz_orders o
+		 WHERE COALESCE(o.wp_order_id, o.id) = p.wc_order_id
+		   AND o.id = $1
+		   AND p.status NOT IN ('entregue', 'cancelado')`,
+		orderID,
+	); err != nil {
+		slog.Error("[orders] falha ao liberar reserva de estoque no cancelamento", "order_id", orderID, "err", err)
+	} else if tag.RowsAffected() > 0 {
+		slog.Info("[orders] reserva de estoque liberada no cancelamento", "order_id", orderID)
 	}
 
 	slog.Info("[orders] pedido cancelado", "order_id", orderID, "user_id", userID)
@@ -903,6 +1009,19 @@ func (h *OrderHandler) PostOrderMeta(w http.ResponseWriter, r *http.Request) {
 
 	if err := h.checkOrderAccess(ctx, orderID, userID, isAdmin); err != nil {
 		httpx.WriteErr(w, http.StatusNotFound, "pedido não encontrado")
+		return
+	}
+
+	// AUDIT-2026-07-30 MEDIUM: PostOrderMeta não tinha allowlist — o dono do
+	// pedido (produtor) podia escrever QUALQUER meta_key na própria order,
+	// incluindo _sz_freight_price/_sz_freight_locked, que labels/emit.go lê pra
+	// dimensionar o débito da carteira na emissão de etiqueta. Um produtor podia
+	// gravar _sz_freight_locked=1 + _sz_freight_price=0.01 e subfaturar o frete
+	// debitado. Bloqueia não-admin de escrever qualquer chave reservada
+	// (prefixo _sz_ = metadado de sistema/financeiro, nunca preenchido pelo
+	// dono do pedido em uso legítimo).
+	if !isAdmin && strings.HasPrefix(req.Key, "_sz_") {
+		httpx.WriteErr(w, http.StatusForbidden, "chave reservada — não pode ser alterada pelo dono do pedido")
 		return
 	}
 

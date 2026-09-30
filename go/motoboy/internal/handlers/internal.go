@@ -153,8 +153,12 @@ func (h *InternalHandler) StatusChanged(w http.ResponseWriter, r *http.Request) 
 
 	// Registra na tabela de auditoria Go — idempotente para replay (GAP 1-C).
 	// WHERE NOT EXISTS evita duplicata no mesmo dia sem exigir UNIQUE constraint.
-	// TODO: migration — adicionar índice único para substituir pelo ON CONFLICT:
-	//   CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS uq_audit_status_dia
+	// AUDIT CODE-MOTOBOY-TODOS-08: índice único uq_audit_status_dia criado em
+	// infra/postgres/190-fixes-v471-motoboy-todos.sql é ADITIVO (rede de
+	// segurança no banco). NÃO trocar este INSERT por ON CONFLICT: ON CONFLICT
+	// exigiria o índice já existindo em runtime — se o migration não tiver rodado,
+	// quebraria o endpoint. Manter o WHERE NOT EXISTS (já idempotente).
+	//   CREATE UNIQUE INDEX IF NOT EXISTS uq_audit_status_dia
 	//     ON sz_motoboy_audit (pedido_id, acao, para_status, (created_at::date));
 	_, _ = h.Pool.Exec(ctx, `
 		INSERT INTO sz_motoboy_audit (pedido_id, acao, de_status, para_status, created_at)

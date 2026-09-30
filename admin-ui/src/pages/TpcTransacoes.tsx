@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
+import { confirmAsync } from '../components/ConfirmDialog'
+import { useToast } from '../hooks/useToast'
 import { api } from '../api'
 import FilterButton from '../components/FilterButton'
 import FilterTopPanel, {
@@ -9,6 +11,9 @@ import FilterTopPanel, {
 } from '../components/FilterTopPanel'
 import TableSkeleton from '../components/TableSkeleton'
 import EmptyState from '../components/EmptyState'
+import StatusBadge from '../components/StatusBadge'
+import FalkSelect from '../components/FalkSelect'
+import FalkDatePicker from '../components/FalkDatePicker'
 
 // ----- Tipos retornados pelo handler Go ---------------------------------------
 
@@ -54,7 +59,6 @@ type VerificarPixResponse = {
 
 type TipoFilter = '' | 'credito' | 'debito'
 type StatusFilter = '' | 'pendente' | 'analise' | 'confirmado' | 'cancelado'
-type CarteiraFilter = 'expedicao' | 'cod' | 'todas'
 
 const TIPO_CHIPS: { key: TipoFilter; label: string }[] = [
   { key: '',        label: 'Todos' },
@@ -78,45 +82,12 @@ const fmt = (v: number) =>
 const fmtDate = (s: string | null | undefined) =>
   s ? s.slice(0, 16).replace('T', ' ') : '—'
 
-// Mapeamento de classes para o badge de status — segue a paleta padrão Senderzz V2.
-const STATUS_BADGE_CLS: Record<string, string> = {
-  pendente:   'szv2-badge-warning',
-  analise:    'szv2-badge-warning',
-  confirmado: 'szv2-badge-success',
-  cancelado:  'szv2-badge-danger',
-}
-
+// Rótulo PT-BR por status (cor única vem do StatusBadge central).
 const STATUS_LABEL: Record<string, string> = {
   pendente:   'Pendente',
   analise:    'Em análise',
   confirmado: 'Confirmado',
   cancelado:  'Cancelado',
-}
-
-// Chip component — espelha o padrão szv2-tab usado em outros painéis.
-function Chip({
-  active,
-  onClick,
-  children,
-  disabled,
-}: {
-  active: boolean
-  onClick: () => void
-  children: React.ReactNode
-  disabled?: boolean
-}) {
-  return (
-    <button
-      type="button"
-      className="szv2-tab"
-      aria-selected={active}
-      disabled={disabled}
-      onClick={onClick}
-      style={{ minHeight: 32, padding: '6px 14px', fontSize: 13 }}
-    >
-      {children}
-    </button>
-  )
 }
 
 // ----- Página ----------------------------------------------------------------
@@ -131,8 +102,9 @@ export default function TpcTransacoes() {
   // Filtros
   const [tipo, setTipo] = useState<TipoFilter>('')
   const [status, setStatus] = useState<StatusFilter>('')
-  // Filtro client-side para separar transações da Carteira Expedição (frete) vs COD
-  const [carteira, setCarteira] = useState<CarteiraFilter>('expedicao')
+  // ISOLAMENTO COD (FALK): esta tela é EXCLUSIVA de Expedição (frete). O backend
+  // (tpc_transacoes.go) já exclui COD na própria query — não há mais toggle de
+  // carteira aqui nem filtro client-side. Transações COD vivem na tela "Transações COD".
   const [dataIni, setDataIni] = useState('')
   const [dataFim, setDataFim] = useState('')
   const [userIdInput, setUserIdInput] = useState('')
@@ -140,14 +112,10 @@ export default function TpcTransacoes() {
 
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState('')
-  const [toast, setToast] = useState<{ kind: 'ok' | 'err'; msg: string } | null>(null)
+  const showToast = useToast() // AUDIT-2026-06-18 Onda3
   const [busy, setBusy] = useState(false)
   const [deletingId, setDeletingId] = useState<number | null>(null)
 
-  function showToast(kind: 'ok' | 'err', msg: string) {
-    setToast({ kind, msg })
-    setTimeout(() => setToast(null), 5000)
-  }
 
   async function load() {
     setLoading(true)
@@ -220,7 +188,7 @@ export default function TpcTransacoes() {
   }
 
   async function handleDelete(id: number) {
-    if (!window.confirm(`Excluir transação #${id}?\n\nO saldo do cliente será recalculado automaticamente a partir das transações confirmadas restantes.\n\nEsta ação é IRREVERSÍVEL.`)) {
+    if (!await confirmAsync({ message: `Excluir transação #${id}?\n\nO saldo do cliente será recalculado automaticamente a partir das transações confirmadas restantes.\n\nEsta ação é IRREVERSÍVEL.`, danger: true })) {
       return
     }
     setDeletingId(id)
@@ -242,7 +210,7 @@ export default function TpcTransacoes() {
   }
 
   async function handleVerificarPix() {
-    if (!window.confirm('Disparar verificação de PIX pendentes agora?')) return
+    if (!await confirmAsync({ message: 'Disparar verificação de PIX pendentes agora?' })) return
     setBusy(true)
     try {
       const r = await api<VerificarPixResponse>('/tpc-transacoes/verificar-pix', { method: 'POST' })
@@ -263,16 +231,6 @@ export default function TpcTransacoes() {
 
   const hasAnyFilter =
     tipo !== '' || status !== '' || dataIni !== '' || dataFim !== '' || userIdApplied !== ''
-
-  // Filtra client-side por carteira (descrição contém "COD" = transação COD)
-  const visibleItems = useMemo(() => {
-    if (carteira === 'todas') return items
-    if (carteira === 'cod') {
-      return items.filter(t => /cod/i.test(t.descricao || ''))
-    }
-    // 'expedicao' (default): oculta transações COD
-    return items.filter(t => !/cod/i.test(t.descricao || ''))
-  }, [items, carteira])
 
   // Chips
   const chips: ActiveChip[] = []
@@ -309,36 +267,10 @@ export default function TpcTransacoes() {
       <ActiveFilterChips chips={chips} onClearAll={clearAllFilters} />
 
       {err && <div className="sz-alert-danger" style={{ marginBottom: 16 }}>{err}</div>}
-      {toast && (
-        <div
-          className={toast.kind === 'ok' ? 'sz-alert-success' : 'sz-alert-danger'}
-          style={{ marginBottom: 16 }}
-        >
-          {toast.msg}
-        </div>
-      )}
 
       <div className="szv2-alert" style={{ marginBottom: 16 }}>
         Estas são transações da carteira de Expedição (frete pré-pago).
         Para transações COD veja: Transações COD.
-      </div>
-
-      {/* Carteira (client-side) — mantido fora do painel pois é toggle visual */}
-      <div className="szv2-card" style={{ marginBottom: 16 }}>
-        <div style={{ fontSize: 12, color: 'var(--szv2-text-muted)', marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0.5 }}>
-          Carteira
-        </div>
-        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-          <Chip active={carteira === 'expedicao'} onClick={() => setCarteira('expedicao')} disabled={loading}>
-            Expedição (frete)
-          </Chip>
-          <Chip active={carteira === 'cod'} onClick={() => setCarteira('cod')} disabled={loading}>
-            COD
-          </Chip>
-          <Chip active={carteira === 'todas'} onClick={() => setCarteira('todas')} disabled={loading}>
-            Todas
-          </Chip>
-        </div>
       </div>
 
       <FilterTopPanel
@@ -349,38 +281,34 @@ export default function TpcTransacoes() {
         title="Filtros"
       >
         <FilterField label="Data inicial">
-          <input
-            type="date"
-            style={filterInputStyle}
+          <FalkDatePicker
             value={draftIni}
-            onChange={e => setDraftIni(e.target.value)}
+            onChange={v => setDraftIni(v)}
+            placeholder="dd/mm/aaaa"
           />
         </FilterField>
         <FilterField label="Data final">
-          <input
-            type="date"
-            style={filterInputStyle}
+          <FalkDatePicker
             value={draftFim}
-            onChange={e => setDraftFim(e.target.value)}
+            onChange={v => setDraftFim(v)}
+            placeholder="dd/mm/aaaa"
           />
         </FilterField>
         <FilterField label="Tipo">
-          <select
-            style={filterInputStyle}
+          <FalkSelect
+            aria-label="Tipo"
             value={draftTipo}
-            onChange={e => setDraftTipo(e.target.value as TipoFilter)}
-          >
-            {TIPO_CHIPS.map(c => <option key={c.key || 'all-tipo'} value={c.key}>{c.label}</option>)}
-          </select>
+            onChange={v => setDraftTipo(v as TipoFilter)}
+            options={TIPO_CHIPS.map(c => ({ value: c.key, label: c.label }))}
+          />
         </FilterField>
         <FilterField label="Status">
-          <select
-            style={filterInputStyle}
+          <FalkSelect
+            aria-label="Status"
             value={draftStatus}
-            onChange={e => setDraftStatus(e.target.value as StatusFilter)}
-          >
-            {STATUS_CHIPS.map(c => <option key={c.key || 'all-status'} value={c.key}>{c.label}</option>)}
-          </select>
+            onChange={v => setDraftStatus(v as StatusFilter)}
+            options={STATUS_CHIPS.map(c => ({ value: c.key, label: c.label }))}
+          />
         </FilterField>
         <FilterField label="Busca (user_id)">
           <input
@@ -394,14 +322,14 @@ export default function TpcTransacoes() {
         </FilterField>
       </FilterTopPanel>
 
-      {/* Tabela */}
-      {loading && visibleItems.length === 0 ? (
+      {/* Tabela — o backend já exclui COD; items é só Expedição (frete). */}
+      {loading && items.length === 0 ? (
         <TableSkeleton rows={6} cols={9} />
-      ) : !loading && visibleItems.length === 0 ? (
+      ) : !loading && items.length === 0 ? (
         <EmptyState
           icon="💼"
-          title="Nenhuma transação encontrada."
-          description={(hasAnyFilter || carteira !== 'todas') ? 'Tente ajustar os filtros acima.' : undefined}
+          title="Nenhuma transação de Expedição encontrada."
+          description={hasAnyFilter ? 'Tente ajustar os filtros acima.' : 'Ainda não há transações de frete registradas.'}
         />
       ) : (
       <div className="szv2-table-wrap">
@@ -420,7 +348,7 @@ export default function TpcTransacoes() {
             </tr>
           </thead>
           <tbody>
-            {visibleItems.map(t => {
+            {items.map(t => {
               const isCredito = t.tipo === 'credito'
               const isDebito  = t.tipo === 'debito'
               const tipoBadgeCls =
@@ -435,7 +363,6 @@ export default function TpcTransacoes() {
                 isCredito ? 'var(--szv2-success)'
                 : isDebito ? 'var(--szv2-danger)'
                 : 'inherit'
-              const statusBadgeCls = STATUS_BADGE_CLS[t.status] || 'szv2-badge-neutral'
               const statusLabel = STATUS_LABEL[t.status] || t.status
 
               return (
@@ -466,7 +393,7 @@ export default function TpcTransacoes() {
                     <span className={`sz-badge ${tipoBadgeCls}`}>{tipoLabel}</span>
                   </td>
                   <td>
-                    <span className={`sz-badge ${statusBadgeCls}`}>{statusLabel}</span>
+                    <StatusBadge status={t.status} label={statusLabel} />
                   </td>
                   <td
                     className="szv2-td-num"
@@ -481,7 +408,7 @@ export default function TpcTransacoes() {
                     {t.descricao || <span style={{ color: 'var(--szv2-text-faint)' }}>—</span>}
                     {t.order_id && (
                       <div style={{ fontSize: 11, color: 'var(--szv2-text-muted)', marginTop: 2 }}>
-                        Pedido #{t.order_id}
+                        Pedido {t.order_id}
                       </div>
                     )}
                   </td>

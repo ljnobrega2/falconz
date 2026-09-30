@@ -16,6 +16,16 @@ func WriteOK(w http.ResponseWriter, payload map[string]any) {
 	writeJSON(w, http.StatusOK, payload)
 }
 
+// WriteCreated serializa payload com ok=true e escreve status 201.
+// Usado por endpoints de criação (ex: POST /recarregar — espelha o 201 do PHP).
+func WriteCreated(w http.ResponseWriter, payload map[string]any) {
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	payload["ok"] = true
+	writeJSON(w, http.StatusCreated, payload)
+}
+
 // WriteErr serializa {"ok":false,"erro":msg} com o status HTTP fornecido.
 func WriteErr(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]any{"ok": false, "erro": msg})

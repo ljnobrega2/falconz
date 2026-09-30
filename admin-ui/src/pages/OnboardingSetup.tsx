@@ -149,7 +149,7 @@ export default function OnboardingSetup() {
             </div>
           </div>
           <div style={{ padding: '16px 0' }}>
-            <a className="szv2-btn szv2-btn-brand" href="/admin/login">
+            <a className="szv2-btn szv2-btn-brand" href="/login">
               Ir para o login
             </a>
           </div>
@@ -193,7 +193,7 @@ export default function OnboardingSetup() {
               Admin <strong>{email}</strong> registrado como{' '}
               <code>super_admin</code>.
             </p>
-            <a className="szv2-btn szv2-btn-brand" href="/admin/">
+            <a className="szv2-btn szv2-btn-brand" href="/">
               Ir para o dashboard
             </a>
           </div>
@@ -294,6 +294,37 @@ export default function OnboardingSetup() {
     )
   }
 
+  // Falha ao carregar o status (status nunca chegou): evita crash em
+  // `s.schemas_applied` abaixo e exibe a mensagem de erro com botão recarregar.
+  if (!status) {
+    return (
+      <div className="sz-login-page">
+        <div className="szv2-card" style={{ maxWidth: 560, width: '100%' }}>
+          <div className="szv2-card-head">
+            <div>
+              <h2>Não foi possível verificar o ambiente</h2>
+              <p className="szv2-card-sub">
+                Tente recarregar o status do sistema.
+              </p>
+            </div>
+            <button
+              type="button"
+              className="szv2-btn szv2-btn-secondary"
+              onClick={loadStatus}
+            >
+              ↻ Recarregar
+            </button>
+          </div>
+          {err && (
+            <div className="sz-alert-danger" style={{ marginTop: 16 }}>
+              {err}
+            </div>
+          )}
+        </div>
+      </div>
+    )
+  }
+
   // Passo 1: check inicial.
   const s = status as SetupStatus
   const schemasOK = s.schemas_applied.length > 0
@@ -304,7 +335,7 @@ export default function OnboardingSetup() {
       <div className="szv2-card" style={{ maxWidth: 640, width: '100%' }}>
         <div className="szv2-card-head">
           <div>
-            <h2>Bem-vindo ao Senderzz Admin</h2>
+            <h2>Bem-vindo ao FALK LOG Admin</h2>
             <p className="szv2-card-sub">
               Verificação do ambiente antes do primeiro acesso.
             </p>
@@ -367,7 +398,7 @@ export default function OnboardingSetup() {
             }}
           >
             <strong>Sistema pronto.</strong>
-            <a className="szv2-btn szv2-btn-brand" href="/admin/" style={{ marginLeft: 'auto' }}>
+            <a className="szv2-btn szv2-btn-brand" href="/" style={{ marginLeft: 'auto' }}>
               Ir para o dashboard
             </a>
           </div>

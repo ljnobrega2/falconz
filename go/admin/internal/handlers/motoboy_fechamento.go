@@ -71,13 +71,7 @@ type FechamentoSummary struct {
 // ─── Helpers ─────────────────────────────────────────────────────────────
 
 func (h *MotoboyFechamentoHandler) tableExists(ctx context.Context, name string) bool {
-	var ok bool
-	_ = h.Pool.QueryRow(ctx,
-		`SELECT EXISTS (
-			SELECT FROM information_schema.tables
-			WHERE table_schema='public' AND table_name=$1
-		)`, name).Scan(&ok)
-	return ok
+	return tableExistsCached(ctx, h.Pool, name) // AUDIT-2026-06-18 Onda2 (go-infoschema-cache)
 }
 
 // parseDateRange resolve from/to de query string. Default: today-7d .. today.
@@ -506,7 +500,7 @@ func (h *MotoboyFechamentoHandler) Generate(w http.ResponseWriter, r *http.Reque
 		   COUNT(*) AS total_pedidos,
 		   COUNT(*) FILTER (WHERE status = 'entregue')  AS total_entregues,
 		   COUNT(*) FILTER (WHERE status = 'frustrado') AS total_frustrados,
-		   COALESCE(SUM(valor) FILTER (WHERE status = 'entregue'), 0) AS total_a_repassar
+		   COALESCE(SUM(COALESCE(pgto_dinheiro,0)+COALESCE(pgto_pix,0)+COALESCE(pgto_cartao,0)) FILTER (WHERE status = 'entregue'), 0) AS total_a_repassar
 		 FROM sz_motoboy_pedidos
 		 WHERE motoboy_id = $1
 		   AND created_at::date = $2::date`,
@@ -637,7 +631,7 @@ func (h *MotoboyFechamentoHandler) SyncWallets(w http.ResponseWriter, r *http.Re
 			   COUNT(*) AS total_pedidos,
 			   COUNT(*) FILTER (WHERE status = 'entregue')  AS total_entregues,
 			   COUNT(*) FILTER (WHERE status = 'frustrado') AS total_frustrados,
-			   COALESCE(SUM(valor) FILTER (WHERE status = 'entregue'), 0) AS total_a_repassar,
+			   COALESCE(SUM(COALESCE(pgto_dinheiro,0)+COALESCE(pgto_pix,0)+COALESCE(pgto_cartao,0)) FILTER (WHERE status = 'entregue'), 0) AS total_a_repassar,
 			   COALESCE(SUM(pgto_dinheiro) FILTER (WHERE status = 'entregue'), 0) AS total_dinheiro,
 			   COALESCE(SUM(pgto_pix)     FILTER (WHERE status = 'entregue'), 0) AS total_pix,
 			   COALESCE(SUM(pgto_cartao)  FILTER (WHERE status = 'entregue'), 0) AS total_cartao

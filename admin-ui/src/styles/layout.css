@@ -52,14 +52,15 @@
 .szv2-sidebar-head {
   display: flex;
   align-items: center;
+  justify-content: center; /* logo centralizada (pedido do dono) */
   gap: var(--szv2-space-3);
   padding: var(--szv2-space-4);
   min-height: 64px;
 }
-.szv2-logo-full { display: block; height: 28px; width: auto; color: var(--szv2-text); }
-.szv2-logo-full svg { display: block; height: 28px; width: auto; }
-.szv2-logo-mark { display: none; height: 30px; width: 30px; }
-.szv2-logo-mark svg { display: block; width: 30px; height: 30px; }
+/* FalkLogo (full) — wrapper sem altura fixa: o box + wordmark FALK/LOG têm
+   tamanho intrínseco via props do componente. */
+.szv2-logo-full { display: inline-flex; align-items: center; width: auto; color: var(--szv2-text); }
+.szv2-logo-mark { display: none; width: 32px; height: 32px; }
 .sz-dashboard-v2[data-sidebar="collapsed"] .szv2-logo-full { display: none; }
 .sz-dashboard-v2[data-sidebar="collapsed"] .szv2-logo-mark { display: block; margin: 0 auto; }
 
@@ -182,6 +183,9 @@
   margin-bottom: var(--szv2-space-5);
 }
 .szv2-section-head > div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+/* Div de AÇÕES (não o título) fica horizontal + largura natural — antes empilhava
+   os botões (Filtros + Novo X) na vertical. */
+.szv2-section-head > div:not(:first-child) { flex-direction: row; align-items: center; flex: 0 0 auto; gap: 8px; flex-wrap: wrap; }
 .szv2-section-head h1 {
   font-family: var(--szv2-font-brand);
   font-size: var(--szv2-text-xl);
@@ -2517,11 +2521,11 @@
 .szv2-confirm-icon {
     width: 48px; height: 48px;
     border-radius: 50%;
-    background: rgba(234,88,12,.12);
+    background: rgba(30, 111, 242,.12);
     display: flex; align-items: center; justify-content: center;
     margin: 0 auto 16px;
 }
-.szv2-confirm-icon svg { width: 24px; height: 24px; fill: #ea580c; }
+.szv2-confirm-icon svg { width: 24px; height: 24px; fill: #1E6FF2; }
 .szv2-confirm-title {
     font-size: 17px; font-weight: 700;
     color: #111; margin-bottom: 8px;
@@ -2549,13 +2553,13 @@
 }
 .szv2-confirm-actions .szv2-btn-danger:hover { background: #b91c1c; }
 .szv2-confirm-actions .szv2-btn-brand {
-    background: #ea580c; color: #fff; border-color: transparent;
+    background: #1E6FF2; color: #fff; border-color: transparent;
 }
-.szv2-confirm-actions .szv2-btn-brand:hover { background: #c2410c; }
+.szv2-confirm-actions .szv2-btn-brand:hover { background: #1556CC; }
 .szv2-confirm-actions .szv2-btn-primary {
-    background: #ea580c; color: #fff; border-color: transparent;
+    background: #1E6FF2; color: #fff; border-color: transparent;
 }
-.szv2-confirm-actions .szv2-btn-primary:hover { background: #c2410c; }
+.szv2-confirm-actions .szv2-btn-primary:hover { background: #1556CC; }
 
 /* ── Classes utilitárias — substituem inline styles conflitantes ─────────── */
 /* Botão de ícone limpar (X) — sem aparência de botão */
@@ -2620,8 +2624,8 @@
   white-space: nowrap; transition: all .12s;
 }
 .sz-dashboard-v2 .szv2-filter-chip.szv2-chip-active {
-  border-color: var(--szv2-brand, #EA580C) !important;
-  background: var(--szv2-brand, #EA580C) !important;
+  border-color: var(--szv2-brand, #1E6FF2) !important;
+  background: var(--szv2-brand, #1E6FF2) !important;
   color: #fff !important;
 }
 .sz-dashboard-v2 .szv2-filter-chip .szv2-chip-count {
@@ -2638,4 +2642,50 @@
   background: var(--szv2-surface-alt) !important;
   color: var(--szv2-text) !important;
   border: 1px solid var(--szv2-border) !important;
+}
+
+/* ── AUDIT-2026-06-18 Onda3 — Mobile off-canvas drawer (<768px) ─────────── */
+
+/* Backdrop semi-transparente que aparece atrás do drawer */
+.szv2-mobile-backdrop {
+  display: none;
+}
+@media (max-width: 767px) {
+  /* Sidebar vira off-canvas fixo */
+  .szv2-sidebar {
+    position: fixed;
+    left: 0;
+    top: 0;
+    height: 100%;
+    width: var(--szv2-sidebar-w) !important;
+    min-width: var(--szv2-sidebar-w) !important;
+    transform: translateX(-100%);
+    transition: transform 200ms ease;
+    z-index: calc(var(--szv2-z-sidebar) + 100);
+    overflow-y: auto;
+    box-shadow: var(--szv2-shadow-float);
+  }
+  /* Quando data-mobile-open="1" desliza para dentro */
+  .szv2-sidebar[data-mobile-open="1"] {
+    transform: translateX(0);
+  }
+  /* Sidebar colapsada em desktop não afeta mobile */
+  .sz-dashboard-v2[data-sidebar="collapsed"] .szv2-sidebar {
+    width: var(--szv2-sidebar-w) !important;
+    min-width: var(--szv2-sidebar-w) !important;
+  }
+  /* Main ocupa 100% da largura */
+  .szv2-main {
+    width: 100%;
+    min-width: 0;
+  }
+  /* Backdrop visível em mobile */
+  .szv2-mobile-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.45);
+    z-index: calc(var(--szv2-z-sidebar) + 99);
+    cursor: pointer;
+  }
 }

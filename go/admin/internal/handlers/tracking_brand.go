@@ -47,13 +47,7 @@ type brandMap map[string]struct {
 
 // tableExistsTB verifica presença de tabela no schema public.
 func (h *TrackingBrandHandler) tableExistsTB(ctx context.Context, name string) bool {
-	var ok bool
-	_ = h.Pool.QueryRow(ctx,
-		`SELECT EXISTS (
-			SELECT FROM information_schema.tables
-			WHERE table_schema='public' AND table_name=$1
-		)`, name).Scan(&ok)
-	return ok
+	return tableExistsCached(ctx, h.Pool, name) // AUDIT-2026-06-18 Onda2 (go-infoschema-cache)
 }
 
 // readBrandMap lê o mapa do option senderzz_tracking_brands.
@@ -64,7 +58,7 @@ func (h *TrackingBrandHandler) readBrandMap(ctx context.Context) brandMap {
 	}
 	var raw string
 	if err := h.Pool.QueryRow(ctx,
-		`SELECT value FROM senderzz_options WHERE "key"='senderzz_tracking_brands'`).Scan(&raw); err != nil {
+		`SELECT value FROM senderzz_options WHERE name='senderzz_tracking_brands'`).Scan(&raw); err != nil {
 		return bm
 	}
 	_ = json.Unmarshal([]byte(raw), &bm)
@@ -81,9 +75,9 @@ func (h *TrackingBrandHandler) saveBrandMap(ctx context.Context, bm brandMap) er
 		return err
 	}
 	_, err = h.Pool.Exec(ctx,
-		`INSERT INTO senderzz_options ("key", value)
+		`INSERT INTO senderzz_options (name, value)
 		 VALUES ('senderzz_tracking_brands', $1)
-		 ON CONFLICT ("key") DO UPDATE SET value = EXCLUDED.value`, string(b))
+		 ON CONFLICT (name) DO UPDATE SET value = EXCLUDED.value`, string(b))
 	return err
 }
 

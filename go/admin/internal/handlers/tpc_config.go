@@ -40,13 +40,7 @@ type TpcConfigHandler struct{ Pool *pgxpool.Pool }
 
 // tableExists verifica presença de uma tabela no schema public.
 func (h *TpcConfigHandler) tableExists(ctx context.Context, name string) bool {
-	var ok bool
-	_ = h.Pool.QueryRow(ctx,
-		`SELECT EXISTS (
-			SELECT FROM information_schema.tables
-			WHERE table_schema='public' AND table_name=$1
-		)`, name).Scan(&ok)
-	return ok
+	return tableExistsCached(ctx, h.Pool, name) // AUDIT-2026-06-18 Onda2 (go-infoschema-cache)
 }
 
 // getOption lê uma option string (default se não existir / tabela ausente).
@@ -56,7 +50,7 @@ func (h *TpcConfigHandler) getOption(ctx context.Context, key, def string) strin
 	}
 	var raw string
 	if err := h.Pool.QueryRow(ctx,
-		`SELECT value FROM senderzz_options WHERE "key"=$1`, key).Scan(&raw); err != nil {
+		`SELECT value FROM senderzz_options WHERE name=$1`, key).Scan(&raw); err != nil {
 		return def
 	}
 	return raw
@@ -70,7 +64,7 @@ func (h *TpcConfigHandler) getOptionBool(ctx context.Context, key string, def bo
 	}
 	var raw string
 	if err := h.Pool.QueryRow(ctx,
-		`SELECT value FROM senderzz_options WHERE "key"=$1`, key).Scan(&raw); err != nil {
+		`SELECT value FROM senderzz_options WHERE name=$1`, key).Scan(&raw); err != nil {
 		return def
 	}
 	v := strings.ToLower(strings.TrimSpace(raw))
@@ -113,9 +107,9 @@ func (h *TpcConfigHandler) upsertOption(ctx context.Context, key, value string) 
 		return nil
 	}
 	_, err := h.Pool.Exec(ctx,
-		`INSERT INTO senderzz_options ("key", value)
+		`INSERT INTO senderzz_options (name, value)
 		 VALUES ($1, $2)
-		 ON CONFLICT ("key") DO UPDATE SET value = EXCLUDED.value`, key, value)
+		 ON CONFLICT (name) DO UPDATE SET value = EXCLUDED.value`, key, value)
 	return err
 }
 
@@ -142,7 +136,7 @@ func envHasValue(name string) bool {
 func buildWebhookURL() string {
 	base := strings.TrimRight(strings.TrimSpace(os.Getenv("APP_BASE_URL")), "/")
 	if base == "" {
-		base = "https://app.senderzz.com.br"
+		base = "https://app.falklog.com.br"
 	}
 	return base + "/wp-json/tp-carteira/v1/webhook/pix"
 }

@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api'
+import FalkSelect from '../components/FalkSelect'
+import { emitToast } from '../hooks/useToast'
 
 type Settings = {
   me_token: string
@@ -9,16 +11,35 @@ type Settings = {
   jwt_secret_hint: string
   motoboy_cc_fee_pct: number
   portal_name: string
+  pack_barcode_validation_enabled: boolean
+  // FEAT-RBAC-2026-06-21 — recompensa de convite (options sz_invite_reward_*).
+  // BACKEND GAP: o handler Go (go/admin/internal/handlers/settings.go) ainda NÃO
+  // lê nem grava estas chaves — Get não as devolve e Save ignora campos
+  // desconhecidos (PUT retorna 200 sem persistir). Adicionar `sz_invite_reward_type`
+  // e `sz_invite_reward_value` ao allowlist de Save e ao Get para o round-trip funcionar.
+  invite_reward_type: 'none' | 'fixed' | 'percent'
+  invite_reward_value: number
 }
+
+// FEAT-RBAC-2026-06-21 — tipos de recompensa de convite.
+const INVITE_REWARD_TYPES: { value: Settings['invite_reward_type']; label: string }[] = [
+  { value: 'none',    label: 'Desativada' },
+  { value: 'fixed',   label: 'Valor fixo (R$)' },
+  { value: 'percent', label: 'Percentual (%)' },
+]
 
 export default function Settings() {
   const [s, setS] = useState<Partial<Settings>>({})
   const [msg, setMsg] = useState('')
   const [saving, setSaving] = useState(false)
   const [err, setErr] = useState('')
+  const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    api<Settings>('/settings').then(setS).catch(e => setErr(e.message))
+    api<Settings>('/settings')
+      .then(setS)
+      .catch(e => setErr(e.message))
+      .finally(() => setLoading(false))
   }, [])
 
   async function save(e: React.FormEvent) {
@@ -27,7 +48,8 @@ export default function Settings() {
     try {
       await api('/settings', { method: 'PUT', body: JSON.stringify(s) })
       setMsg('Configurações salvas.')
-    } catch (e: any) { setErr(e.message) }
+      emitToast('ok', 'Configurações salvas.')
+    } catch (e: any) { setErr(e.message); emitToast('err', e.message || 'Falha ao salvar configurações.') }
     finally { setSaving(false) }
   }
 
@@ -53,13 +75,18 @@ export default function Settings() {
 
       {err && <div className="sz-alert-danger">{err}</div>}
 
+      {loading ? (
+        <div style={{ padding: 48, textAlign: 'center', color: 'var(--szv2-text-muted)' }}>
+          Carregando configurações…
+        </div>
+      ) : (
       <form onSubmit={save}>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
           <div className="szv2-card">
             <div className="szv2-card-head"><div><h2>Melhor Envio</h2></div></div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
               {f('me_token', 'Token ME (Bearer)', 'password', 'Bearer ...')}
-              {f('portal_name', 'Nome do Portal', 'text', 'Senderzz')}
+              {f('portal_name', 'Nome do Portal', 'text', 'FALK LOG')}
             </div>
           </div>
 
@@ -69,13 +96,18 @@ export default function Settings() {
               {f('pix_key', 'Chave PIX', 'text', 'CPF, CNPJ, email, telefone ou aleatória')}
               <div className="szv2-field">
                 <label className="szv2-label">Tipo de chave</label>
-                <select className="szv2-select" value={s.pix_key_type ?? 'cpf'} onChange={e => setS(p => ({ ...p, pix_key_type: e.target.value }))}>
-                  <option value="cpf">CPF</option>
-                  <option value="cnpj">CNPJ</option>
-                  <option value="email">Email</option>
-                  <option value="phone">Telefone</option>
-                  <option value="random">Aleatória</option>
-                </select>
+                <FalkSelect
+                  aria-label="Tipo de chave"
+                  value={s.pix_key_type ?? 'cpf'}
+                  onChange={v => setS(p => ({ ...p, pix_key_type: v }))}
+                  options={[
+                    { value: 'cpf', label: 'CPF' },
+                    { value: 'cnpj', label: 'CNPJ' },
+                    { value: 'email', label: 'Email' },
+                    { value: 'phone', label: 'Telefone' },
+                    { value: 'random', label: 'Aleatória' },
+                  ]}
+                />
               </div>
             </div>
           </div>
@@ -89,6 +121,18 @@ export default function Settings() {
                   value={s.motoboy_cc_fee_pct ?? 0}
                   onChange={e => setS(p => ({ ...p, motoboy_cc_fee_pct: +e.target.value }))} />
               </div>
+              <label style={{ display: 'flex', flexDirection: 'column', gap: 6, cursor: 'pointer', color: 'var(--szv2-text-soft)' }}>
+                <span className="szv2-label" style={{ marginBottom: 0 }}>Validar código de barras ao embalar</span>
+                <span style={{ fontSize: 12, color: 'var(--szv2-text-muted)' }}>
+                  Desative para permitir embalar sem leitura do produto. Reative quando quiser voltar a exigir a leitura do código de barras.
+                </span>
+                <input
+                  type="checkbox"
+                  checked={!!s.pack_barcode_validation_enabled}
+                  onChange={e => setS(p => ({ ...p, pack_barcode_validation_enabled: e.target.checked }))}
+                  style={{ width: 18, height: 18 }}
+                />
+              </label>
             </div>
           </div>
 
@@ -114,6 +158,7 @@ export default function Settings() {
           {msg && <span style={{ color: 'var(--szv2-success)', fontSize: '14px' }}>✓ {msg}</span>}
         </div>
       </form>
+      )}
     </div>
   )
 }

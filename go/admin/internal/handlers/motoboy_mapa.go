@@ -51,13 +51,7 @@ type MotoboyMapaResp struct {
 // tableExists — verifica existência da tabela no schema public.
 // Cópia do helper de motoboy_dashboard.go para manter o handler auto-contido.
 func (h *MotoboyMapaHandler) tableExists(ctx context.Context, name string) bool {
-	var ok bool
-	_ = h.Pool.QueryRow(ctx,
-		`SELECT EXISTS (
-			SELECT FROM information_schema.tables
-			WHERE table_schema='public' AND table_name=$1
-		)`, name).Scan(&ok)
-	return ok
+	return tableExistsCached(ctx, h.Pool, name) // AUDIT-2026-06-18 Onda2 (go-infoschema-cache)
 }
 
 // Locations — handler principal.

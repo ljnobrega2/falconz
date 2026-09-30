@@ -1,11 +1,17 @@
-// CodSaques — saques COD/Produtor + Afiliado + Regras globais + Overrides por produtor.
+// CodSaques — saques COD/Produtor + Afiliado numa tabela ÚNICA (AUDIT-2026-07-14,
+// pedido do dono) + Regras globais/Overrides por produtor via prop `onlyRules`
+// (montada separadamente em Taxas & Config).
 // Espelha tab_fin_saques() (Unified_Menu.php :1529) + sz_cod_admin_page() (cod-wallet.php :858).
 //
-// Três abas: Produtor / Afiliado / Regras Globais.
-// Modais inline (szv2-modal-overlay + .szv2-open) para marcar pago / rejeitar.
+// Ação de marcar pago (produtor) / aprovar (afiliado) / rejeitar abre em
+// DetailDrawer (painel lateral direito). IDs de produtor e afiliado são
+// id-spaces independentes — a tabela unificada codifica o kind no sinal do id
+// (encodeId/decodeId), então seleção em lote pode misturar os 2 tipos.
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { api } from '../api'
+import { useToast } from '../hooks/useToast'
+import { api, getToken } from '../api'
+import { safeUrl } from '../utils/safeUrl' // AUDIT-2026-06-21 #13
 import FilterButton from '../components/FilterButton'
 import FilterTopPanel, {
   FilterField,
@@ -13,8 +19,13 @@ import FilterTopPanel, {
   ActiveFilterChips,
   type ActiveChip,
 } from '../components/FilterTopPanel'
+import FalkSelect from '../components/FalkSelect'
+import FalkDatePicker from '../components/FalkDatePicker'
 import TableSkeleton from '../components/TableSkeleton'
 import EmptyState from '../components/EmptyState'
+import BulkBar, { useBulkSelection, runBulk } from '../components/BulkBar'
+import SzStatusBadge from '../components/StatusBadge'
+import DetailDrawer from '../components/DetailDrawer'
 
 // ─── Tipos ────────────────────────────────────────────────────────────────
 
@@ -47,6 +58,7 @@ type AffiliateWithdrawal = {
   bank_info: string
   status: string
   admin_note: string | null
+  proof_url: string | null
   decided_at: string | null
   decided_by: number | null
   created_at: string
@@ -74,25 +86,37 @@ type ProducerOverrideItem = {
 
 type Tab = 'producer' | 'affiliate' | 'rules'
 type ModalKind = 'pay' | 'reject' | null
+type Kind = 'producer' | 'affiliate'
+
+// AUDIT-2026-07-14 — tabela ÚNICA de saques Produtor+Afiliado (pedido do
+// dono). IDs de produtor e afiliado são id-spaces INDEPENDENTES (podem
+// colidir, ex.: #2 produtor E #2 afiliado) — o id "unificado" usado em
+// seleção/React key/ação codifica o kind no SINAL: positivo = produtor,
+// negativo = afiliado. id=0 nunca é um saque real, então não há ambiguidade.
+function encodeId(kind: Kind, id: number): number {
+  return kind === 'affiliate' ? -id : id
+}
+function decodeId(uid: number): { kind: Kind; id: number } {
+  return uid < 0 ? { kind: 'affiliate', id: -uid } : { kind: 'producer', id: uid }
+}
 
 // ─── Helpers visuais ──────────────────────────────────────────────────────
 
 const fmt = (v: number) =>
   v.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
-// Map de status (DB) → classe de badge e rótulo PT-BR.
-const STATUS_BADGE: Record<string, { cls: string; label: string }> = {
-  analysis:   { cls: 'szv2-badge-warning', label: 'Em análise' },
-  em_analise: { cls: 'szv2-badge-warning', label: 'Em análise' },
-  pending:    { cls: 'szv2-badge-warning', label: 'Pendente'   },
-  paid:       { cls: 'szv2-badge-success', label: 'Pago'       },
-  approved:   { cls: 'szv2-badge-success', label: 'Aprovado'   },
-  rejected:   { cls: 'szv2-badge-danger',  label: 'Rejeitado'  },
+// Rótulo PT-BR por status (cor única vem do StatusBadge central).
+const STATUS_LABEL: Record<string, string> = {
+  analysis:   'Em análise',
+  em_analise: 'Em análise',
+  pending:    'Pendente',
+  paid:       'Pago',
+  approved:   'Aprovado',
+  rejected:   'Rejeitado',
 }
 
 function StatusBadge({ status }: { status: string }) {
-  const m = STATUS_BADGE[status] || { cls: 'szv2-badge-neutral', label: status || '—' }
-  return <span className={`sz-badge ${m.cls}`}>{m.label}</span>
+  return <SzStatusBadge status={status} label={STATUS_LABEL[status] || status || '—'} />
 }
 
 // Filtros por aba — chave passada ao backend (?status=). 'paid' inclui approved (mapeado por aba).
@@ -119,7 +143,10 @@ const isOpen = (status: string) =>
 
 // ─── Modais ───────────────────────────────────────────────────────────────
 
-type ActionTarget = { id: number; kind: ModalKind; tab?: Tab }
+// id=0 + bulkIds preenchido → ação em lote (a barra sticky abre o modal com a
+// seleção inteira; um único motivo/observação se aplica a todos). `id`/
+// `bulkIds` são ids UNIFICADOS (encodeId) — cada um carrega seu próprio kind.
+type ActionTarget = { id: number; kind: ModalKind; bulkIds?: number[] }
 
 function ActionModal(props: {
   open: ActionTarget
@@ -133,28 +160,59 @@ function ActionModal(props: {
   const [file, setFile] = useState<File | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
 
+  const bulkCount = open.bulkIds?.length ?? 0
+  const isBulk = bulkCount > 0
+
   // Reset ao abrir/trocar alvo.
   useEffect(() => {
     setProof('')
     setNote('')
     setFile(null)
     if (fileRef.current) fileRef.current.value = ''
-  }, [open.id, open.kind])
+  }, [open.id, open.kind, bulkCount])
 
   if (!open.kind) return null
   const isPay = open.kind === 'pay'
 
   return (
-    <div
-      className="szv2-modal-overlay szv2-open"
-      onClick={(e) => { if (e.target === e.currentTarget && !busy) onClose() }}
+    <DetailDrawer
+      open
+      onClose={() => { if (!busy) onClose() }}
+      title={
+        <>
+          {isPay ? 'Marcar como pago' : 'Rejeitar saque'}{' '}
+          {isBulk ? `— ${bulkCount} saque(s) selecionado(s)` : `#${open.id}`}
+        </>
+      }
+      footer={
+        <>
+          <button
+            type="button"
+            className="szv2-btn szv2-btn-secondary"
+            onClick={onClose}
+            disabled={busy}
+          >
+            Cancelar
+          </button>
+          <button
+            type="button"
+            className={`szv2-btn ${isPay ? 'szv2-btn-brand' : 'szv2-btn-danger'}`}
+            onClick={() => onConfirm(proof, note, file)}
+            disabled={busy}
+          >
+            {busy ? 'Enviando…' : (isPay ? 'Marcar pago' : 'Rejeitar')}
+          </button>
+        </>
+      }
     >
-      <div className="szv2-modal">
-        <div className="szv2-modal-head">
-          <h3>{isPay ? 'Marcar como pago' : 'Rejeitar saque'} #{open.id}</h3>
-          <button className="szv2-modal-x" onClick={onClose} disabled={busy} aria-label="Fechar">✕</button>
-        </div>
-        <div className="szv2-modal-body" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        {isBulk && (
+            <div className="sz-alert-warning" style={{ fontSize: 13 }}>
+              {isPay
+                ? `A observação/comprovante será aplicada a todos os ${bulkCount} saques confirmados (pode incluir produtor e afiliado).`
+                : `O motivo será aplicado a todos os ${bulkCount} saques rejeitados.`}
+            </div>
+          )}
           {isPay && (
             <>
               <div className="szv2-field">
@@ -206,34 +264,20 @@ function ActionModal(props: {
               disabled={busy}
             />
           </div>
-        </div>
-        <div className="szv2-modal-foot">
-          <button
-            type="button"
-            className="szv2-btn szv2-btn-secondary"
-            onClick={onClose}
-            disabled={busy}
-          >
-            Cancelar
-          </button>
-          <button
-            type="button"
-            className={`szv2-btn ${isPay ? 'szv2-btn-brand' : 'szv2-btn-danger'}`}
-            onClick={() => onConfirm(proof, note, file)}
-            disabled={busy}
-          >
-            {busy ? 'Enviando…' : (isPay ? 'Marcar pago' : 'Rejeitar')}
-          </button>
-        </div>
       </div>
-    </div>
+    </DetailDrawer>
   )
 }
 
 // ─── Página ───────────────────────────────────────────────────────────────
 
-export default function CodSaques() {
-  const [tab, setTab] = useState<Tab>('producer')
+// AUDIT-2026-07-14 — `onlyRules` permite montar SÓ a aba "Regras Globais"
+// (regras de saque + repasse ao produtor COD), sem as filas de aprovação —
+// usado em Taxas & Config (pedido do dono: regras de saque/repasse são
+// config, não fila operacional). Mesmo componente, mesma lógica/estado —
+// só esconde o seletor de aba e as 2 outras abas.
+export default function CodSaques({ onlyRules = false }: { onlyRules?: boolean } = {}) {
+  const [tab, setTab] = useState<Tab>(onlyRules ? 'rules' : 'producer')
   const [filter, setFilter] = useState<FilterKey>('')
   const [prodItems, setProdItems] = useState<ProducerWithdrawal[]>([])
   const [affItems, setAffItems] = useState<AffiliateWithdrawal[]>([])
@@ -247,7 +291,7 @@ export default function CodSaques() {
   const [loading, setLoading] = useState(false)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
-  const [toast, setToast] = useState<{ kind: 'ok' | 'err'; msg: string } | null>(null)
+  const showToast = useToast() // AUDIT-2026-06-18 Onda3
   const [modal, setModal] = useState<ActionTarget>({ id: 0, kind: null })
 
   // Filtros adicionais (data + busca) — aplicados client-side sobre prodItems/affItems.
@@ -263,25 +307,24 @@ export default function CodSaques() {
   const [draftQ, setDraftQ] = useState('')
 
   // Toast com timeout único.
-  function showToast(kind: 'ok' | 'err', msg: string) {
-    setToast({ kind, msg })
-    setTimeout(() => setToast(null), 5000)
-  }
 
-  // Carrega a lista correspondente à aba ativa.
+  // Carrega produtor + afiliado JUNTOS (tela única, AUDIT-2026-07-14). O filtro de
+  // status usa o mapeamento próprio de cada lado ('paid' vira 'approved' do lado
+  // afiliado — filterToBackend já faz essa tradução por tab).
   async function loadList() {
     setLoading(true)
     setErr('')
     try {
-      const qsStatus = filterToBackend(tab, filter)
-      const qs = qsStatus ? `?status=${qsStatus}&limit=120` : '?limit=120'
-      if (tab === 'producer') {
-        const r = await api<{ items: ProducerWithdrawal[] }>(`/cod-saques/producer${qs}`)
-        setProdItems(r.items || [])
-      } else if (tab === 'affiliate') {
-        const r = await api<{ items: AffiliateWithdrawal[] }>(`/cod-saques/affiliate${qs}`)
-        setAffItems(r.items || [])
-      }
+      const qsProdStatus = filterToBackend('producer', filter)
+      const qsAffStatus = filterToBackend('affiliate', filter)
+      const qsProd = qsProdStatus ? `?status=${qsProdStatus}&limit=120` : '?limit=120'
+      const qsAff = qsAffStatus ? `?status=${qsAffStatus}&limit=120` : '?limit=120'
+      const [rp, ra] = await Promise.all([
+        api<{ items: ProducerWithdrawal[] }>(`/cod-saques/producer${qsProd}`),
+        api<{ items: AffiliateWithdrawal[] }>(`/cod-saques/affiliate${qsAff}`),
+      ])
+      setProdItems(rp.items || [])
+      setAffItems(ra.items || [])
     } catch (e: any) {
       setErr(e.message || 'Erro ao carregar')
     } finally {
@@ -328,13 +371,6 @@ export default function CodSaques() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, filter])
 
-  // switchTab reseta o filtro ANTES de mudar a aba para evitar reload duplo.
-  function switchTab(next: Tab) {
-    if (next === tab) return
-    setFilter('')
-    setTab(next)
-  }
-
   // ── Ações ────────────────────────────────────────────────────────────────
 
   function openModal(id: number, kind: Exclude<ModalKind, null>) {
@@ -344,29 +380,93 @@ export default function CodSaques() {
     setModal({ id: 0, kind: null })
   }
 
-  async function confirmAction(proofURL: string, note: string) {
+  // Monta URL + payload de UM saque para a ação corrente (pay/reject). `uid` é
+  // o id UNIFICADO (encodeId) — decodifica o kind (produtor/afiliado) do sinal.
+  function buildAction(uid: number, actionKind: Exclude<ModalKind, null>, proofURL: string, note: string) {
+    const { kind, id } = decodeId(uid)
+    if (kind === 'producer') {
+      return {
+        url: actionKind === 'pay'
+          ? `/cod-saques/producer/${id}/mark-paid`
+          : `/cod-saques/producer/${id}/reject`,
+        payload: actionKind === 'pay'
+          ? { proof_url: proofURL, admin_note: note }
+          : { admin_note: note },
+      }
+    }
+    return {
+      url: actionKind === 'pay'
+        ? `/cod-saques/affiliate/${id}/approve`
+        : `/cod-saques/affiliate/${id}/reject`,
+      payload: actionKind === 'pay'
+        ? { proof_url: proofURL, admin_note: note }
+        : { admin_note: note },
+    }
+  }
+
+  // Upload multipart do comprovante — o helper api() força Content-Type JSON e
+  // não serve para FormData; usa fetch direto como em MotoboyCustodia. Devolve
+  // a proof_url gerada pelo backend. `uid` = id unificado (decodifica o kind).
+  async function uploadProof(uid: number, file: File): Promise<string> {
+    const { kind, id } = decodeId(uid)
+    const fd = new FormData()
+    fd.append('proof_file', file)
+    const apiBase = import.meta.env.VITE_API_BASE || '/wp-json/senderzz/v1/admin'
+    const tok = getToken()
+    const headers: Record<string, string> = {}
+    if (tok) headers['Authorization'] = `Bearer ${tok}`
+    const endpoint = kind === 'affiliate'
+      ? `/cod-saques/affiliate/${id}/upload-proof`
+      : `/cod-saques/producer/${id}/upload-proof`
+    const res = await fetch(`${apiBase}${endpoint}`, {
+      method: 'POST',
+      headers,
+      body: fd,
+    })
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}))
+      throw new Error(body?.error?.message || `Falha no upload do comprovante (HTTP ${res.status})`)
+    }
+    const body = await res.json().catch(() => ({})) as { proof_url?: string }
+    return body.proof_url || ''
+  }
+
+  async function confirmAction(proofURL: string, note: string, file: File | null) {
     if (!modal.kind) return
+    const actionKind = modal.kind
+    const verbDone = actionKind === 'pay' ? 'confirmado(s)' : 'rejeitado(s)'
     setBusy(true)
     try {
-      const id = modal.id
-      let url = ''
-      let payload: Record<string, string> = {}
-      if (tab === 'producer') {
-        url = modal.kind === 'pay'
-          ? `/cod-saques/producer/${id}/mark-paid`
-          : `/cod-saques/producer/${id}/reject`
-        payload = modal.kind === 'pay'
-          ? { proof_url: proofURL, admin_note: note }
-          : { admin_note: note }
-      } else {
-        url = modal.kind === 'pay'
-          ? `/cod-saques/affiliate/${id}/approve`
-          : `/cod-saques/affiliate/${id}/reject`
-        payload = { admin_note: note }
+      // Caminho em lote — loop sobre os ids selecionados (sem endpoint de lote
+      // no backend). Ids UNIFICADOS: cada um pode ser produtor OU afiliado —
+      // buildAction decodifica o kind por id, então o lote aceita mistura dos 2.
+      // Comprovante (URL) não é repassado em lote: o ImageUpload de arquivo é
+      // por-saque; no lote só observação/URL textual se aplica.
+      if (modal.bulkIds && modal.bulkIds.length > 0) {
+        const { ok, fail, errors } = await runBulk(modal.bulkIds, async (uid) => {
+          const { url, payload } = buildAction(uid, actionKind, proofURL, note)
+          await api(url, { method: 'POST', body: JSON.stringify(payload) })
+        })
+        if (ok > 0) showToast('ok', `${ok} saque(s) ${verbDone}.`)
+        if (fail > 0) showToast('err', `${fail} falha(s): ${errors.slice(0, 3).join(' · ')}`)
+        bulk.clear()
+        closeModal()
+        await loadList()
+        return
       }
+
+      // Caminho individual.
+      const uid = modal.id
+      const { kind, id } = decodeId(uid)
+      // Comprovante por arquivo: faz upload multipart antes de confirmar.
+      let effProofURL = proofURL
+      if (actionKind === 'pay' && file) {
+        effProofURL = await uploadProof(uid, file)
+      }
+      const { url, payload } = buildAction(uid, actionKind, effProofURL, note)
       await api(url, { method: 'POST', body: JSON.stringify(payload) })
-      showToast('ok', modal.kind === 'pay'
-        ? `Saque #${id} marcado como ${tab === 'affiliate' ? 'aprovado' : 'pago'}.`
+      showToast('ok', actionKind === 'pay'
+        ? `Saque #${id} marcado como ${kind === 'affiliate' ? 'aprovado' : 'pago'}.`
         : `Saque #${id} rejeitado.`)
       closeModal()
       await loadList()
@@ -394,22 +494,16 @@ export default function CodSaques() {
     }
   }
 
-  // ── KPIs derivados (cabeçalho) ───────────────────────────────────────────
+  // ── KPIs derivados (cabeçalho) — combinam produtor + afiliado ───────────
   const kpis = useMemo(() => {
-    if (tab === 'producer') {
-      const open = prodItems.filter(p => isOpen(p.status)).length
-      const totalNet = prodItems.reduce((s, p) => s + p.net, 0)
-      return { open, total: prodItems.length, totalNet }
-    }
-    if (tab === 'affiliate') {
-      const open = affItems.filter(p => isOpen(p.status)).length
-      const totalNet = affItems.reduce((s, p) => s + p.net_amount, 0)
-      return { open, total: affItems.length, totalNet }
-    }
-    return null
+    if (tab === 'rules') return null
+    const openProd = prodItems.filter(p => isOpen(p.status)).length
+    const openAff = affItems.filter(p => isOpen(p.status)).length
+    const totalNet = prodItems.reduce((s, p) => s + p.net, 0) + affItems.reduce((s, p) => s + p.net_amount, 0)
+    return { open: openProd + openAff, total: prodItems.length + affItems.length, totalNet }
   }, [tab, prodItems, affItems])
 
-  // Aplica filtros client-side de data + busca por nome/email.
+  // Aplica filtros client-side de data + busca por nome/telefone/CPF (sem e-mail).
   function inRange(created: string): boolean {
     if (!dateFrom && !dateTo) return true
     const d = created.slice(0, 10)
@@ -421,7 +515,9 @@ export default function CodSaques() {
     if (!inRange(p.created_at)) return false
     if (!q) return true
     const needle = q.toLowerCase()
-    return [p.user_email, p.holder_name, p.holder_cpf].some(s => (s || '').toLowerCase().includes(needle))
+    // Regra do dono: busca só por nome, telefone e CPF (sem e-mail). Aqui = nome do
+    // titular (holder_name) + CPF do titular (holder_cpf); não há telefone nesta linha.
+    return [p.holder_name, p.holder_cpf].some(s => (s || '').toLowerCase().includes(needle))
   }
   function matchAff(a: AffiliateWithdrawal): boolean {
     if (!inRange(a.created_at)) return false
@@ -431,6 +527,54 @@ export default function CodSaques() {
   }
   const visibleProd = prodItems.filter(matchProd)
   const visibleAff = affItems.filter(matchAff)
+
+  // Linha unificada — produtor + afiliado na MESMA tabela (pedido do dono
+  // 2026-07-14). uid = id codificado (encodeId) — chave de seleção/React key.
+  type UnifiedRow = {
+    uid: number
+    kind: Kind
+    nome: string
+    sub: string | null
+    amount: number
+    fee: number
+    net: number
+    conta: string
+    status: string
+    dataRef: string
+    proof_url: string | null
+  }
+  const unifiedRows: UnifiedRow[] = useMemo(() => [
+    ...visibleProd.map((p): UnifiedRow => ({
+      uid: encodeId('producer', p.id), kind: 'producer',
+      nome: p.user_email || `#${p.user_id}`, sub: p.holder_name || null,
+      amount: p.amount, fee: p.fee, net: p.net,
+      conta: p.pix_key ? `${p.pix_type ? p.pix_type.toUpperCase() + ' · ' : ''}${p.pix_key}` : '—',
+      status: p.status, dataRef: p.created_at, proof_url: p.proof_url,
+    })),
+    ...visibleAff.map((a): UnifiedRow => ({
+      uid: encodeId('affiliate', a.id), kind: 'affiliate',
+      nome: a.affiliate_name || `#${a.affiliate_id}`, sub: null,
+      amount: a.amount, fee: a.fee, net: a.net_amount,
+      conta: [a.pix_key, a.bank_info].filter(Boolean).join(' · ') || '—',
+      status: a.status, dataRef: a.decided_at || a.created_at, proof_url: a.proof_url,
+    })),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  ].sort((r1, r2) => (r2.dataRef || '').localeCompare(r1.dataRef || '')), [visibleProd, visibleAff])
+
+  // Seleção em lote — só linhas acionáveis (status aberto) são elegíveis.
+  const selectableIds = useMemo(
+    () => unifiedRows.filter(r => isOpen(r.status)).map(r => r.uid),
+    [unifiedRows],
+  )
+  const bulk = useBulkSelection(selectableIds)
+
+  // Troca de aba/filtro limpa a seleção (ids não cruzam abas).
+  useEffect(() => { bulk.clear() /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [tab, filter])
+
+  function openBulkModal(kind: Exclude<ModalKind, null>) {
+    if (bulk.size === 0) return
+    setModal({ id: 0, kind, bulkIds: bulk.ids })
+  }
 
   function openPanel() {
     setDraftFilter(filter); setDraftFrom(dateFrom); setDraftTo(dateTo); setDraftQ(q)
@@ -461,44 +605,7 @@ export default function CodSaques() {
     <div>
       {err && <div className="sz-alert-danger" style={{ marginBottom: 16 }}>{err}</div>}
 
-      {toast && (
-        <div
-          className={toast.kind === 'ok' ? 'sz-alert-success' : 'sz-alert-danger'}
-          style={{ marginBottom: 16 }}
-        >
-          {toast.msg}
-        </div>
-      )}
-
-      {/* Tabs */}
-      <div className="szv2-tabs">
-        <button
-          type="button"
-          className="szv2-tab"
-          aria-selected={tab === 'producer'}
-          onClick={() => switchTab('producer')}
-        >
-          Saques Produtor
-        </button>
-        <button
-          type="button"
-          className="szv2-tab"
-          aria-selected={tab === 'affiliate'}
-          onClick={() => switchTab('affiliate')}
-        >
-          Saques Afiliado
-        </button>
-        <button
-          type="button"
-          className="szv2-tab"
-          aria-selected={tab === 'rules'}
-          onClick={() => switchTab('rules')}
-        >
-          Regras Globais
-        </button>
-      </div>
-
-      {/* KPI mini-bar (somente nas abas de lista) */}
+      {/* KPI mini-bar (somente na tela de lista, não em onlyRules) */}
       {kpis && (
         <div
           className="szv2-kpi-grid"
@@ -544,11 +651,10 @@ export default function CodSaques() {
         <div className="szv2-card" style={{ marginBottom: 16 }}>
           <div className="szv2-card-head">
             <div>
-              <h2>{tab === 'producer' ? 'Saques COD / Produtor' : 'Saques de Afiliados'}</h2>
+              <h2>Saques COD (Produtor / Afiliado)</h2>
               <p className="szv2-card-sub">
-                {tab === 'producer'
-                  ? 'Análise → Pendente → Pago. Marque como pago após confirmar o repasse.'
-                  : 'Aprovar debita a carteira do afiliado e cria uma transação de saída.'}
+                Análise → Pendente → Pago/Aprovado. Marcar pago (produtor) debita repasse; aprovar
+                (afiliado) debita a carteira e cria transação de saída.
               </p>
             </div>
             <FilterButton
@@ -558,147 +664,108 @@ export default function CodSaques() {
             />
           </div>
 
-          {loading && (tab === 'producer' ? visibleProd.length : visibleAff.length) === 0 ? (
+          {loading && unifiedRows.length === 0 ? (
             <TableSkeleton rows={5} cols={9} />
-          ) : !loading && (tab === 'producer' ? visibleProd.length : visibleAff.length) === 0 ? (
+          ) : !loading && unifiedRows.length === 0 ? (
             <EmptyState
               icon="💸"
               title="Nenhum saque encontrado para este filtro."
-              description={tab === 'producer'
-                ? 'Solicitações de saque dos produtores aparecem aqui.'
-                : 'Solicitações de saque dos afiliados aparecem aqui.'}
+              description="Solicitações de saque de produtores e afiliados aparecem aqui."
             />
-          ) : tab === 'producer' ? (
+          ) : (
             <div style={{ overflowX: 'auto' }}>
               <table className="szv2-table">
                 <thead>
                   <tr>
+                    <th style={{ width: 36 }}>
+                      <input
+                        type="checkbox"
+                        checked={bulk.allSelected}
+                        ref={el => { if (el) el.indeterminate = bulk.someSelected }}
+                        onChange={bulk.toggleAll}
+                        disabled={selectableIds.length === 0}
+                        title="Selecionar todos os saques em aberto"
+                        aria-label="Selecionar todos os saques em aberto"
+                      />
+                    </th>
                     <th>ID</th>
+                    <th>Tipo</th>
                     <th>Usuário</th>
                     <th style={{ textAlign: 'right' }}>Valor</th>
                     <th style={{ textAlign: 'right' }}>Taxa</th>
                     <th style={{ textAlign: 'right' }}>Líquido</th>
-                    <th>PIX</th>
+                    <th>PIX / Conta</th>
                     <th>Status</th>
                     <th>Data</th>
                     <th style={{ width: 180 }}>Ações</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {visibleProd.map(p => (
-                    <tr key={p.id}>
-                      <td><strong>#{p.id}</strong></td>
+                  {unifiedRows.map(r => (
+                    <tr key={r.uid}>
                       <td>
-                        <div style={{ fontSize: 13 }}>{p.user_email || '—'}</div>
-                        {p.holder_name && (
-                          <div style={{ fontSize: 11, color: 'var(--szv2-text-muted)' }}>{p.holder_name}</div>
+                        {isOpen(r.status) ? (
+                          <input
+                            type="checkbox"
+                            checked={bulk.has(r.uid)}
+                            onChange={() => bulk.toggle(r.uid)}
+                            aria-label={`Selecionar saque #${Math.abs(r.uid)}`}
+                          />
+                        ) : null}
+                      </td>
+                      <td><strong>#{Math.abs(r.uid)}</strong></td>
+                      <td>
+                        <span className={`sz-badge ${r.kind === 'producer' ? 'szv2-badge-brand' : 'szv2-badge-neutral'}`}>
+                          {r.kind === 'producer' ? 'Produtor' : 'Afiliado'}
+                        </span>
+                      </td>
+                      <td>
+                        <div style={{ fontSize: 13 }}>{r.nome}</div>
+                        {r.sub && (
+                          <div style={{ fontSize: 11, color: 'var(--szv2-text-muted)' }}>{r.sub}</div>
                         )}
                       </td>
-                      <td style={{ textAlign: 'right' }}>R$ {fmt(p.amount)}</td>
-                      <td style={{ textAlign: 'right', color: 'var(--szv2-text-muted)' }}>R$ {fmt(p.fee)}</td>
+                      <td style={{ textAlign: 'right' }}>R$ {fmt(r.amount)}</td>
+                      <td style={{ textAlign: 'right', color: 'var(--szv2-text-muted)' }}>R$ {fmt(r.fee)}</td>
                       <td style={{ textAlign: 'right', fontWeight: 700, color: 'var(--szv2-brand)' }}>
-                        R$ {fmt(p.net)}
+                        R$ {fmt(r.net)}
                       </td>
                       <td style={{ fontFamily: 'var(--szv2-font-mono)', fontSize: 11 }}>
-                        {p.pix_key
-                          ? <span title={p.pix_key}>{p.pix_type ? `${p.pix_type.toUpperCase()} · ` : ''}{p.pix_key.length > 24 ? p.pix_key.slice(0, 24) + '…' : p.pix_key}</span>
-                          : '—'}
+                        <span title={r.conta}>{r.conta.length > 28 ? r.conta.slice(0, 28) + '…' : r.conta}</span>
                       </td>
-                      <td><StatusBadge status={p.status} /></td>
+                      <td><StatusBadge status={r.status} /></td>
                       <td style={{ fontSize: 12, color: 'var(--szv2-text-muted)' }}>
-                        {p.created_at?.slice(0, 16).replace('T', ' ') ?? '—'}
+                        {r.dataRef?.slice(0, 16).replace('T', ' ') ?? '—'}
                       </td>
                       <td>
-                        {isOpen(p.status) ? (
+                        {isOpen(r.status) ? (
                           <div style={{ display: 'flex', gap: 6 }}>
                             <button
                               type="button"
                               className="szv2-btn szv2-btn-brand szv2-btn-sm"
-                              onClick={() => openModal(p.id, 'pay')}
+                              onClick={() => openModal(r.uid, 'pay')}
                               disabled={busy}
                             >
-                              Marcar pago
+                              {r.kind === 'producer' ? 'Marcar pago' : 'Aprovar'}
                             </button>
                             <button
                               type="button"
                               className="szv2-btn szv2-btn-danger szv2-btn-sm"
-                              onClick={() => openModal(p.id, 'reject')}
+                              onClick={() => openModal(r.uid, 'reject')}
                               disabled={busy}
                             >
                               Rejeitar
                             </button>
                           </div>
-                        ) : p.proof_url ? (
+                        ) : r.proof_url ? (
                           <a
-                            href={p.proof_url}
+                            href={safeUrl(r.proof_url)}
                             target="_blank"
                             rel="noopener noreferrer"
                             style={{ color: 'var(--szv2-brand)', fontSize: 12 }}
                           >
                             Comprovante
                           </a>
-                        ) : (
-                          <span style={{ color: 'var(--szv2-text-faint)' }}>—</span>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <div style={{ overflowX: 'auto' }}>
-              <table className="szv2-table">
-                <thead>
-                  <tr>
-                    <th>ID</th>
-                    <th>Afiliado</th>
-                    <th style={{ textAlign: 'right' }}>Valor</th>
-                    <th style={{ textAlign: 'right' }}>Taxa</th>
-                    <th style={{ textAlign: 'right' }}>Líquido</th>
-                    <th>Conta</th>
-                    <th>Status</th>
-                    <th>Data</th>
-                    <th style={{ width: 180 }}>Ações</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {visibleAff.map(a => (
-                    <tr key={a.id}>
-                      <td><strong>#{a.id}</strong></td>
-                      <td style={{ fontWeight: 500 }}>{a.affiliate_name || `#${a.affiliate_id}`}</td>
-                      <td style={{ textAlign: 'right' }}>R$ {fmt(a.amount)}</td>
-                      <td style={{ textAlign: 'right', color: 'var(--szv2-text-muted)' }}>R$ {fmt(a.fee)}</td>
-                      <td style={{ textAlign: 'right', fontWeight: 700, color: 'var(--szv2-brand)' }}>
-                        R$ {fmt(a.net_amount)}
-                      </td>
-                      <td style={{ fontFamily: 'var(--szv2-font-mono)', fontSize: 11 }}>
-                        {[a.pix_key, a.bank_info].filter(Boolean).join(' · ') || '—'}
-                      </td>
-                      <td><StatusBadge status={a.status} /></td>
-                      <td style={{ fontSize: 12, color: 'var(--szv2-text-muted)' }}>
-                        {(a.decided_at || a.created_at)?.slice(0, 16).replace('T', ' ') ?? '—'}
-                      </td>
-                      <td>
-                        {isOpen(a.status) ? (
-                          <div style={{ display: 'flex', gap: 6 }}>
-                            <button
-                              type="button"
-                              className="szv2-btn szv2-btn-brand szv2-btn-sm"
-                              onClick={() => openModal(a.id, 'pay')}
-                              disabled={busy}
-                            >
-                              Aprovar
-                            </button>
-                            <button
-                              type="button"
-                              className="szv2-btn szv2-btn-danger szv2-btn-sm"
-                              onClick={() => openModal(a.id, 'reject')}
-                              disabled={busy}
-                            >
-                              Rejeitar
-                            </button>
-                          </div>
                         ) : (
                           <span style={{ color: 'var(--szv2-text-faint)' }}>—</span>
                         )}
@@ -857,40 +924,60 @@ export default function CodSaques() {
         title="Filtros"
       >
         <FilterField label="Data inicial">
-          <input
-            type="date"
-            style={filterInputStyle}
+          <FalkDatePicker
             value={draftFrom}
-            onChange={e => setDraftFrom(e.target.value)}
+            onChange={v => setDraftFrom(v)}
+            placeholder="dd/mm/aaaa"
           />
         </FilterField>
         <FilterField label="Data final">
-          <input
-            type="date"
-            style={filterInputStyle}
+          <FalkDatePicker
             value={draftTo}
-            onChange={e => setDraftTo(e.target.value)}
+            onChange={v => setDraftTo(v)}
+            placeholder="dd/mm/aaaa"
           />
         </FilterField>
         <FilterField label="Status">
-          <select
-            style={filterInputStyle}
+          <FalkSelect
             value={draftFilter}
-            onChange={e => setDraftFilter(e.target.value as FilterKey)}
-          >
-            {FILTER_ORDER.map(k => <option key={k} value={k}>{FILTER_LABEL[k]}</option>)}
-          </select>
+            onChange={v => setDraftFilter(v as FilterKey)}
+            options={FILTER_ORDER.map(k => ({ value: k, label: FILTER_LABEL[k] }))}
+            aria-label="Status"
+          />
         </FilterField>
         <FilterField label="Busca">
           <input
             type="search"
             style={filterInputStyle}
-            placeholder="afiliado / produtor / e-mail"
+            placeholder="Buscar por nome, telefone ou CPF"
             value={draftQ}
             onChange={e => setDraftQ(e.target.value)}
           />
         </FilterField>
       </FilterTopPanel>
+
+      {/* Barra de ações em lote — só nas abas de lista, sobre saques em aberto. */}
+      {tab !== 'rules' && (
+        <BulkBar
+          count={bulk.size}
+          onClear={bulk.clear}
+          busy={busy}
+          noun="saque selecionado"
+          nounPlural="saques selecionados"
+          actions={[
+            {
+              label: 'Confirmar selecionados',
+              variant: 'brand',
+              onClick: () => openBulkModal('pay'),
+            },
+            {
+              label: 'Rejeitar selecionados',
+              variant: 'danger',
+              onClick: () => openBulkModal('reject'),
+            },
+          ]}
+        />
+      )}
     </div>
   )
 }

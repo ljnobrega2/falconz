@@ -65,10 +65,17 @@ func PortalUserFromCtx(ctx context.Context) *PortalUser {
 }
 
 // IsAdmin retorna true se o usuário autenticado tem role admin ou manage_woocommerce.
+// A role admin só é injetada no contexto por AuthJWT quando o token veio do issuer
+// admin (ver adminJWTIssuer) — logo IsAdmin é fail-closed contra token forjado.
 func IsAdmin(ctx context.Context) bool {
 	role := GetRole(ctx)
 	return role == "admin" || role == "manage_woocommerce"
 }
+
+// adminJWTIssuer — claim iss exigido p/ honrar role admin. Idêntico ao go/admin
+// auth.IssueToken (Issuer:"senderzz-admin") e ao go/wallet SEC-GO-04. Tokens de
+// admin são assinados com ADMIN_JWT_SECRET; tokens de portal/interno com JWT_SECRET.
+const adminJWTIssuer = "senderzz-admin"
 
 // ── AuthJWT ───────────────────────────────────────────────────────────────────
 
@@ -84,6 +91,7 @@ func IsAdmin(ctx context.Context) bool {
 func AuthJWT(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		secret := os.Getenv("JWT_SECRET")
+		adminSecret := os.Getenv("ADMIN_JWT_SECRET")
 		if secret == "" {
 			// Configuração ausente — fail-closed para não processar requests sem auth.
 			slog.Error("[orders/auth] JWT_SECRET não configurado — rejeitando requisição",
@@ -103,13 +111,31 @@ func AuthJWT(next http.Handler) http.Handler {
 
 		// Valida e parseia o token HS256.
 		// O PHP emite: header={alg:HS256,typ:JWT}, payload={sub:user_id,iat:...,exp:...}
+		//
+		// SEC-GO-01: exige claim exp presente (WithExpirationRequired). O minter PHP
+		// (tpc_jwt_encode) SEMPRE seta exp e o decoder PHP (tpc_jwt_decode) recusa
+		// tokens sem exp — espelhamos esse fail-closed aqui para que um token sem exp
+		// não seja aceito como "nunca expira". Behavior-preserving para tokens válidos.
+		// SEC-GO-04 (fix SPOF): a chave de verificação depende do issuer. Token de
+		// admin (iss=senderzz-admin) é assinado com ADMIN_JWT_SECRET — verificá-lo com
+		// esse secret impede que um token forjado com JWT_SECRET + role=admin seja
+		// aceito como admin (era o SPOF: JWT_SECRET compartilhado + role confiada).
+		// Demais tokens (portal/interno/PHP legado, sem iss) seguem com JWT_SECRET.
 		token, err := jwt.Parse(tokenStr, func(t *jwt.Token) (any, error) {
 			// Garante que o algoritmo seja exatamente HS256 — rejeita RS256 etc.
 			if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
 				return nil, jwt.ErrSignatureInvalid
 			}
+			if mc, ok := t.Claims.(jwt.MapClaims); ok {
+				if iss, _ := mc["iss"].(string); iss == adminJWTIssuer {
+					if adminSecret == "" {
+						return nil, jwt.ErrSignatureInvalid
+					}
+					return []byte(adminSecret), nil
+				}
+			}
 			return []byte(secret), nil
-		}, jwt.WithValidMethods([]string{"HS256"}))
+		}, jwt.WithValidMethods([]string{"HS256"}), jwt.WithExpirationRequired())
 
 		if err != nil || !token.Valid {
 			slog.Warn("[orders/auth] token JWT inválido",
@@ -144,9 +170,19 @@ func AuthJWT(next http.Handler) http.Handler {
 		userID := int64(subFloat)
 		ctx := context.WithValue(r.Context(), ctxKeyUserID{}, userID)
 
-		// Extrai role se presente no token (campo opcional — emitido pelo Go, não pelo PHP legado).
+		// Extrai role. SEC-GO-04: role admin SÓ é honrada se o token veio do issuer
+		// admin (iss=senderzz-admin, validado acima contra ADMIN_JWT_SECRET). Um token
+		// assinado com JWT_SECRET (portal/interno) que afirme role=admin é REBAIXADO —
+		// fecha o privesc por confusão de token / vazamento de JWT_SECRET (P1 auditoria).
+		iss, _ := claims["iss"].(string)
 		if roleRaw, ok := claims["role"].(string); ok && roleRaw != "" {
-			ctx = context.WithValue(ctx, ctxKeyRole{}, roleRaw)
+			isAdminClaim := roleRaw == "admin" || roleRaw == "manage_woocommerce"
+			if isAdminClaim && iss != adminJWTIssuer {
+				slog.Warn("[orders/auth] claim role=admin rejeitada (issuer não-admin) — rebaixada",
+					"iss", iss, "path", r.URL.Path, "ip", r.RemoteAddr)
+			} else {
+				ctx = context.WithValue(ctx, ctxKeyRole{}, roleRaw)
+			}
 		}
 
 		next.ServeHTTP(w, r.WithContext(ctx))

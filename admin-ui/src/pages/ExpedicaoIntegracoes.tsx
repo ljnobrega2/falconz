@@ -3,7 +3,7 @@
 // Estrutura: (1) markup padrão global, (2) regras por classe (tabela inline — todas as classes),
 // (3) preview calculadora, (4) botão salvar único no rodapé. Visual: AuditEngine.tsx pattern.
 import { useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useToast } from '../hooks/useToast'
 import { api } from '../api'
 
 // ---------- tipos ----------
@@ -22,22 +22,12 @@ type MarkupResponse = {
   rules: MarkupRule[]
 }
 
-type ShippingClass = { id: number; name: string }
-
-type PreviewResponse = {
-  base_cost: number
-  pct: number
-  fixed: number
-  final_cost: number
-}
+type ShippingClass = { id: number; name: string; producer_name?: string }
 
 // ---------- helpers ----------
 
 const fmt = (v: number) =>
   v.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-
-const fmtPct = (v: number) =>
-  v.toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: 2 })
 
 // Aplica a fórmula do PHP em JS (para preview da tabela sem ida ao servidor).
 const calcFinal = (base: number, pct: number, fixed: number): number => {
@@ -57,8 +47,6 @@ const strToNum = (v: string): number => {
 // ---------- componente ----------
 
 export default function ExpedicaoIntegracoes() {
-  const navigate = useNavigate()
-
   // Estado principal.
   const [defPair, setDefPair] = useState<MarkupPair>({ pct: 0, fixed: 0 })
   const [rules, setRules] = useState<MarkupRule[]>([])
@@ -71,18 +59,8 @@ export default function ExpedicaoIntegracoes() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [err, setErr] = useState('')
-  const [toast, setToast] = useState<{ kind: 'ok' | 'err'; msg: string } | null>(null)
-
-  // Preview calculator.
-  const [previewClassID, setPreviewClassID] = useState<number | ''>('')
-  const [previewBase, setPreviewBase] = useState('20')
-  const [previewBusy, setPreviewBusy] = useState(false)
-  const [previewResult, setPreviewResult] = useState<PreviewResponse | null>(null)
-
-  function showToast(kind: 'ok' | 'err', msg: string) {
-    setToast({ kind, msg })
-    setTimeout(() => setToast(null), 5000)
-  }
+  const [deletingClass, setDeletingClass] = useState<number | null>(null)
+  const showToast = useToast() // AUDIT-2026-06-18 Onda3
 
   async function load() {
     setLoading(true)
@@ -209,61 +187,29 @@ export default function ExpedicaoIntegracoes() {
     }
   }
 
-  async function runPreview() {
-    const base = parseFloat(previewBase.replace(',', '.'))
-    if (!isFinite(base) || base <= 0) {
-      showToast('err', 'Informe um custo base maior que zero.')
+  // Exclui a classe (e a regra de markup associada, se houver). Ação difícil de
+  // reverter — confirma antes.
+  async function handleDeleteClass(cls: ShippingClass) {
+    if (!window.confirm(`Remover a regra de taxa de "${cls.name}"? Volta a usar o markup padrão global (o produto NÃO é apagado).`)) {
       return
     }
-    setPreviewBusy(true)
+    setDeletingClass(cls.id)
     try {
-      const r = await api<PreviewResponse>('/expedicao/markup/preview', {
-        method: 'POST',
-        body: JSON.stringify({
-          class_id: previewClassID === '' ? 0 : Number(previewClassID),
-          base_cost: base,
-        }),
-      })
-      setPreviewResult(r)
+      await api(`/expedicao/shipping-classes/${cls.id}`, { method: 'DELETE' })
+      showToast('ok', `Regra de "${cls.name}" removida — voltou ao padrão.`)
+      await load()
     } catch (e: any) {
-      showToast('err', e?.message || 'Falha no cálculo')
+      showToast('err', e?.message || 'Falha ao excluir classe')
     } finally {
-      setPreviewBusy(false)
+      setDeletingClass(null)
     }
   }
 
   // ---------- render ----------
 
   return (
-    <div>
-      {/* ============ Atalhos de navegação rápida ============ */}
-      <div style={{ display: 'flex', gap: 8, marginBottom: 20, flexWrap: 'wrap' }}>
-        <button
-          type="button"
-          className="szv2-btn-secondary"
-          onClick={() => navigate('/expedicao-webhooks')}
-        >
-          Ver Webhooks
-        </button>
-        <button
-          type="button"
-          className="szv2-btn-secondary"
-          onClick={() => navigate('/tpc-clientes')}
-        >
-          Carteira Frete
-        </button>
-      </div>
-
+    <div style={{ paddingBottom: 80 }}>
       {err && <div className="sz-alert-danger" style={{ marginBottom: 16 }}>{err}</div>}
-
-      {toast && (
-        <div
-          className={toast.kind === 'ok' ? 'sz-alert-success' : 'sz-alert-danger'}
-          style={{ marginBottom: 16 }}
-        >
-          {toast.msg}
-        </div>
-      )}
 
       {loading ? (
         <div className="szv2-card">
@@ -348,15 +294,16 @@ export default function ExpedicaoIntegracoes() {
           <div className="szv2-card">
             <div className="szv2-card-head">
               <div>
-                <h2>Taxa por classe de entrega</h2>
+                <h2>Taxa por produto</h2>
                 <p className="szv2-card-sub">
                   Deixe em branco para usar a taxa padrão global. Preencha para sobrescrever.
+                  Todos os produtos cadastrados (todas as variações) ficam listados abaixo.
                 </p>
               </div>
             </div>
 
             {classes.length === 0 ? (
-              /* Aviso: nenhuma classe cadastrada — espelha alerta amarelo do PHP */
+              /* Aviso: nenhum produto cadastrado */
               <div
                 style={{
                   background: '#fffbeb',
@@ -366,19 +313,20 @@ export default function ExpedicaoIntegracoes() {
                   marginTop: 8,
                 }}
               >
-                ⚠️ Nenhuma classe de entrega encontrada. Cadastre classes de entrega no painel para vincular integrações.
+                ⚠️ Nenhum produto encontrado. Cadastre produtos no painel para configurar o markup.
               </div>
             ) : (
               <div style={{ overflowX: 'auto', marginTop: 8 }}>
                 <table className="szv2-table">
                   <thead>
                     <tr>
-                      <th>Classe de entrega</th>
+                      <th>Produto</th>
                       <th style={{ width: 140 }}>Taxa % <span style={{ fontWeight: 400, color: 'var(--szv2-text-muted)' }}>(sobre custo ME)</span></th>
                       <th style={{ width: 140 }}>Taxa fixa R$</th>
                       <th style={{ width: 210, textAlign: 'right' }}>
                         Exemplo: custo ME R$20,00 → cobra
                       </th>
+                      <th style={{ width: 90 }}></th>
                     </tr>
                   </thead>
                   <tbody>
@@ -391,8 +339,14 @@ export default function ExpedicaoIntegracoes() {
                       return (
                         <tr key={cls.id}>
                           <td>
-                            <strong>{cls.name}</strong>
-                            <br />
+                            <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+                              <strong>{cls.name}</strong>
+                              {cls.producer_name && (
+                                <span style={{ color: 'var(--szv2-text-muted)', fontSize: 12 }}>
+                                  {cls.producer_name}
+                                </span>
+                              )}
+                            </div>
                             <span style={{ color: 'var(--szv2-text-muted)', fontSize: 12 }}>
                               #{cls.id}
                             </span>
@@ -430,136 +384,24 @@ export default function ExpedicaoIntegracoes() {
                               </span>
                             )}
                           </td>
+                          <td style={{ textAlign: 'right' }}>
+                            {hasRule && (
+                              <button
+                                type="button"
+                                className="szv2-btn-danger"
+                                style={{ padding: '6px 12px', fontSize: 12.5 }}
+                                disabled={deletingClass === cls.id}
+                                onClick={() => handleDeleteClass(cls)}
+                              >
+                                {deletingClass === cls.id ? 'Removendo…' : 'Remover regra'}
+                              </button>
+                            )}
+                          </td>
                         </tr>
                       )
                     })}
                   </tbody>
                 </table>
-              </div>
-            )}
-          </div>
-
-          {/* ============ Card 3 : Preview de cálculo ============ */}
-          <div className="szv2-card">
-            <div className="szv2-card-head">
-              <div>
-                <h2>Preview de cálculo</h2>
-                <p className="szv2-card-sub">
-                  Simule o custo final cobrado do cliente para uma classe específica.
-                </p>
-              </div>
-            </div>
-
-            <div
-              style={{
-                display: 'grid',
-                gridTemplateColumns: '1fr 1fr auto',
-                gap: 12,
-                alignItems: 'end',
-              }}
-            >
-              <div>
-                <label
-                  htmlFor="sz-mkp-pv-class"
-                  style={{ display: 'block', fontWeight: 600, marginBottom: 6 }}
-                >
-                  Classe de entrega
-                </label>
-                <select
-                  id="sz-mkp-pv-class"
-                  className="szv2-select"
-                  value={previewClassID}
-                  onChange={e =>
-                    setPreviewClassID(e.target.value === '' ? '' : Number(e.target.value))
-                  }
-                  style={{ width: '100%' }}
-                >
-                  <option value="">— Padrão (sem classe) —</option>
-                  {classes.map(c => (
-                    <option key={c.id} value={c.id}>
-                      {c.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label
-                  htmlFor="sz-mkp-pv-base"
-                  style={{ display: 'block', fontWeight: 600, marginBottom: 6 }}
-                >
-                  Custo base (R$)
-                </label>
-                <input
-                  id="sz-mkp-pv-base"
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  className="szv2-input"
-                  value={previewBase}
-                  onChange={e => setPreviewBase(e.target.value)}
-                  style={{ width: '100%' }}
-                />
-              </div>
-
-              <button
-                type="button"
-                className="szv2-btn-brand"
-                onClick={runPreview}
-                disabled={previewBusy}
-                style={{ height: 40 }}
-              >
-                {previewBusy ? 'Calculando…' : 'Calcular'}
-              </button>
-            </div>
-
-            {previewResult && (
-              <div
-                style={{
-                  marginTop: 18,
-                  padding: '14px 18px',
-                  background: 'rgba(234,88,12,0.06)',
-                  border: '1px solid rgba(234,88,12,0.20)',
-                  borderRadius: 10,
-                  display: 'flex',
-                  flexWrap: 'wrap',
-                  gap: 18,
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                }}
-              >
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                  <span style={{ fontSize: 12, color: 'var(--szv2-text-muted)' }}>Base</span>
-                  <strong style={{ fontSize: 16 }}>R$ {fmt(previewResult.base_cost)}</strong>
-                </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                  <span style={{ fontSize: 12, color: 'var(--szv2-text-muted)' }}>Markup</span>
-                  <strong style={{ fontSize: 16 }}>
-                    {fmtPct(previewResult.pct)}% + R$ {fmt(previewResult.fixed)}
-                  </strong>
-                </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                  <span style={{ fontSize: 12, color: 'var(--szv2-text-muted)' }}>Diferença</span>
-                  <strong style={{ fontSize: 16, color: 'var(--szv2-brand)' }}>
-                    R$ {fmt(previewResult.final_cost - previewResult.base_cost)}
-                  </strong>
-                </div>
-                <div
-                  style={{
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: 4,
-                    padding: '8px 16px',
-                    background: 'var(--szv2-brand)',
-                    color: '#fff',
-                    borderRadius: 8,
-                  }}
-                >
-                  <span style={{ fontSize: 12, opacity: 0.85 }}>Final cobrado</span>
-                  <strong style={{ fontSize: 22 }}>
-                    R$ {fmt(previewResult.final_cost)}
-                  </strong>
-                </div>
               </div>
             )}
           </div>

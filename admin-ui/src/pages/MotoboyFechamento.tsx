@@ -5,16 +5,22 @@
 // Match estilo AuditEngine.tsx (sem szv2-section-head; cards inline).
 
 import { useEffect, useMemo, useState } from 'react'
+import { confirmAsync } from '../components/ConfirmDialog'
+import { useToast } from '../hooks/useToast'
 import { api } from '../api'
 import FilterButton from '../components/FilterButton'
 import FilterTopPanel, {
   FilterField,
-  filterInputStyle,
   ActiveFilterChips,
   type ActiveChip,
 } from '../components/FilterTopPanel'
 import TableSkeleton from '../components/TableSkeleton'
 import EmptyState from '../components/EmptyState'
+import ErrorState from '../components/ErrorState'
+import StatusBadge from '../components/StatusBadge'
+import DetailDrawer from '../components/DetailDrawer'
+import FalkSelect from '../components/FalkSelect'
+import FalkDatePicker from '../components/FalkDatePicker'
 
 // ─── Tipos ────────────────────────────────────────────────────────────────
 
@@ -50,6 +56,22 @@ type Summary = {
 
 type Motoboy = { id: number; nome: string }
 
+// Pedido motoboy (subset de /orders/motoboy) — usado só para listar os números
+// de pedido (wc_order_id) de um fechamento no drawer de detalhe.
+type PedidoLite = {
+  id: number
+  wc_order_id: number | null
+  motoboy_id: number | null
+  status: string
+  valor: number
+  dest_nome: string
+  created_at: string
+}
+
+// Alvo do drawer "Pedidos do fechamento". Guarda o fechamento clicado para
+// recortar os pedidos (mesma data + mesmo motoboy) que compõem os totais.
+type PedidosDrawerTarget = { fechamentoID: number; motoboyID: number; motoboyNome: string; data: string } | null
+
 type StatusFilter = 'all' | 'pendente_alan' | 'pendente_repasse' | 'finalizados'
 
 type ModalKind =
@@ -78,14 +100,28 @@ const fmtTs = (s: string | null | undefined) => {
   return s.slice(0, 16).replace('T', ' ')
 }
 
+// Datas no fuso America/Sao_Paulo (UTC-3). toISOString() devolve UTC e, das
+// ~21h às 23h59 BRT, retorna o dia seguinte — desalinhando o range default.
+// Intl/en-CA ancora no dia local correto.
 function todayISO(): string {
-  return new Date().toISOString().slice(0, 10)
+  const fmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Sao_Paulo',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+  })
+  return fmt.format(new Date()) // en-CA → "YYYY-MM-DD"
 }
 
 function daysAgoISO(n: number): string {
-  const d = new Date()
-  d.setDate(d.getDate() - n)
-  return d.toISOString().slice(0, 10)
+  // Ancora em meio-dia UTC para evitar que o shift de fuso cruze o dia ao subtrair.
+  const today = todayISO()
+  const [y, m, d] = today.split('-').map(Number)
+  const base = new Date(Date.UTC(y, m - 1, d, 12, 0, 0))
+  base.setUTCDate(base.getUTCDate() - n)
+  const fmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'UTC',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+  })
+  return fmt.format(base) // "YYYY-MM-DD"
 }
 
 // Labels dos chips de status.
@@ -151,71 +187,67 @@ function ActionModal(props: {
   if (modal.kind === 'generate') {
     const canSubmit = genMotoboy > 0 && !!genDate && !busy
     return (
-      <div
-        className="szv2-modal-overlay szv2-open"
-        onClick={(e) => { if (e.target === e.currentTarget && !busy) onClose() }}
-      >
-        <div className="szv2-modal">
-          <div className="szv2-modal-head">
-            <h3>Gerar fechamento</h3>
-            <button className="szv2-modal-x" onClick={onClose} disabled={busy} aria-label="Fechar">✕</button>
-          </div>
-          <div className="szv2-modal-body" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-            <div className="szv2-field">
-              <label className="szv2-label">Motoboy</label>
-              <select
-                className="szv2-select"
-                value={genMotoboy}
-                onChange={(e) => setGenMotoboy(parseInt(e.target.value || '0', 10))}
-                disabled={busy}
-              >
-                <option value={0}>— selecione —</option>
-                {motoboys.map(m => (
-                  <option key={m.id} value={m.id}>{m.nome} (#{m.id})</option>
-                ))}
-              </select>
-            </div>
-            <div className="szv2-field">
-              <label className="szv2-label">Data do fechamento</label>
-              <input
-                type="date"
-                className="szv2-input"
-                value={genDate}
-                onChange={(e) => setGenDate(e.target.value)}
-                disabled={busy}
-              />
-              <span className="szv2-text-xs szv2-text-muted">
-                Calcula totais a partir dos pedidos do motoboy na data informada.
-                Bloqueia se Alan já tiver confirmado.
-              </span>
-            </div>
-          </div>
-          <div className="szv2-modal-foot">
+      <DetailDrawer
+        open
+        onClose={() => { if (!busy) onClose() }}
+        title="Gerar fechamento"
+        footer={
+          <>
             <button type="button" className="szv2-btn szv2-btn-secondary" onClick={onClose} disabled={busy}>
               Cancelar
             </button>
             <button
               type="button"
               className="szv2-btn szv2-btn-brand"
-              onClick={() => {
+              onClick={async () => {
                 if (!canSubmit) return
-                if (!window.confirm(`Gerar fechamento do motoboy #${genMotoboy} em ${fmtDate(genDate)}?`)) return
+                if (!await confirmAsync({ message: `Gerar fechamento do motoboy #${genMotoboy} em ${fmtDate(genDate)}?` })) return
                 onConfirmGenerate(genMotoboy, genDate)
               }}
               disabled={!canSubmit}
             >
               {busy ? 'Gerando…' : 'Gerar'}
             </button>
-          </div>
+          </>
+        }
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <div className="szv2-field">
+              <label className="szv2-label">Motoboy</label>
+              <FalkSelect
+                value={String(genMotoboy)}
+                onChange={(v) => setGenMotoboy(parseInt(v || '0', 10))}
+                disabled={busy}
+                aria-label="Motoboy"
+                options={[
+                  { value: '0', label: '— selecione —' },
+                  ...motoboys.map(m => ({ value: String(m.id), label: `${m.nome} (#${m.id})` })),
+                ]}
+              />
+            </div>
+            <div className="szv2-field">
+              <label className="szv2-label">Data do fechamento</label>
+              <FalkDatePicker
+                value={genDate}
+                onChange={(v) => setGenDate(v)}
+                placeholder="dd/mm/aaaa"
+                disabled={busy}
+                aria-label="Data do fechamento"
+              />
+              <span className="szv2-text-xs szv2-text-muted">
+                Calcula totais a partir dos pedidos do motoboy na data informada.
+                Bloqueia se Alan já tiver confirmado.
+              </span>
+            </div>
         </div>
-      </div>
+      </DetailDrawer>
     )
   }
 
   // ── Modos com texto (obs/motivo) ──────────────────────────────────────
   type CfgShape = { title: string; textLabel: string; cta: string; danger: boolean; requireText: boolean }
   const CFG_MAP: Record<'alan_confirm' | 'alan_desconfirm' | 'repasse_confirm' | 'repasse_desconfirm', CfgShape> = {
-    alan_confirm:       { title: 'Confirmar Alan',       textLabel: 'Observação (opcional)', cta: 'Confirmar Alan',       danger: false, requireText: false },
+    alan_confirm:       { title: 'Confirmar fechamento',  textLabel: 'Observação (opcional)', cta: 'Confirmar',            danger: false, requireText: false },
     alan_desconfirm:    { title: 'Desconfirmar Alan',    textLabel: 'Motivo',                cta: 'Desconfirmar Alan',    danger: true,  requireText: true  },
     repasse_confirm:    { title: 'Confirmar Repasse',    textLabel: 'Observação (opcional)', cta: 'Confirmar Repasse',    danger: false, requireText: false },
     repasse_desconfirm: { title: 'Desconfirmar Repasse', textLabel: 'Motivo',                cta: 'Desconfirmar Repasse', danger: true,  requireText: true  },
@@ -225,30 +257,12 @@ function ActionModal(props: {
   const canSubmit = !busy && (!cfg.requireText || text.trim().length > 0)
 
   return (
-    <div
-      className="szv2-modal-overlay szv2-open"
-      onClick={(e) => { if (e.target === e.currentTarget && !busy) onClose() }}
-    >
-      <div className="szv2-modal">
-        <div className="szv2-modal-head">
-          <h3>{cfg.title} — fechamento #{modal.id}</h3>
-          <button className="szv2-modal-x" onClick={onClose} disabled={busy} aria-label="Fechar">✕</button>
-        </div>
-        <div className="szv2-modal-body" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          <div className="szv2-field">
-            <label className="szv2-label">{cfg.textLabel}</label>
-            <textarea
-              className="szv2-input"
-              rows={3}
-              style={{ height: 'auto', padding: '8px 12px', resize: 'vertical' }}
-              placeholder={cfg.requireText ? 'Descreva o motivo…' : 'Anote algo se quiser…'}
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              disabled={busy}
-            />
-          </div>
-        </div>
-        <div className="szv2-modal-foot">
+    <DetailDrawer
+      open
+      onClose={() => { if (!busy) onClose() }}
+      title={`${cfg.title} — fechamento #${modal.id}`}
+      footer={
+        <>
           <button type="button" className="szv2-btn szv2-btn-secondary" onClick={onClose} disabled={busy}>
             Cancelar
           </button>
@@ -260,9 +274,24 @@ function ActionModal(props: {
           >
             {busy ? 'Enviando…' : cfg.cta}
           </button>
+        </>
+      }
+    >
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <div className="szv2-field">
+          <label className="szv2-label">{cfg.textLabel}</label>
+          <textarea
+            className="szv2-input"
+            rows={3}
+            style={{ height: 'auto', padding: '8px 12px', resize: 'vertical' }}
+            placeholder={cfg.requireText ? 'Descreva o motivo…' : 'Anote algo se quiser…'}
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            disabled={busy}
+          />
         </div>
       </div>
-    </div>
+    </DetailDrawer>
   )
 }
 
@@ -281,8 +310,14 @@ export default function MotoboyFechamento() {
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
-  const [toast, setToast] = useState<{ kind: 'ok' | 'err'; msg: string } | null>(null)
+  const showToast = useToast() // AUDIT-2026-06-18 Onda3
   const [modal, setModal] = useState<ModalKind>(null)
+
+  // Drawer "Pedidos do fechamento" — números de pedido (wc_order_id) por linha.
+  const [pedidosTarget, setPedidosTarget] = useState<PedidosDrawerTarget>(null)
+  const [pedidosList, setPedidosList] = useState<PedidoLite[]>([])
+  const [pedidosLoading, setPedidosLoading] = useState(false)
+  const [pedidosErr, setPedidosErr] = useState('')
 
   // Drafts no painel.
   const [draftFrom, setDraftFrom] = useState<string>(from)
@@ -308,10 +343,6 @@ export default function MotoboyFechamento() {
     setFilterOpen(false)
   }
 
-  function showToast(kind: 'ok' | 'err', msg: string) {
-    setToast({ kind, msg })
-    setTimeout(() => setToast(null), 5000)
-  }
 
   // ── Loaders ────────────────────────────────────────────────────────────
   async function load() {
@@ -351,6 +382,33 @@ export default function MotoboyFechamento() {
 
   useEffect(() => { load() /* eslint-disable-next-line */ }, [from, to, status, filterMotoboy])
   useEffect(() => { loadMotoboys() }, [])
+
+  // Carrega os pedidos que compõem um fechamento ao abrir o drawer.
+  // O endpoint de fechamento (go/admin) NÃO retorna os ids dos pedidos — só
+  // contagens. Recortamos os números via /orders/motoboy?date=<data> e
+  // filtramos por motoboy_id no cliente (mesmo critério do backend que gera os
+  // totais: motoboy_id + created_at::date). Limite do endpoint = 200.
+  async function loadPedidos(target: NonNullable<PedidosDrawerTarget>) {
+    setPedidosLoading(true)
+    setPedidosErr('')
+    setPedidosList([])
+    try {
+      const r = await api<{ items: PedidoLite[] }>(
+        `/orders/motoboy?date=${encodeURIComponent(target.data)}&limit=200`,
+      )
+      const mine = (r.items || []).filter(p => p.motoboy_id === target.motoboyID)
+      setPedidosList(mine)
+    } catch (e: any) {
+      setPedidosErr(e.message || 'Falha ao carregar pedidos')
+    } finally {
+      setPedidosLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    if (pedidosTarget) loadPedidos(pedidosTarget)
+    /* eslint-disable-next-line */
+  }, [pedidosTarget?.fechamentoID])
 
   // ── Ações de fechamento ────────────────────────────────────────────────
 
@@ -403,11 +461,9 @@ export default function MotoboyFechamento() {
   }
 
   async function doSyncWallets() {
-    if (!window.confirm(
-      `Sincronizar fechamentos do período ${fmtDate(from)} → ${fmtDate(to)}?\n\n` +
-      'Recalcula totais (pedidos, dinheiro, PIX, cartão) de todos os fechamentos sem confirmação de Alan no período.\n' +
-      'Fechamentos já confirmados por Alan não serão alterados.'
-    )) return
+    if (!await confirmAsync({
+      message: `Sincronizar fechamentos do período ${fmtDate(from)} → ${fmtDate(to)}?\n\nRecalcula totais (pedidos, dinheiro, PIX, cartão) de todos os fechamentos sem confirmação de Alan no período. Fechamentos já confirmados por Alan não serão alterados.`,
+    })) return
     setBusy(true)
     try {
       const r = await api<{ ok: boolean; fechamentos_sync: number; hint: string }>(
@@ -448,16 +504,9 @@ export default function MotoboyFechamento() {
 
   return (
     <div>
-      {err && <div className="sz-alert-danger" style={{ marginBottom: 16 }}>{err}</div>}
-
-      {toast && (
-        <div
-          className={toast.kind === 'ok' ? 'sz-alert-success' : 'sz-alert-danger'}
-          style={{ marginBottom: 16 }}
-        >
-          {toast.msg}
-        </div>
-      )}
+      {/* Banner só com dados na tela (erro de refresh/ação). Falha de
+          carregamento inicial vira ErrorState na área da tabela. */}
+      {err && items.length > 0 && <div className="sz-alert-danger" style={{ marginBottom: 16 }}>{err}</div>}
 
       {/* Top bar */}
       <div className="szv2-card" style={{ marginBottom: 16 }}>
@@ -522,7 +571,9 @@ export default function MotoboyFechamento() {
         </div>
 
         {loading && items.length === 0 ? (
-          <TableSkeleton rows={5} cols={13} />
+          <TableSkeleton rows={5} cols={12} />
+        ) : err && items.length === 0 ? (
+          <ErrorState message={err} onRetry={load} />
         ) : !loading && items.length === 0 ? (
           <EmptyState
             icon="🧾"
@@ -544,7 +595,6 @@ export default function MotoboyFechamento() {
                   <th style={{ textAlign: 'right' }}>PIX</th>
                   <th style={{ textAlign: 'right' }}>Cartão</th>
                   <th style={{ textAlign: 'right' }}>A repassar</th>
-                  <th>Alan</th>
                   <th>Repasse</th>
                   <th style={{ width: 220 }}>Ações</th>
                 </tr>
@@ -565,7 +615,35 @@ export default function MotoboyFechamento() {
                       )}
                     </td>
                     <td>{it.cd_nome || '—'}</td>
-                    <td style={{ textAlign: 'right' }}>{it.total_pedidos}</td>
+                    <td style={{ textAlign: 'right' }}>
+                      {it.total_pedidos > 0 ? (
+                        <button
+                          type="button"
+                          onClick={() => setPedidosTarget({
+                            fechamentoID: it.id,
+                            motoboyID: it.motoboy_id,
+                            motoboyNome: it.motoboy_nome || `#${it.motoboy_id}`,
+                            data: it.data_fechamento.slice(0, 10),
+                          })}
+                          title="Ver números dos pedidos deste fechamento"
+                          style={{
+                            border: 0,
+                            background: 'transparent',
+                            padding: 0,
+                            cursor: 'pointer',
+                            font: 'inherit',
+                            color: 'var(--szv2-brand)',
+                            fontWeight: 600,
+                            textDecoration: 'underline',
+                            textUnderlineOffset: 2,
+                          }}
+                        >
+                          {it.total_pedidos}
+                        </button>
+                      ) : (
+                        it.total_pedidos
+                      )}
+                    </td>
                     <td style={{ textAlign: 'right', color: 'var(--szv2-success)' }}>{it.total_entregues}</td>
                     <td style={{ textAlign: 'right', color: it.total_frustrados > 0 ? 'var(--szv2-danger)' : undefined }}>
                       {it.total_frustrados}
@@ -577,23 +655,9 @@ export default function MotoboyFechamento() {
                       R$ {fmt(it.total_a_repassar)}
                     </td>
                     <td>
-                      {it.alan_confirmou ? (
-                        <div>
-                          <span className="sz-badge szv2-badge-success">✅ Confirmado</span>
-                          {it.alan_ts && (
-                            <div style={{ fontSize: 10, color: 'var(--szv2-text-muted)', marginTop: 2 }}>
-                              {fmtTs(it.alan_ts)}
-                            </div>
-                          )}
-                        </div>
-                      ) : (
-                        <span className="sz-badge szv2-badge-warning">⏳ Pendente</span>
-                      )}
-                    </td>
-                    <td>
                       {it.repasse_confirmado ? (
                         <div>
-                          <span className="sz-badge szv2-badge-success">✅ Confirmado</span>
+                          <StatusBadge status="confirmado" />
                           {it.repasse_ts && (
                             <div style={{ fontSize: 10, color: 'var(--szv2-text-muted)', marginTop: 2 }}>
                               {fmtTs(it.repasse_ts)}
@@ -601,7 +665,7 @@ export default function MotoboyFechamento() {
                           )}
                         </div>
                       ) : (
-                        <span className="sz-badge szv2-badge-warning">⏳ Pendente</span>
+                        <StatusBadge status="pendente" />
                       )}
                     </td>
                     <td>
@@ -614,7 +678,7 @@ export default function MotoboyFechamento() {
                             onClick={() => setModal({ kind: 'alan_confirm', id: it.id })}
                             disabled={busy}
                           >
-                            Confirmar Alan
+                            Confirmar
                           </button>
                         )}
                         {it.alan_confirmou && !it.repasse_confirmado && (
@@ -666,6 +730,82 @@ export default function MotoboyFechamento() {
         onConfirmGenerate={doGenerate}
       />
 
+      {/* Drawer: números de pedido que compõem o fechamento selecionado. */}
+      <DetailDrawer
+        open={!!pedidosTarget}
+        onClose={() => setPedidosTarget(null)}
+        title={pedidosTarget
+          ? `Pedidos — ${pedidosTarget.motoboyNome} · ${fmtDate(pedidosTarget.data)}`
+          : 'Pedidos'}
+        large
+      >
+        {pedidosLoading ? (
+          <TableSkeleton rows={6} cols={3} />
+        ) : pedidosErr ? (
+          <ErrorState
+            message={pedidosErr}
+            onRetry={() => { if (pedidosTarget) loadPedidos(pedidosTarget) }}
+          />
+        ) : pedidosList.length === 0 ? (
+          <EmptyState
+            icon="📦"
+            title="Nenhum pedido encontrado para este fechamento."
+            description="Os pedidos são recortados por motoboy e data de criação. Se o fechamento foi gerado de outra forma, os números podem não aparecer aqui."
+          />
+        ) : (
+          <div>
+            {/* Chips com o número de cada pedido (wc_order_id) — leitura rápida. */}
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 16 }}>
+              {pedidosList.map(p => (
+                <span
+                  key={p.id}
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    padding: '3px 9px',
+                    borderRadius: 999,
+                    fontSize: 12,
+                    fontWeight: 600,
+                    background: 'rgba(30,111,242,.10)',
+                    color: 'var(--szv2-brand)',
+                    border: '1px solid rgba(30,111,242,.25)',
+                  }}
+                >
+                  {p.wc_order_id ?? `mb${p.id}`}
+                </span>
+              ))}
+            </div>
+
+            <table className="szv2-table">
+              <thead>
+                <tr>
+                  <th>Pedido</th>
+                  <th>Destinatário</th>
+                  <th>Status</th>
+                  <th style={{ textAlign: 'right' }}>Valor</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pedidosList.map(p => (
+                  <tr key={p.id}>
+                    <td style={{ fontWeight: 600, color: 'var(--szv2-brand)' }}>
+                      {p.wc_order_id ?? `mb${p.id}`}
+                    </td>
+                    <td style={{ fontSize: 13 }}>{p.dest_nome || '—'}</td>
+                    <td><StatusBadge status={p.status || 'pendente'} /></td>
+                    <td style={{ textAlign: 'right' }}>R$ {fmt(p.valor || 0)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+
+            <p className="szv2-card-sub" style={{ marginTop: 12 }}>
+              {pedidosList.length} pedido(s) listado(s).
+            </p>
+          </div>
+        )}
+      </DetailDrawer>
+
       <FilterTopPanel
         open={filterOpen}
         onClose={() => setFilterOpen(false)}
@@ -674,45 +814,41 @@ export default function MotoboyFechamento() {
         title="Filtros"
       >
         <FilterField label="Data inicial">
-          <input
-            type="date"
-            style={filterInputStyle}
+          <FalkDatePicker
             value={draftFrom}
             max={draftTo || undefined}
-            onChange={e => setDraftFrom(e.target.value)}
+            onChange={v => setDraftFrom(v)}
+            placeholder="dd/mm/aaaa"
+            aria-label="Data inicial"
           />
         </FilterField>
         <FilterField label="Data final">
-          <input
-            type="date"
-            style={filterInputStyle}
+          <FalkDatePicker
             value={draftTo}
             min={draftFrom || undefined}
-            onChange={e => setDraftTo(e.target.value)}
+            onChange={v => setDraftTo(v)}
+            placeholder="dd/mm/aaaa"
+            aria-label="Data final"
           />
         </FilterField>
         <FilterField label="Motoboy">
-          <select
-            style={filterInputStyle}
-            value={draftMotoboy}
-            onChange={e => setDraftMotoboy(parseInt(e.target.value || '0', 10))}
-          >
-            <option value={0}>Todos</option>
-            {motoboys.map(m => (
-              <option key={m.id} value={m.id}>{m.nome} (#{m.id})</option>
-            ))}
-          </select>
+          <FalkSelect
+            value={String(draftMotoboy)}
+            onChange={v => setDraftMotoboy(parseInt(v || '0', 10))}
+            aria-label="Motoboy"
+            options={[
+              { value: '0', label: 'Todos' },
+              ...motoboys.map(m => ({ value: String(m.id), label: `${m.nome} (#${m.id})` })),
+            ]}
+          />
         </FilterField>
         <FilterField label="Status">
-          <select
-            style={filterInputStyle}
+          <FalkSelect
             value={draftStatus}
-            onChange={e => setDraftStatus(e.target.value as StatusFilter)}
-          >
-            {STATUS_FILTERS.map(f => (
-              <option key={f.key} value={f.key}>{f.label}</option>
-            ))}
-          </select>
+            onChange={v => setDraftStatus(v as StatusFilter)}
+            aria-label="Status"
+            options={STATUS_FILTERS.map(f => ({ value: f.key, label: f.label }))}
+          />
         </FilterField>
       </FilterTopPanel>
     </div>

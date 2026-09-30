@@ -88,6 +88,25 @@ func (h *UsersHandler) Update(w http.ResponseWriter, r *http.Request) {
 		httpx.Err(w, 400, "bad_request", "json inválido")
 		return
 	}
+
+	// Whitelist de role — evita gravar role arbitrária via PATCH (escalonamento).
+	// Taxonomia canônica em capabilities.go / onboarding.go (PT-BR).
+	// Só valida quando role veio no body; ausente (nil) cai no COALESCE e mantém a atual.
+	// role:"" também é barrado (closes o footgun de COALESCE com string vazia).
+	if p.Role != nil {
+		allowedRoles := map[string]bool{
+			"produtor": true,
+			"afiliado": true,
+			"operator": true,
+			"admin":    true,
+			"cliente":  true,
+		}
+		if !allowedRoles[*p.Role] {
+			httpx.Err(w, 400, "bad_request", "role inválida")
+			return
+		}
+	}
+
 	_, err := h.Pool.Exec(r.Context(),
 		`UPDATE senderzz_portal_users
 		 SET nome  = COALESCE($1, nome),

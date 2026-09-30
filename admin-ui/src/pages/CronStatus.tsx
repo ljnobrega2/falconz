@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '../api'
+import DetailDrawer from '../components/DetailDrawer'
 
-// CronStatus — lista os 18 crons do plugin com última execução e status.
-// Em produção os jobs rodam via Asynq (Redis). Esta tela é VIEWER +
-// manual trigger; integração real com Asynq fica pendente.
+// CronStatus — HISTÓRICO (somente leitura) dos crons do plugin.
+// O site NÃO executa crons; os jobs rodam no worker (Asynq/wp-cron). Esta tela
+// só mostra última execução, status e histórico, e destaca falhas (alerta no
+// topo + KPI "Com erro"). Sem "executar agora" / "pular próxima".
 
 type CronItem = {
   name: string
@@ -116,55 +118,45 @@ function HistoryModal({
     return () => { alive = false }
   }, [cronName])
 
+  // 2026-06-19 — migrado para DetailDrawer (lateral direito, marca registrada)
   return (
-    <div className="szv2-modal-overlay szv2-open" onClick={onClose}>
-      <div className="szv2-modal szv2-modal-lg" onClick={e => e.stopPropagation()}>
-        <div className="szv2-modal-head">
-          <h3>Histórico — {cronName}</h3>
-          <button className="szv2-modal-x" onClick={onClose}>✕</button>
+    <DetailDrawer open onClose={onClose} large title={`Histórico — ${cronName}`}>
+      {err && <div className="sz-alert-danger" style={{ marginBottom: 12 }}>{err}</div>}
+      {loading ? (
+        <div style={{ padding: 24, textAlign: 'center', color: 'var(--szv2-text-muted)' }}>
+          Carregando…
         </div>
-        <div className="szv2-modal-body">
-          {err && <div className="sz-alert-danger" style={{ marginBottom: 12 }}>{err}</div>}
-          {loading ? (
-            <div style={{ padding: 24, textAlign: 'center', color: 'var(--szv2-text-muted)' }}>
-              Carregando…
-            </div>
-          ) : runs.length === 0 ? (
-            <div style={{ padding: 24, textAlign: 'center', color: 'var(--szv2-text-muted)' }}>
-              Nenhuma execução registrada ainda.<br />
-              <small>Execuções manuais aparecem aqui após o primeiro disparo.</small>
-            </div>
-          ) : (
-            <table className="szv2-table">
-              <thead>
-                <tr>
-                  <th>Início</th>
-                  <th>Duração</th>
-                  <th>Status</th>
-                  <th>Mensagem</th>
+      ) : runs.length === 0 ? (
+        <div style={{ padding: 24, textAlign: 'center', color: 'var(--szv2-text-muted)' }}>
+          Nenhuma execução registrada ainda.<br />
+          <small>Execuções manuais aparecem aqui após o primeiro disparo.</small>
+        </div>
+      ) : (
+        <table className="szv2-table">
+          <thead>
+            <tr>
+              <th>Início</th>
+              <th>Duração</th>
+              <th>Status</th>
+              <th>Mensagem</th>
+            </tr>
+          </thead>
+          <tbody>
+            {runs.map((r, i) => {
+              const b = statusBadge(r.status || 'never')
+              return (
+                <tr key={i}>
+                  <td>{r.started_at ? new Date(r.started_at).toLocaleString('pt-BR') : '—'}</td>
+                  <td>{formatDuration(r.duration_ms || 0)}</td>
+                  <td><span className={b.className}>{b.label}</span></td>
+                  <td>{r.message || '—'}</td>
                 </tr>
-              </thead>
-              <tbody>
-                {runs.map((r, i) => {
-                  const b = statusBadge(r.status || 'never')
-                  return (
-                    <tr key={i}>
-                      <td>{r.started_at ? new Date(r.started_at).toLocaleString('pt-BR') : '—'}</td>
-                      <td>{formatDuration(r.duration_ms || 0)}</td>
-                      <td><span className={b.className}>{b.label}</span></td>
-                      <td>{r.message || '—'}</td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          )}
-        </div>
-        <div className="szv2-modal-foot">
-          <button type="button" className="szv2-btn-secondary" onClick={onClose}>Fechar</button>
-        </div>
-      </div>
-    </div>
+              )
+            })}
+          </tbody>
+        </table>
+      )}
+    </DetailDrawer>
   )
 }
 
@@ -174,8 +166,6 @@ export default function CronStatus() {
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState('')
   const [filter, setFilter] = useState<StatusFilter>('')
-  const [busy, setBusy] = useState(false)
-  const [toast, setToast] = useState<{ kind: 'ok' | 'err'; msg: string } | null>(null)
   const [historyOf, setHistoryOf] = useState<string | null>(null)
 
   async function load() {
@@ -193,10 +183,6 @@ export default function CronStatus() {
 
   useEffect(() => { load() }, [])
 
-  function showToast(kind: 'ok' | 'err', msg: string) {
-    setToast({ kind, msg })
-    setTimeout(() => setToast(null), 5000)
-  }
 
   // KPIs derivados — total, rodando OK (ok + last_run ≤ 24h), com erro.
   const kpis = useMemo(() => {
@@ -216,44 +202,14 @@ export default function CronStatus() {
     return items.filter(c => c.last_status === filter)
   }, [items, filter])
 
-  async function handleTrigger(name: string) {
-    if (!window.confirm(`Executar "${name}" agora?\n\nIsso registra a execução manual no histórico. O handler real (PHP/worker) ainda não é invocado — integração com Asynq pendente.`)) return
-    setBusy(true)
-    try {
-      await api(`/crons/${encodeURIComponent(name)}/trigger`, { method: 'POST' })
-      showToast('ok', `Cron "${name}" disparado.`)
-      await load()
-    } catch (e: any) {
-      showToast('err', e.message || 'Falha ao disparar')
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  async function handleSkipNext(name: string) {
-    if (!window.confirm(`Pular próxima execução de "${name}"?`)) return
-    setBusy(true)
-    try {
-      await api(`/crons/${encodeURIComponent(name)}/skip-next`, { method: 'POST' })
-      showToast('ok', `Próxima execução de "${name}" pulada.`)
-      await load()
-    } catch (e: any) {
-      showToast('err', e.message || 'Falha ao pular')
-    } finally {
-      setBusy(false)
-    }
-  }
-
   return (
     <div>
       {err && <div className="sz-alert-danger" style={{ marginBottom: 16 }}>{err}</div>}
 
-      {toast && (
-        <div
-          className={toast.kind === 'ok' ? 'sz-alert-success' : 'sz-alert-danger'}
-          style={{ marginBottom: 16 }}
-        >
-          {toast.msg}
+      {/* Alerta de falha — dispara no topo se algum cron está com erro */}
+      {kpis.erro > 0 && (
+        <div className="sz-alert-danger" style={{ marginBottom: 16 }}>
+          ⚠️ {kpis.erro} cron(s) com falha na última execução — verifique abaixo.
         </div>
       )}
 
@@ -261,9 +217,9 @@ export default function CronStatus() {
       <div className="szv2-card" style={{ marginBottom: 24 }}>
         <div className="szv2-card-head">
           <div>
-            <h2>Status dos crons</h2>
+            <h2>Histórico de crons</h2>
             <p className="szv2-card-sub">
-              18 jobs do plugin Senderzz. "Executar agora" registra a execução manual no histórico; o handler PHP correspondente ainda é invocado apenas pelo wp-cron.
+              Somente leitura — o site não executa crons. Mostra última execução, status e histórico de cada job; falhas disparam alerta no topo e no dashboard.
             </p>
           </div>
           <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
@@ -274,7 +230,7 @@ export default function CronStatus() {
                   type="button"
                   className={filter === k ? 'szv2-btn-brand' : 'szv2-btn-secondary'}
                   onClick={() => setFilter(k)}
-                  disabled={busy}
+                  disabled={loading}
                   style={{ padding: '6px 12px', fontSize: 13 }}
                 >
                   {STATUS_FILTER_LABELS[k]}
@@ -285,7 +241,7 @@ export default function CronStatus() {
               type="button"
               className="szv2-btn-secondary"
               onClick={load}
-              disabled={busy || loading}
+              disabled={loading}
             >
               🔄 Atualizar
             </button>
@@ -329,7 +285,7 @@ export default function CronStatus() {
                   <th>Duração</th>
                   <th>Status</th>
                   <th>Próxima</th>
-                  <th style={{ width: 280 }}>Ações</th>
+                  <th style={{ width: 120 }}>Histórico</th>
                 </tr>
               </thead>
               <tbody>
@@ -352,35 +308,15 @@ export default function CronStatus() {
                       <td><span className={b.className}>{b.label}</span></td>
                       <td>{formatRelative(c.next_run)}</td>
                       <td>
-                        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                          <button
-                            type="button"
-                            className="szv2-btn-brand"
-                            onClick={() => handleTrigger(c.name)}
-                            disabled={busy}
-                            style={{ padding: '4px 10px', fontSize: 12 }}
-                          >
-                            Executar agora
-                          </button>
-                          <button
-                            type="button"
-                            className="szv2-btn-secondary"
-                            onClick={() => handleSkipNext(c.name)}
-                            disabled={busy}
-                            style={{ padding: '4px 10px', fontSize: 12 }}
-                          >
-                            Pular próxima
-                          </button>
-                          <button
-                            type="button"
-                            className="szv2-btn-secondary"
-                            onClick={() => setHistoryOf(c.name)}
-                            disabled={busy}
-                            style={{ padding: '4px 10px', fontSize: 12 }}
-                          >
-                            Ver histórico
-                          </button>
-                        </div>
+                        <button
+                          type="button"
+                          className="szv2-btn-secondary"
+                          onClick={() => setHistoryOf(c.name)}
+                          disabled={loading}
+                          style={{ padding: '4px 10px', fontSize: 12 }}
+                        >
+                          Ver histórico
+                        </button>
                       </td>
                     </tr>
                   )

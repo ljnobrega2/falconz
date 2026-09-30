@@ -1,5 +1,14 @@
 // Package handlers implementa os handlers HTTP da carteira de frete Senderzz.
 //
+// SEC-WALLET-SEP — FRONTEIRA DE CARTEIRAS: este serviço opera SOMENTE as tabelas
+// tpc_* (tpc_carteira / tpc_transacoes / tpc_recargas / tpc_webhook_events), que
+// constituem a carteira de EXPEDIÇÃO/FRETE (keyed por wp_user_id, colunas saldo /
+// saldo_reservado). NUNCA lê nem escreve sz_cod_wallet_transactions — essa é a
+// carteira COD/motoboy (coluna net), território exclusivo do portal/motoboy. As
+// duas carteiras têm schemas disjuntos e saldos independentes; misturá-las (JOIN
+// ou leitura cruzada) é um ACHADO CRÍTICO. Qualquer novo handler aqui deve manter
+// essa fronteira — grep por SEC-WALLET-SEP para auditar.
+//
 // Todos os handlers usam transações pgx com SELECT FOR UPDATE para garantir
 // atomicidade idêntica ao comportamento do PHP (tpc_reservar / tpc_debitar_reserva
 // / tpc_liberar_reserva em wallet.php).
@@ -25,6 +34,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/senderzz/wallet-service/internal/httpx"
@@ -119,6 +129,20 @@ func lockCarteira(ctx context.Context, tx pgx.Tx, userID int64) (saldo, reservad
 	return
 }
 
+// saldoDisponivel calcula o saldo disponível da carteira de EXPEDIÇÃO:
+//
+//	disponivel = max(0, saldo - saldo_reservado)
+//
+// Helper puro (sem DB, sem rede) — fonte única da regra de saldo disponível,
+// usado por responderSaldo, PostReservar e GetMe. O clamp em zero espelha o
+// decimal.Max(decimal.Zero, ...) do PHP e impede que uma reserva maior que o
+// saldo (estado transitório/divergente) reporte disponível negativo. NÃO altera
+// nenhuma regra de dinheiro — apenas centraliza a fórmula que já existia inline
+// em 3 lugares para que não divirjam. SEC-WALLET-SEP: opera apenas colunas tpc_*.
+func saldoDisponivel(saldo, reservado decimal.Decimal) decimal.Decimal {
+	return decimal.Max(decimal.Zero, saldo.Sub(reservado))
+}
+
 // ─── GET /carteira/saldo ─────────────────────────────────────────────────────
 
 // GetSaldo retorna saldo, saldo_reservado e saldo_disponivel do usuário autenticado.
@@ -129,7 +153,21 @@ func (h *WalletHandler) GetSaldo(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErr(w, http.StatusUnauthorized, "não autenticado")
 		return
 	}
+	h.responderSaldo(w, r, userID)
+}
 
+// reqLog é um atalho para o logger ligado ao request (com request_id), usado
+// pelos handlers principais para que cada log line carregue o request_id.
+// Fallback (slog.Default) garantido por middleware.LoggerFrom — nunca nil.
+func reqLog(r *http.Request) *slog.Logger {
+	return middleware.LoggerFrom(r.Context())
+}
+
+// responderSaldo é o núcleo compartilhado entre GET /saldo (JWT do próprio usuário)
+// e GET /admin/usuario/{id}/saldo (admin lê QUALQUER user_id). Recebe userID já
+// resolvido pelo caller (JWT ou path param). Mesma forma de resposta para ambos —
+// saldo/saldo_reservado/saldo_disponivel — espelhando GetSaldo do Go.
+func (h *WalletHandler) responderSaldo(w http.ResponseWriter, r *http.Request, userID int64) {
 	var sStr, rStr string
 	err := h.db.QueryRow(r.Context(),
 		`SELECT saldo, saldo_reservado
@@ -141,6 +179,7 @@ func (h *WalletHandler) GetSaldo(w http.ResponseWriter, r *http.Request) {
 	if err == pgx.ErrNoRows {
 		// Usuário sem carteira ainda — retorna zero sem criar a linha agora.
 		httpx.WriteOK(w, map[string]any{
+			"user_id":          userID,
 			"saldo":            "0.00",
 			"saldo_reservado":  "0.00",
 			"saldo_disponivel": "0.00",
@@ -148,20 +187,36 @@ func (h *WalletHandler) GetSaldo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		slog.Error("[tpc_saldo] erro ao consultar carteira", "user_id", userID, "err", err)
+		reqLog(r).Error("[tpc_saldo] erro ao consultar carteira", "user_id", userID, "err", err)
 		httpx.WriteErr(w, http.StatusInternalServerError, "erro ao consultar saldo")
 		return
 	}
 
 	saldo, _ := decimal.NewFromString(sStr)
 	reservado, _ := decimal.NewFromString(rStr)
-	disponivel := decimal.Max(decimal.Zero, saldo.Sub(reservado))
+	disponivel := saldoDisponivel(saldo, reservado)
 
 	httpx.WriteOK(w, map[string]any{
+		"user_id":          userID,
 		"saldo":            saldo.StringFixed(2),
 		"saldo_reservado":  reservado.StringFixed(2),
 		"saldo_disponivel": disponivel.StringFixed(2),
 	})
+}
+
+// ─── GET /admin/usuario/{user_id}/saldo ──────────────────────────────────────
+
+// GetSaldoAdmin retorna o saldo de QUALQUER usuário pelo user_id do path.
+// Auth: middleware.AuthAdminJWT (espelha permission_callback manage_woocommerce de
+// tpc_endpoint_admin_saldo, rest-api.php:280). Reusa responderSaldo — mesma lógica
+// de GetSaldo, porém com user_id arbitrário lido do path em vez do JWT do caller.
+func (h *WalletHandler) GetSaldoAdmin(w http.ResponseWriter, r *http.Request) {
+	userID, err := strconv.ParseInt(chi.URLParam(r, "user_id"), 10, 64)
+	if err != nil || userID <= 0 {
+		httpx.WriteErr(w, http.StatusBadRequest, "user_id inválido")
+		return
+	}
+	h.responderSaldo(w, r, userID)
 }
 
 // ─── GET /carteira/extrato?limit=50 ─────────────────────────────────────────
@@ -174,7 +229,29 @@ func (h *WalletHandler) GetExtrato(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteErr(w, http.StatusUnauthorized, "não autenticado")
 		return
 	}
+	h.responderExtrato(w, r, userID)
+}
 
+// ─── GET /admin/usuario/{user_id}/extrato ────────────────────────────────────
+
+// GetExtratoAdmin retorna o extrato de QUALQUER usuário pelo user_id do path.
+// Auth: middleware.AuthAdminJWT (espelha permission_callback manage_woocommerce de
+// tpc_endpoint_admin_extrato, rest-api.php:285). Reusa responderExtrato — mesma
+// lógica de GetExtrato, porém com user_id arbitrário lido do path em vez do JWT.
+func (h *WalletHandler) GetExtratoAdmin(w http.ResponseWriter, r *http.Request) {
+	userID, err := strconv.ParseInt(chi.URLParam(r, "user_id"), 10, 64)
+	if err != nil || userID <= 0 {
+		httpx.WriteErr(w, http.StatusBadRequest, "user_id inválido")
+		return
+	}
+	h.responderExtrato(w, r, userID)
+}
+
+// responderExtrato é o núcleo compartilhado entre GET /extrato (JWT do próprio
+// usuário) e GET /admin/usuario/{id}/extrato (admin lê QUALQUER user_id). Recebe
+// userID já resolvido pelo caller. Mesma forma de resposta (data/total) — espelha
+// GetExtrato do Go.
+func (h *WalletHandler) responderExtrato(w http.ResponseWriter, r *http.Request, userID int64) {
 	limit := 50
 	if lStr := r.URL.Query().Get("limit"); lStr != "" {
 		if n, err := strconv.Atoi(lStr); err == nil && n > 0 && n <= 100 {
@@ -193,7 +270,7 @@ func (h *WalletHandler) GetExtrato(w http.ResponseWriter, r *http.Request) {
 		userID, limit,
 	)
 	if err != nil {
-		slog.Error("[tpc_extrato] erro ao consultar transações", "user_id", userID, "err", err)
+		reqLog(r).Error("[tpc_extrato] erro ao consultar transações", "user_id", userID, "err", err)
 		httpx.WriteErr(w, http.StatusInternalServerError, "erro ao consultar extrato")
 		return
 	}
@@ -208,7 +285,7 @@ func (h *WalletHandler) GetExtrato(w http.ResponseWriter, r *http.Request) {
 			&t.Descricao, &t.Referencia, &t.OrderID, &t.MeOrderID,
 			&t.Status, &t.ActorID, &t.IPAddress, &t.CreatedAt,
 		); err != nil {
-			slog.Error("[tpc_extrato] erro ao ler linha", "user_id", userID, "err", err)
+			reqLog(r).Error("[tpc_extrato] erro ao ler linha", "user_id", userID, "err", err)
 			httpx.WriteErr(w, http.StatusInternalServerError, "erro ao ler extrato")
 			return
 		}
@@ -217,7 +294,7 @@ func (h *WalletHandler) GetExtrato(w http.ResponseWriter, r *http.Request) {
 		txs = append(txs, t)
 	}
 	if err := rows.Err(); err != nil {
-		slog.Error("[tpc_extrato] erro após iteração", "user_id", userID, "err", err)
+		reqLog(r).Error("[tpc_extrato] erro após iteração", "user_id", userID, "err", err)
 		httpx.WriteErr(w, http.StatusInternalServerError, "erro ao processar extrato")
 		return
 	}
@@ -267,7 +344,7 @@ func (h *WalletHandler) PostReservar(w http.ResponseWriter, r *http.Request) {
 
 	tx, err := h.db.BeginTx(r.Context(), pgx.TxOptions{IsoLevel: pgx.Serializable})
 	if err != nil {
-		slog.Error("[tpc_reservar] erro ao iniciar transação", "user_id", userID, "err", err)
+		reqLog(r).Error("[tpc_reservar] erro ao iniciar transação", "user_id", userID, "err", err)
 		httpx.WriteErr(w, http.StatusInternalServerError, "erro interno")
 		return
 	}
@@ -275,21 +352,21 @@ func (h *WalletHandler) PostReservar(w http.ResponseWriter, r *http.Request) {
 
 	// Garante linha na carteira antes de qualquer lock.
 	if err := upsertCarteira(r.Context(), tx, userID); err != nil {
-		slog.Error("[tpc_reservar] erro ao criar carteira", "user_id", userID, "err", err)
+		reqLog(r).Error("[tpc_reservar] erro ao criar carteira", "user_id", userID, "err", err)
 		httpx.WriteErr(w, http.StatusInternalServerError, "erro interno")
 		return
 	}
 
 	saldo, reservado, err := lockCarteira(r.Context(), tx, userID)
 	if err != nil {
-		slog.Error("[tpc_reservar] erro ao obter lock da carteira", "user_id", userID, "err", err)
+		reqLog(r).Error("[tpc_reservar] erro ao obter lock da carteira", "user_id", userID, "err", err)
 		httpx.WriteErr(w, http.StatusInternalServerError, "erro interno")
 		return
 	}
 
-	disponivel := decimal.Max(decimal.Zero, saldo.Sub(reservado))
+	disponivel := saldoDisponivel(saldo, reservado)
 	if disponivel.LessThan(req.Valor) {
-		slog.Info("[tpc_reservar] saldo insuficiente",
+		reqLog(r).Info("[tpc_reservar] saldo insuficiente",
 			"user_id", userID,
 			"disponivel", disponivel.StringFixed(2),
 			"solicitado", req.Valor.StringFixed(2),
@@ -308,7 +385,7 @@ func (h *WalletHandler) PostReservar(w http.ResponseWriter, r *http.Request) {
 		novoReservado.StringFixed(2), userID,
 	)
 	if err != nil {
-		slog.Error("[tpc_reservar] erro ao atualizar saldo_reservado", "user_id", userID, "err", err)
+		reqLog(r).Error("[tpc_reservar] erro ao atualizar saldo_reservado", "user_id", userID, "err", err)
 		httpx.WriteErr(w, http.StatusInternalServerError, "erro interno")
 		return
 	}
@@ -339,11 +416,11 @@ func (h *WalletHandler) PostReservar(w http.ResponseWriter, r *http.Request) {
 			userID, req.Referencia,
 		).Scan(&existingID)
 		if err2 != nil {
-			slog.Error("[tpc_reservar] erro ao buscar reserva existente", "user_id", userID, "referencia", req.Referencia, "err", err2)
+			reqLog(r).Error("[tpc_reservar] erro ao buscar reserva existente", "user_id", userID, "referencia", req.Referencia, "err", err2)
 			httpx.WriteErr(w, http.StatusInternalServerError, "erro interno")
 			return
 		}
-		slog.Info("[tpc_reservar] reserva já existente (idempotente)",
+		reqLog(r).Info("[tpc_reservar] reserva já existente (idempotente)",
 			"user_id", userID,
 			"referencia", req.Referencia,
 			"tx_id", existingID,
@@ -352,18 +429,18 @@ func (h *WalletHandler) PostReservar(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		slog.Error("[tpc_reservar] erro ao inserir transação", "user_id", userID, "err", err)
+		reqLog(r).Error("[tpc_reservar] erro ao inserir transação", "user_id", userID, "err", err)
 		httpx.WriteErr(w, http.StatusInternalServerError, "erro interno")
 		return
 	}
 
 	if err := tx.Commit(r.Context()); err != nil {
-		slog.Error("[tpc_reservar] erro ao commit", "user_id", userID, "err", err)
+		reqLog(r).Error("[tpc_reservar] erro ao commit", "user_id", userID, "err", err)
 		httpx.WriteErr(w, http.StatusInternalServerError, "erro interno")
 		return
 	}
 
-	slog.Info("[tpc_reservar] reserva criada",
+	reqLog(r).Info("[tpc_reservar] reserva criada",
 		"user_id", userID,
 		"valor", req.Valor.StringFixed(2),
 		"referencia", req.Referencia,
@@ -402,7 +479,7 @@ func (h *WalletHandler) PostDebitarReserva(w http.ResponseWriter, r *http.Reques
 
 	tx, err := h.db.BeginTx(r.Context(), pgx.TxOptions{IsoLevel: pgx.Serializable})
 	if err != nil {
-		slog.Error("[tpc_debitar_reserva] erro ao iniciar transação", "user_id", userID, "err", err)
+		reqLog(r).Error("[tpc_debitar_reserva] erro ao iniciar transação", "user_id", userID, "err", err)
 		httpx.WriteErr(w, http.StatusInternalServerError, "erro interno")
 		return
 	}
@@ -426,7 +503,7 @@ func (h *WalletHandler) PostDebitarReserva(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if err != nil {
-		slog.Error("[tpc_debitar_reserva] erro ao buscar transação", "user_id", userID, "referencia", req.Referencia, "err", err)
+		reqLog(r).Error("[tpc_debitar_reserva] erro ao buscar transação", "user_id", userID, "referencia", req.Referencia, "err", err)
 		httpx.WriteErr(w, http.StatusInternalServerError, "erro interno")
 		return
 	}
@@ -434,7 +511,7 @@ func (h *WalletHandler) PostDebitarReserva(w http.ResponseWriter, r *http.Reques
 	// Idempotência: já confirmada → retorna ok sem reprocessar.
 	if status == "confirmado" {
 		tx.Rollback(r.Context()) //nolint:errcheck
-		slog.Info("[tpc_debitar_reserva] reserva já confirmada (idempotente)",
+		reqLog(r).Info("[tpc_debitar_reserva] reserva já confirmada (idempotente)",
 			"user_id", userID, "referencia", req.Referencia, "tx_id", txID)
 		httpx.WriteOK(w, map[string]any{"transacao_id": txID, "idempotente": true})
 		return
@@ -446,7 +523,7 @@ func (h *WalletHandler) PostDebitarReserva(w http.ResponseWriter, r *http.Reques
 
 	valor, err := decimal.NewFromString(valorStr)
 	if err != nil {
-		slog.Error("[tpc_debitar_reserva] valor inválido na transação", "tx_id", txID, "valor", valorStr)
+		reqLog(r).Error("[tpc_debitar_reserva] valor inválido na transação", "tx_id", txID, "valor", valorStr)
 		httpx.WriteErr(w, http.StatusInternalServerError, "erro interno")
 		return
 	}
@@ -454,14 +531,14 @@ func (h *WalletHandler) PostDebitarReserva(w http.ResponseWriter, r *http.Reques
 	// Lock da carteira.
 	saldo, reservado, err := lockCarteira(r.Context(), tx, userID)
 	if err != nil {
-		slog.Error("[tpc_debitar_reserva] erro ao obter lock da carteira", "user_id", userID, "err", err)
+		reqLog(r).Error("[tpc_debitar_reserva] erro ao obter lock da carteira", "user_id", userID, "err", err)
 		httpx.WriteErr(w, http.StatusInternalServerError, "erro interno")
 		return
 	}
 
 	// Validações de segurança (espelha PHP: saldo < valor || reservado < valor → rollback).
 	if saldo.LessThan(valor) || reservado.LessThan(valor) {
-		slog.Warn("[tpc_debitar_reserva] saldo ou reserva insuficiente para confirmar débito",
+		reqLog(r).Warn("[tpc_debitar_reserva] saldo ou reserva insuficiente para confirmar débito",
 			"user_id", userID,
 			"saldo", saldo.StringFixed(2),
 			"reservado", reservado.StringFixed(2),
@@ -481,7 +558,7 @@ func (h *WalletHandler) PostDebitarReserva(w http.ResponseWriter, r *http.Reques
 		novoSaldo.StringFixed(2), novoReservado.StringFixed(2), userID,
 	)
 	if err != nil {
-		slog.Error("[tpc_debitar_reserva] erro ao atualizar carteira", "user_id", userID, "err", err)
+		reqLog(r).Error("[tpc_debitar_reserva] erro ao atualizar carteira", "user_id", userID, "err", err)
 		httpx.WriteErr(w, http.StatusInternalServerError, "erro interno")
 		return
 	}
@@ -493,18 +570,18 @@ func (h *WalletHandler) PostDebitarReserva(w http.ResponseWriter, r *http.Reques
 		novoSaldo.StringFixed(2), txID,
 	)
 	if err != nil {
-		slog.Error("[tpc_debitar_reserva] erro ao confirmar transação", "tx_id", txID, "err", err)
+		reqLog(r).Error("[tpc_debitar_reserva] erro ao confirmar transação", "tx_id", txID, "err", err)
 		httpx.WriteErr(w, http.StatusInternalServerError, "erro interno")
 		return
 	}
 
 	if err := tx.Commit(r.Context()); err != nil {
-		slog.Error("[tpc_debitar_reserva] erro ao commit", "user_id", userID, "err", err)
+		reqLog(r).Error("[tpc_debitar_reserva] erro ao commit", "user_id", userID, "err", err)
 		httpx.WriteErr(w, http.StatusInternalServerError, "erro interno")
 		return
 	}
 
-	slog.Info("[tpc_debitar_reserva] reserva debitada",
+	reqLog(r).Info("[tpc_debitar_reserva] reserva debitada",
 		"user_id", userID,
 		"referencia", req.Referencia,
 		"valor", valor.StringFixed(2),
@@ -546,21 +623,21 @@ func (h *WalletHandler) PostCreditar(w http.ResponseWriter, r *http.Request) {
 
 	tx, err := h.db.BeginTx(r.Context(), pgx.TxOptions{IsoLevel: pgx.Serializable})
 	if err != nil {
-		slog.Error("[tpc_creditar] erro ao iniciar transação", "user_id", userID, "err", err)
+		reqLog(r).Error("[tpc_creditar] erro ao iniciar transação", "user_id", userID, "err", err)
 		httpx.WriteErr(w, http.StatusInternalServerError, "erro interno")
 		return
 	}
 	defer tx.Rollback(r.Context()) //nolint:errcheck
 
 	if err := upsertCarteira(r.Context(), tx, userID); err != nil {
-		slog.Error("[tpc_creditar] erro ao criar carteira", "user_id", userID, "err", err)
+		reqLog(r).Error("[tpc_creditar] erro ao criar carteira", "user_id", userID, "err", err)
 		httpx.WriteErr(w, http.StatusInternalServerError, "erro interno")
 		return
 	}
 
 	saldo, _, err := lockCarteira(r.Context(), tx, userID)
 	if err != nil {
-		slog.Error("[tpc_creditar] erro ao obter lock da carteira", "user_id", userID, "err", err)
+		reqLog(r).Error("[tpc_creditar] erro ao obter lock da carteira", "user_id", userID, "err", err)
 		httpx.WriteErr(w, http.StatusInternalServerError, "erro interno")
 		return
 	}
@@ -572,7 +649,7 @@ func (h *WalletHandler) PostCreditar(w http.ResponseWriter, r *http.Request) {
 		novoSaldo.StringFixed(2), userID,
 	)
 	if err != nil {
-		slog.Error("[tpc_creditar] erro ao atualizar saldo", "user_id", userID, "err", err)
+		reqLog(r).Error("[tpc_creditar] erro ao atualizar saldo", "user_id", userID, "err", err)
 		httpx.WriteErr(w, http.StatusInternalServerError, "erro interno")
 		return
 	}
@@ -603,28 +680,28 @@ func (h *WalletHandler) PostCreditar(w http.ResponseWriter, r *http.Request) {
 			userID, req.Referencia,
 		).Scan(&existingID)
 		if err2 != nil {
-			slog.Error("[tpc_creditar] erro ao buscar crédito existente", "user_id", userID, "referencia", req.Referencia, "err", err2)
+			reqLog(r).Error("[tpc_creditar] erro ao buscar crédito existente", "user_id", userID, "referencia", req.Referencia, "err", err2)
 			httpx.WriteErr(w, http.StatusInternalServerError, "erro interno")
 			return
 		}
-		slog.Info("[tpc_creditar] crédito já existente (idempotente)",
+		reqLog(r).Info("[tpc_creditar] crédito já existente (idempotente)",
 			"user_id", userID, "referencia", req.Referencia, "tx_id", existingID)
 		httpx.WriteOK(w, map[string]any{"transacao_id": existingID, "idempotente": true})
 		return
 	}
 	if err != nil {
-		slog.Error("[tpc_creditar] erro ao inserir transação", "user_id", userID, "err", err)
+		reqLog(r).Error("[tpc_creditar] erro ao inserir transação", "user_id", userID, "err", err)
 		httpx.WriteErr(w, http.StatusInternalServerError, "erro interno")
 		return
 	}
 
 	if err := tx.Commit(r.Context()); err != nil {
-		slog.Error("[tpc_creditar] erro ao commit", "user_id", userID, "err", err)
+		reqLog(r).Error("[tpc_creditar] erro ao commit", "user_id", userID, "err", err)
 		httpx.WriteErr(w, http.StatusInternalServerError, "erro interno")
 		return
 	}
 
-	slog.Info("[tpc_creditar] crédito realizado",
+	reqLog(r).Info("[tpc_creditar] crédito realizado",
 		"user_id", userID,
 		"valor", req.Valor.StringFixed(2),
 		"referencia", req.Referencia,
@@ -664,7 +741,7 @@ func (h *WalletHandler) PostLiberarReserva(w http.ResponseWriter, r *http.Reques
 
 	tx, err := h.db.BeginTx(r.Context(), pgx.TxOptions{IsoLevel: pgx.Serializable})
 	if err != nil {
-		slog.Error("[tpc_liberar_reserva] erro ao iniciar transação", "user_id", userID, "err", err)
+		reqLog(r).Error("[tpc_liberar_reserva] erro ao iniciar transação", "user_id", userID, "err", err)
 		httpx.WriteErr(w, http.StatusInternalServerError, "erro interno")
 		return
 	}
@@ -688,7 +765,7 @@ func (h *WalletHandler) PostLiberarReserva(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if err != nil {
-		slog.Error("[tpc_liberar_reserva] erro ao buscar transação", "user_id", userID, "err", err)
+		reqLog(r).Error("[tpc_liberar_reserva] erro ao buscar transação", "user_id", userID, "err", err)
 		httpx.WriteErr(w, http.StatusInternalServerError, "erro interno")
 		return
 	}
@@ -696,7 +773,7 @@ func (h *WalletHandler) PostLiberarReserva(w http.ResponseWriter, r *http.Reques
 	// Idempotência: já cancelada → ok.
 	if status == "cancelado" {
 		tx.Rollback(r.Context()) //nolint:errcheck
-		slog.Info("[tpc_liberar_reserva] reserva já cancelada (idempotente)",
+		reqLog(r).Info("[tpc_liberar_reserva] reserva já cancelada (idempotente)",
 			"user_id", userID, "referencia", req.Referencia, "tx_id", txID)
 		httpx.WriteOK(w, map[string]any{"transacao_id": txID, "idempotente": true})
 		return
@@ -708,7 +785,7 @@ func (h *WalletHandler) PostLiberarReserva(w http.ResponseWriter, r *http.Reques
 
 	valor, err := decimal.NewFromString(valorStr)
 	if err != nil {
-		slog.Error("[tpc_liberar_reserva] valor inválido na transação", "tx_id", txID, "valor", valorStr)
+		reqLog(r).Error("[tpc_liberar_reserva] valor inválido na transação", "tx_id", txID, "valor", valorStr)
 		httpx.WriteErr(w, http.StatusInternalServerError, "erro interno")
 		return
 	}
@@ -716,7 +793,7 @@ func (h *WalletHandler) PostLiberarReserva(w http.ResponseWriter, r *http.Reques
 	// Lock da carteira.
 	_, reservado, err := lockCarteira(r.Context(), tx, userID)
 	if err != nil {
-		slog.Error("[tpc_liberar_reserva] erro ao obter lock da carteira", "user_id", userID, "err", err)
+		reqLog(r).Error("[tpc_liberar_reserva] erro ao obter lock da carteira", "user_id", userID, "err", err)
 		httpx.WriteErr(w, http.StatusInternalServerError, "erro interno")
 		return
 	}
@@ -728,7 +805,7 @@ func (h *WalletHandler) PostLiberarReserva(w http.ResponseWriter, r *http.Reques
 		novoReservado.StringFixed(2), userID,
 	)
 	if err != nil {
-		slog.Error("[tpc_liberar_reserva] erro ao atualizar carteira", "user_id", userID, "err", err)
+		reqLog(r).Error("[tpc_liberar_reserva] erro ao atualizar carteira", "user_id", userID, "err", err)
 		httpx.WriteErr(w, http.StatusInternalServerError, "erro interno")
 		return
 	}
@@ -746,18 +823,18 @@ func (h *WalletHandler) PostLiberarReserva(w http.ResponseWriter, r *http.Reques
 		descSuffix, txID,
 	)
 	if err != nil {
-		slog.Error("[tpc_liberar_reserva] erro ao cancelar transação", "tx_id", txID, "err", err)
+		reqLog(r).Error("[tpc_liberar_reserva] erro ao cancelar transação", "tx_id", txID, "err", err)
 		httpx.WriteErr(w, http.StatusInternalServerError, "erro interno")
 		return
 	}
 
 	if err := tx.Commit(r.Context()); err != nil {
-		slog.Error("[tpc_liberar_reserva] erro ao commit", "user_id", userID, "err", err)
+		reqLog(r).Error("[tpc_liberar_reserva] erro ao commit", "user_id", userID, "err", err)
 		httpx.WriteErr(w, http.StatusInternalServerError, "erro interno")
 		return
 	}
 
-	slog.Info("[tpc_liberar_reserva] reserva liberada",
+	reqLog(r).Info("[tpc_liberar_reserva] reserva liberada",
 		"user_id", userID,
 		"referencia", req.Referencia,
 		"valor", valor.StringFixed(2),

@@ -61,6 +61,7 @@ type EtiquetaItem struct {
 	DestUF          string  `json:"dest_uf"`
 	DestCEP         string  `json:"dest_cep"`
 	DestTelefone    string  `json:"dest_telefone"`
+	ProdutoLabel    string  `json:"produto_label"` // dest_produto puro (já vem "2x Nome", qtd + nome uma vez só) — não reprefixar
 	ValorPedido     float64 `json:"valor_pedido"`
 	PgtoDinheiro    float64 `json:"pgto_dinheiro"`
 	PgtoPix         float64 `json:"pgto_pix"`
@@ -72,13 +73,7 @@ type EtiquetaItem struct {
 
 // tableExists segue o mesmo padrão dos outros handlers do package.
 func (h *MotoboyEtiquetasHandler) tableExists(ctx context.Context, name string) bool {
-	var ok bool
-	_ = h.Pool.QueryRow(ctx,
-		`SELECT EXISTS (
-			SELECT FROM information_schema.tables
-			WHERE table_schema='public' AND table_name=$1
-		)`, name).Scan(&ok)
-	return ok
+	return tableExistsCached(ctx, h.Pool, name) // AUDIT-2026-06-18 Onda2 (go-infoschema-cache)
 }
 
 // motoboyPackageCode reproduz sz_mbc_package_code() do PHP.
@@ -110,9 +105,26 @@ func motoboyPackageCode(pedidoID, wcOrderID int64) string {
 //   - status = "agendado" (diverge do PHP que usava "embalado"; spec do
 //     painel Go pede "agendado" como default para o fluxo atual)
 //
-// Filtros são casados via paridade com PHP (admin.php:1389-1402):
+// Filtro por DATA DE ENTREGA (não data do pedido). A data de entrega real
+// vive em três fontes, nesta prioridade:
 //
-//	DATE(mp.created_at) = $date AND mp.status = $status
+//  1. mp.reagendado_para (coluna date) — reagendamento vence tudo.
+//  2. sz_order_meta._sz_delivery_date (texto "YYYY-MM-DD") — fonte canônica
+//     do agendamento original; preenchida em TODO pedido. O JOIN passa por
+//     sz_orders (wp_order_id → id) e NÃO por mp.wc_order_id direto.
+//  3. mp.data_entrega (coluna date) — fallback; hoje sempre NULL no ingest.
+//
+// Bug anterior (FIX-entrega): a query filtrava
+// COALESCE(mp.data_entrega, mp.reagendado_para, mp.created_at::date) — como
+// data_entrega é NULL e _sz_delivery_date nunca era lido, caía em
+// created_at::date (data DO PEDIDO), então um pedido agendado p/ 22/06 mas
+// criado em 17/06 não aparecia ao filtrar 22/06.
+//
+// LEFT JOINs (não INNER) e meta_key no ON (não no WHERE) garantem que pedidos
+// sem sz_orders/meta ainda apareçam pela coluna. NULLIF(...,'')::date evita
+// 500 em _sz_delivery_date vazio. Comparação date = $1::date é TZ-safe
+// (todas as fontes são date/texto-data puro, não timestamptz).
+//
 //	ORDER BY motoboy_id, id
 //	LIMIT 500
 func (h *MotoboyEtiquetasHandler) List(w http.ResponseWriter, r *http.Request) {
@@ -147,6 +159,7 @@ func (h *MotoboyEtiquetasHandler) List(w http.ResponseWriter, r *http.Request) {
 			COALESCE(mp.dest_uf, ''),
 			COALESCE(mp.dest_cep, ''),
 			COALESCE(mp.dest_telefone, ''),
+			COALESCE(NULLIF(mp.dest_produto,''),'') AS produto_label,
 			COALESCE(mp.valor_pedido, 0),
 			COALESCE(mp.pgto_dinheiro, 0),
 			COALESCE(mp.pgto_pix, 0),
@@ -154,7 +167,10 @@ func (h *MotoboyEtiquetasHandler) List(w http.ResponseWriter, r *http.Request) {
 		   FROM sz_motoboy_pedidos mp
 		   LEFT JOIN sz_motoboys      m ON m.id = mp.motoboy_id
 		   LEFT JOIN sz_motoboy_zonas z ON z.id = mp.zona_id
-		  WHERE mp.created_at::date = $1::date
+		   LEFT JOIN sz_orders        o ON COALESCE(o.wp_order_id, o.id) = mp.wc_order_id
+		   LEFT JOIN sz_order_meta   dd ON dd.order_id = o.id
+		                               AND dd.meta_key = '_sz_delivery_date'
+		  WHERE COALESCE(mp.reagendado_para, NULLIF(dd.meta_value,'')::date, mp.data_entrega) = $1::date
 		    AND mp.status = $2
 		  ORDER BY mp.motoboy_id NULLS LAST, mp.id ASC
 		  LIMIT 500`,
@@ -174,6 +190,7 @@ func (h *MotoboyEtiquetasHandler) List(w http.ResponseWriter, r *http.Request) {
 			&it.DestNome, &it.DestEndereco, &it.DestNumero, &it.DestComplemento,
 			&it.DestBairro, &it.DestCidade, &it.DestUF,
 			&it.DestCEP, &it.DestTelefone,
+			&it.ProdutoLabel,
 			&it.ValorPedido, &it.PgtoDinheiro, &it.PgtoPix, &it.PgtoCartao,
 		); err != nil {
 			httpx.Err(w, 500, "db_error", err.Error())

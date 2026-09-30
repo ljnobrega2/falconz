@@ -83,13 +83,17 @@ func AuthPortalJWT(next http.Handler) http.Handler {
 		tokenStr := strings.TrimPrefix(authHeader, "Bearer ")
 
 		// Valida e parseia o token HS256.
+		// SEC-GO-02: exige claim exp (WithExpirationRequired). O PHP tpc_jwt_encode()
+		// SEMPRE emite exp (includes/tpc/rest-api.php:130) e o próprio PHP rejeita
+		// tokens sem exp (linha 167), então tokens legítimos passam — apenas tokens
+		// forjados sem expiração são rejeitados. Comportamento preservado.
 		token, err := jwt.Parse(tokenStr, func(t *jwt.Token) (any, error) {
 			// Garante que o algoritmo seja exatamente HS256 — rejeita RS256 etc.
 			if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
 				return nil, jwt.ErrSignatureInvalid
 			}
 			return []byte(secret), nil
-		}, jwt.WithValidMethods([]string{"HS256"}))
+		}, jwt.WithValidMethods([]string{"HS256"}), jwt.WithExpirationRequired())
 
 		if err != nil || !token.Valid {
 			slog.Warn("[auth] token JWT inválido",

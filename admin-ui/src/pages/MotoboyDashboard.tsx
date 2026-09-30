@@ -3,10 +3,10 @@ import { api } from '../api'
 import FilterButton from '../components/FilterButton'
 import FilterTopPanel, {
   FilterField,
-  filterInputStyle,
   ActiveFilterChips,
   type ActiveChip,
 } from '../components/FilterTopPanel'
+import FalkDatePicker from '../components/FalkDatePicker'
 import TableSkeleton from '../components/TableSkeleton'
 import EmptyState from '../components/EmptyState'
 import CardKpiSkeleton from '../components/CardKpiSkeleton'
@@ -299,12 +299,11 @@ export default function MotoboyDashboard() {
         title="Filtros"
       >
         <FilterField label="Data">
-          <input
-            type="date"
-            style={filterInputStyle}
+          <FalkDatePicker
             value={draftDate}
             max={todayInSaoPaulo()}
-            onChange={e => setDraftDate(e.target.value)}
+            onChange={v => setDraftDate(v)}
+            placeholder="dd/mm/aaaa"
           />
         </FilterField>
       </FilterTopPanel>

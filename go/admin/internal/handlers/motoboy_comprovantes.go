@@ -34,11 +34,14 @@ import (
 	"encoding/csv"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/senderzz/admin-service/internal/auth"
 	"github.com/senderzz/admin-service/internal/httpx"
 )
 
@@ -63,13 +66,7 @@ type ComprovanteItem struct {
 // ─── Helpers ─────────────────────────────────────────────────────────────
 
 func (h *MotoboyComprovantesHandler) tableExists(ctx context.Context, name string) bool {
-	var ok bool
-	_ = h.Pool.QueryRow(ctx,
-		`SELECT EXISTS (
-			SELECT FROM information_schema.tables
-			WHERE table_schema='public' AND table_name=$1
-		)`, name).Scan(&ok)
-	return ok
+	return tableExistsCached(ctx, h.Pool, name) // AUDIT-2026-06-18 Onda2 (go-infoschema-cache)
 }
 
 // parseComprovanteID extrai chi URLParam "id" como int64 positivo.
@@ -465,6 +462,18 @@ func (h *MotoboyComprovantesHandler) ExportCSV(w http.ResponseWriter, r *http.Re
 		data = append(data, rw)
 	}
 
+	// AUDIT-2026-06-21 #8/#18 (LGPD-PII-AUDIT): a exportação do relatório COD serve
+	// CPF do recebedor (RecebedorCPF) + nome/CEP/cidade do destinatário para todas as
+	// linhas. Registra o acesso na trilha de accountability — escopo = nº de registros
+	// exportados. Best-effort, espelha order_detail.go. Não bloqueia a request.
+	if actor := auth.FromCtx(ctx); actor != nil {
+		logPIIAccess(ctx, h.Pool, actor.ID, actor.Email, "customer", int64(len(data)),
+			[]string{"recebedor_cpf", "dest_nome", "dest_cep", "dest_cidade"}, "export", r.RemoteAddr)
+	} else {
+		logPIIAccess(ctx, h.Pool, 0, "", "customer", int64(len(data)),
+			[]string{"recebedor_cpf", "dest_nome", "dest_cep", "dest_cidade"}, "export", r.RemoteAddr)
+	}
+
 	fname := "relatorio-cod"
 	if dateFrom != "" {
 		fname += "-" + dateFrom
@@ -587,6 +596,13 @@ func (h *MotoboyComprovantesHandler) Delete(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// AUDIT-2026-06-21 #25 (LGPD Art.11): captura o foto_path ANTES de zerar para
+	// expurgo físico best-effort do arquivo. A foto (rosto/assinatura) é PII sensível
+	// e o soft-delete que só zerava as colunas deixava o arquivo órfão no disco.
+	var fotoPath string
+	_ = h.Pool.QueryRow(ctx,
+		`SELECT COALESCE(foto_path, '') FROM sz_motoboy_comprovantes WHERE id = $1`, id).Scan(&fotoPath)
+
 	tag, err := h.Pool.Exec(ctx,
 		`UPDATE sz_motoboy_comprovantes
 		 SET foto_url = '', foto_path = ''
@@ -599,5 +615,38 @@ func (h *MotoboyComprovantesHandler) Delete(w http.ResponseWriter, r *http.Reque
 		httpx.Err(w, 404, "not_found", "comprovante não encontrado")
 		return
 	}
-	httpx.JSON(w, 200, map[string]any{"ok": true, "id": id, "deleted": "soft"})
+
+	// Expurgo físico best-effort, CONFINADO a MOTOBOY_PROOF_PATH (path-traversal-safe).
+	// foto_path é gravado pelo plugin PHP como caminho do FS do WordPress
+	// (wp_upload_dir()/sz-motoboy-fotos/). Só apaga se o deploy montar esse volume no
+	// container go/admin e setar MOTOBOY_PROOF_PATH para o basedir. Sem env → no-op
+	// limpo (DB já desreferenciada; acesso público já bloqueado por H4). Nunca falha
+	// o request por erro de FS — o expurgo lógico (colunas zeradas) já está commitado.
+	purged := purgeProofFile(ctx, fotoPath)
+	httpx.JSON(w, 200, map[string]any{"ok": true, "id": id, "deleted": "soft", "file_purged": purged})
+}
+
+// purgeProofFile apaga o arquivo físico de comprovante de forma best-effort e
+// confinada. Retorna true só se o arquivo foi removido. AUDIT-2026-06-21 #25.
+func purgeProofFile(ctx context.Context, fotoPath string) bool {
+	base := strings.TrimSpace(os.Getenv("MOTOBOY_PROOF_PATH"))
+	if base == "" || strings.TrimSpace(fotoPath) == "" {
+		return false // sem volume configurado → expurgo físico fica a cargo da infra
+	}
+	baseAbs, err := filepath.Abs(filepath.Clean(base))
+	if err != nil {
+		return false
+	}
+	target, err := filepath.Abs(filepath.Clean(fotoPath))
+	if err != nil {
+		return false
+	}
+	// Confinamento: o alvo TEM de estar dentro de baseAbs (anti path-traversal).
+	if target != baseAbs && !strings.HasPrefix(target, baseAbs+string(os.PathSeparator)) {
+		return false
+	}
+	if err := os.Remove(target); err != nil {
+		return false // best-effort: arquivo ausente / FS não montado / permissão
+	}
+	return true
 }

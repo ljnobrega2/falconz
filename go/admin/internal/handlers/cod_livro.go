@@ -1,22 +1,36 @@
 // Package handlers — endpoint admin para o Livro COD (tela financeira única).
-// Espelha src/Admin/Unified_Menu.php::tab_fin_taxas() (PHP legado) sobre Postgres.
-// Cobre 5 KPIs, tabela split de 22 colunas e dois resumos colapsáveis (afiliado/produtor).
+// Reescrito conforme layout oficial do dono: 13 colunas por pedido.
+//
+// Colunas (nesta ordem): Pedido | Data | Situação | Produtor | Afiliado | Comissão % |
+//   Valor pedido | Taxas | Frustrado produtor | Frustrado afiliado | Afiliado (R$) |
+//   Produtor (R$) | Repasse.
 //
 // Fontes de dados (graceful degradation via tableExists):
-//   - sz_orders ........................ pedido base (status, gross, fees, splits, ids, datas)
-//   - senderzz_affiliate_transactions ... agregações de comissão (pending/available/cancelled) e penalty
-//   - senderzz_portal_users ............ nome/email do afiliado e do produtor (substitui wp_users no PG)
+//   - sz_orders ........................ pedido base (status, total, fees, splits, ids, datas)
+//   - sz_order_meta .................... comissão %, penalidades, nomes (fallback)
+//   - senderzz_affiliate_transactions . repasse (commission pending/approved) e penalidade (penalty)
+//   - senderzz_portal_users ........... NOME do produtor e do afiliado
 //
-// Observações relevantes para a paridade com o PHP:
-//   - "Recebido"   = sz_orders.status IN ('completo','entregue')
-//   - "Estornado"  = sz_orders.status IN ('frustrado','cancelled','refunded')
-//   - "Previsto"   = qualquer outro status não final
-//   - bruto_valido / taxas / afiliado / liquido_produtor somam APENAS quando NÃO estornado
-//     (replicando a CASE WHEN ... ELSE 0 do PHP).
-//   - frustrado_produtor: o PHP busca em wp_tpc_transacoes (referencia 'sz_frustrado_<id>')
-//     que ainda não foi migrado para o Postgres. Mantemos em 0 e marcamos com TODO até a tabela existir.
-//   - bruto_estornado = frustrado_afiliado + frustrado_produtor (semantica do PHP).
-//   - valor_nao_recebido = sz_orders.gross quando estornado (distinto de bruto_estornado).
+// JOINS (id-space validado no banco — NÃO trocar):
+//   - PRODUTOR: produtor_id casa com senderzz_portal_users.id (role='produtor').
+//               (produtor_id=15 → portal id 15 = "Gabriel Campos"; NÃO existe wp_user_id=15.)
+//   - AFILIADO: affiliate_id casa com senderzz_portal_users.wp_user_id (SÓ wp_user_id, nunca IN(id,wp_user_id)).
+//               (affiliate_id=28 → wp_user_id 28 = "Gabriel Matias"; id=28 = "Keven" seria errado.)
+//   Os dois ids vivem em ESPAÇOS DIFERENTES neste dataset. Cada nome usa COALESCE(join, meta).
+//
+// Mapeamento de Situação (CHECK do banco: pending/processing/aguardando/on-hold/em_separacao/
+//   embalado/enviado/entregue/completo/cancelled/frustrado/reembolsado):
+//   - "Recebido"                = completo, entregue
+//   - "Estornado / não recebido"= frustrado, cancelled, reembolsado
+//   - "Previsto"                = qualquer outro (aguardando, embalado, etc.)
+//
+// Zeragem por situação:
+//   - Afiliado (R$) = 0 quando estornado.
+//   - Produtor (R$) = 0 quando previsto OU estornado (só vale quando recebido).
+//   - Frustrado afiliado/produtor = 0 quando NÃO estornado.
+//
+// Repasse: Previsto (não recebido) | Pendente/Disponível (recebido) | Não repassar (estornado).
+//   Disponível = existe commission approved/paid; Pendente = commission pending.
 package handlers
 
 import (
@@ -32,11 +46,11 @@ import (
 
 type CodLivroHandler struct{ Pool *pgxpool.Pool }
 
-// Constantes de status agrupados (espelha o ladder do PHP tab_fin_taxas).
-// O PHP aceita também 'wc-*' e 'failed'/'frustracao' — no Postgres usamos apenas a forma canônica.
+// Constantes de status agrupados. Valores canônicos do CHECK de sz_orders.
+// Atenção: o status estornado é 'reembolsado' (não 'refunded') — 'refunded' nunca casaria.
 const (
-	codLivroReceivedStatuses  = `'completo','entregue'`
-	codLivroFrustratedStatuses = `'frustrado','cancelled','refunded'`
+	codLivroReceivedStatuses   = `'completo','entregue'`
+	codLivroFrustratedStatuses = `'frustrado','cancelled','reembolsado'`
 )
 
 var codLivroDateRe = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
@@ -61,21 +75,15 @@ func codLivroDateRange(r *http.Request) (from, to string) {
 }
 
 func (h *CodLivroHandler) tableExists(ctx context.Context, name string) bool {
-	var ok bool
-	_ = h.Pool.QueryRow(ctx,
-		`SELECT EXISTS (
-			SELECT FROM information_schema.tables
-			WHERE table_schema='public' AND table_name=$1
-		)`, name).Scan(&ok)
-	return ok
+	return tableExistsCached(ctx, h.Pool, name) // AUDIT-2026-06-18 Onda2 (go-infoschema-cache)
 }
 
 // CodLivroSummary — KPIs do topo da tela.
-// bruto_cod         = SUM(gross) WHERE status != estornado
-// afiliados         = SUM(affiliate_amount) WHERE status != estornado
-// taxas_senderzz    = SUM(senderzz_fee) WHERE status != estornado
-// liquido_produtor  = SUM(producer_net) WHERE status != estornado
-// previsto_produtor = SUM(producer_net) WHERE status NOT IN (recebido, estornado)
+// bruto_cod         = SUM(total) WHERE status != estornado
+// afiliados         = SUM(affiliate_bruta) WHERE status != estornado
+// taxas_senderzz    = SUM(delivery_fee + producer_take) WHERE status != estornado
+// liquido_produtor  = SUM(producer_net_live) WHERE status != estornado
+// previsto_produtor = SUM(producer_net_live) WHERE status NOT IN (recebido, estornado)
 type CodLivroSummary struct {
 	BrutoCOD         float64 `json:"bruto_cod"`
 	Afiliados        float64 `json:"afiliados"`
@@ -98,16 +106,22 @@ func (h *CodLivroHandler) Summary(w http.ResponseWriter, r *http.Request) {
 
 	// Único round-trip: 5 sums em uma query só.
 	// Filtro de data: created_at::date BETWEEN — evita problema de timestamptz truncando o último dia.
+	// AUDIT-FINANCEIRO-2026-06-25: lê a VIEW canônica sz_order_financials (fonte única),
+	// NÃO mais a coluna stale producer_net. Decomposição golden #1587:
+	//   bruto = total · afiliados = affiliate_bruta (não a líquida — S8) · taxas FALK =
+	//   delivery_fee + producer_take (S4: take afiliado já está dentro da bruta) ·
+	//   líquido = producer_net_live (= total − bruta − delivery − take produtor).
+	// Reconcilia: bruto = afiliados + taxas + líquido.
 	_ = h.Pool.QueryRow(ctx,
 		`SELECT
-		   COALESCE(SUM(CASE WHEN status NOT IN (`+codLivroFrustratedStatuses+`) THEN COALESCE(gross,0)            ELSE 0 END), 0) AS bruto_cod,
-		   COALESCE(SUM(CASE WHEN status NOT IN (`+codLivroFrustratedStatuses+`) THEN COALESCE(affiliate_amount,0) ELSE 0 END), 0) AS afiliados,
-		   COALESCE(SUM(CASE WHEN status NOT IN (`+codLivroFrustratedStatuses+`) THEN COALESCE(senderzz_fee,0)     ELSE 0 END), 0) AS taxas_senderzz,
-		   COALESCE(SUM(CASE WHEN status NOT IN (`+codLivroFrustratedStatuses+`) THEN COALESCE(producer_net,0)     ELSE 0 END), 0) AS liquido_produtor,
+		   COALESCE(SUM(CASE WHEN status NOT IN (`+codLivroFrustratedStatuses+`) THEN total                       ELSE 0 END), 0) AS bruto_cod,
+		   COALESCE(SUM(CASE WHEN status NOT IN (`+codLivroFrustratedStatuses+`) THEN affiliate_bruta             ELSE 0 END), 0) AS afiliados,
+		   COALESCE(SUM(CASE WHEN status NOT IN (`+codLivroFrustratedStatuses+`) THEN delivery_fee + producer_take ELSE 0 END), 0) AS taxas_senderzz,
+		   COALESCE(SUM(CASE WHEN status NOT IN (`+codLivroFrustratedStatuses+`) THEN producer_net_live           ELSE 0 END), 0) AS liquido_produtor,
 		   COALESCE(SUM(CASE WHEN status NOT IN (`+codLivroReceivedStatuses+`)
 		                       AND status NOT IN (`+codLivroFrustratedStatuses+`)
-		                  THEN COALESCE(producer_net,0) ELSE 0 END), 0) AS previsto_produtor
-		 FROM sz_orders
+		                  THEN producer_net_live ELSE 0 END), 0) AS previsto_produtor
+		 FROM sz_order_financials
 		 WHERE created_at::date BETWEEN $1::date AND $2::date`,
 		from, to,
 	).Scan(&out.BrutoCOD, &out.Afiliados, &out.TaxasSenderzz, &out.LiquidoProdutor, &out.PrevistoProdutor)
@@ -115,33 +129,26 @@ func (h *CodLivroHandler) Summary(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, 200, out)
 }
 
-// CodLivroOrder — linha da tabela split (22 colunas + affiliate_name).
-// Campos numéricos derivam dos splits do pedido respeitando o status (estornado zera receita,
-// previsto não soma como recebido, etc.).
+// CodLivroOrder — linha da tabela por pedido (13 colunas do layout oficial).
+//   Pedido | Data | Situação | Produtor | Afiliado | Comissão % | Valor pedido | Taxas |
+//   Frustrado produtor | Frustrado afiliado | Afiliado (R$) | Produtor (R$) | Repasse.
 type CodLivroOrder struct {
-	OrderID            int64   `json:"order_id"`
-	DataPedido         string  `json:"data_pedido"`
-	Situacao           string  `json:"situacao"` // Recebido | Estornado | Previsto
-	AffiliateID        int64   `json:"affiliate_id"`
-	AffiliateName      string  `json:"affiliate_name"`
-	AffiliateEmail     string  `json:"affiliate_email"`
-	ProducerID         int64   `json:"producer_id"`
-	CommissionPct      float64 `json:"commission_pct"`
-	ValorPedido        float64 `json:"valor_pedido"`
-	BrutoValido        float64 `json:"bruto_valido"`
-	TaxasSenderzz      float64 `json:"taxas_senderzz"`
-	TaxaEntrega        float64 `json:"taxa_entrega"`
-	TaxaTransacao      float64 `json:"taxa_transacao"`
-	ValorAfiliado      float64 `json:"valor_afiliado"`
-	LiquidoProdutor    float64 `json:"liquido_produtor"`
-	ValorNaoRecebido   float64 `json:"valor_nao_recebido"`
-	BrutoEstornado     float64 `json:"bruto_estornado"`
-	FrustradoAfiliado  float64 `json:"frustrado_afiliado"`
-	FrustradoProdutor  float64 `json:"frustrado_produtor"`
-	RepassePendente    float64 `json:"repasse_pendente"`
-	RepasseDisponivel  float64 `json:"repasse_disponivel"`
-	RepasseEstornado   float64 `json:"repasse_estornado"`
-	StatusRepasse      string  `json:"status_repasse"`
+	OrderID           int64   `json:"order_id"`          // Pedido (#)
+	DataPedido        string  `json:"data_pedido"`       // Data
+	Situacao          string  `json:"situacao"`          // Recebido | Previsto | Estornado / não recebido
+	WcStatus          string  `json:"wc_status"`         // status cru (sublabel da Situação)
+	ProducerID        int64   `json:"producer_id"`
+	ProducerName      string  `json:"producer_name"`     // Produtor (NOME)
+	AffiliateID       int64   `json:"affiliate_id"`
+	AffiliateName     string  `json:"affiliate_name"`    // Afiliado (NOME)
+	CommissionPct     float64 `json:"commission_pct"`    // Comissão %
+	ValorPedido       float64 `json:"valor_pedido"`      // Valor pedido (total)
+	Taxas             float64 `json:"taxas"`             // Taxas (entrega + transação, única)
+	FrustradoProdutor float64 `json:"frustrado_produtor"` // penalidade produtor (0 se não estornado)
+	FrustradoAfiliado float64 `json:"frustrado_afiliado"` // penalidade afiliado (0 se não estornado)
+	AfiliadoRS        float64 `json:"afiliado_rs"`       // Afiliado (R$) líquido (0 se estornado)
+	ProdutorRS        float64 `json:"produtor_rs"`       // Produtor (R$) líquido (0 se previsto/estornado)
+	Repasse           string  `json:"repasse"`           // Previsto | Pendente | Disponível | Não repassar
 }
 
 // Orders retorna as linhas detalhadas (até 300).
@@ -162,103 +169,108 @@ func (h *CodLivroHandler) Orders(w http.ResponseWriter, r *http.Request) {
 
 	hasTx := h.tableExists(ctx, "senderzz_affiliate_transactions")
 	hasUsers := h.tableExists(ctx, "senderzz_portal_users")
-	hasAffiliates := h.tableExists(ctx, "senderzz_affiliates")
+	hasMeta := h.tableExists(ctx, "sz_order_meta")
 
-	// JOIN de transações de afiliado (pendente/disponível/estornado e penalidade por pedido).
-	// Quando a tabela não existe, faz NULL via subquery vazia que sempre falha.
-	txJoin := `LEFT JOIN (SELECT NULL::bigint AS order_id, 0::numeric AS tx_pendente, 0::numeric AS tx_disponivel,
-	                              0::numeric AS tx_estornado, 0::numeric AS tx_penalty) tx ON FALSE`
+	// Subquery de transações de afiliado por pedido (GROUP BY order_id — NÃO multiplica linhas).
+	//   tx_pending  : existe commission pending  → Repasse "Pendente"
+	//   tx_available: existe commission approved/paid → Repasse "Disponível"
+	//   tx_penalty  : soma penalty approved → Frustrado afiliado (fonte autoritativa).
+	// Quando a tabela não existe, subquery vazia que sempre falha (tudo NULL → 0/false).
+	txJoin := `LEFT JOIN (SELECT NULL::bigint AS order_id, FALSE AS tx_pending, FALSE AS tx_available,
+	                              0::numeric AS tx_penalty) tx ON FALSE`
 	if hasTx {
 		txJoin = `LEFT JOIN (
 			SELECT order_id,
-			       SUM(CASE WHEN type='commission' AND status='pending'   THEN amount ELSE 0 END) AS tx_pendente,
-			       SUM(CASE WHEN type='commission' AND status='available' THEN amount ELSE 0 END) AS tx_disponivel,
-			       SUM(CASE WHEN type='commission' AND status IN ('cancelled','canceled','refunded','reversed','void')
-			                THEN ABS(amount) ELSE 0 END) AS tx_estornado,
-			       SUM(CASE WHEN type='penalty' THEN ABS(amount) ELSE 0 END) AS tx_penalty
+			       bool_or(type='commission' AND status='pending')            AS tx_pending,
+			       bool_or(type='commission' AND status IN ('approved','paid')) AS tx_available,
+			       COALESCE(SUM(amount) FILTER (WHERE type='penalty'
+			                AND status IN ('approved','paid')), 0)             AS tx_penalty
 			FROM senderzz_affiliate_transactions
 			WHERE order_id IS NOT NULL AND order_id > 0
 			GROUP BY order_id
 		) tx ON tx.order_id = o.id`
 	}
 
-	// JOIN de usuários (afiliado) — nome + email.
-	userJoin := ""
-	nameExpr := `''::text`
-	emailExpr := `''::text`
+	// JOIN do PRODUTOR — produtor_id casa com senderzz_portal_users.id (role='produtor').
+	prodJoin := ""
+	prodNameExpr := `''::text`
 	if hasUsers {
-		userJoin = `LEFT JOIN senderzz_portal_users u_aff ON u_aff.id = o.affiliate_id`
-		nameExpr = `COALESCE(u_aff.nome,'')`
-		emailExpr = `COALESCE(u_aff.email,'')`
+		prodJoin = `LEFT JOIN senderzz_portal_users u_prod
+		              ON u_prod.id = o.produtor_id AND u_prod.role = 'produtor'`
+		prodNameExpr = `COALESCE(u_prod.nome,'')`
 	}
 
-	// JOIN para comissao_pct canônica (senderzz_affiliates.comissao_pct).
-	// Usa subquery GROUP BY para evitar linhas duplicadas quando senderzz_affiliates tem múltiplos produtos
-	// por par (afiliado_id, produtor_id). COALESCE: valor armazenado → derivado por aritmética.
-	// Quando a tabela não existe, mantém cálculo derivado via (affiliate_amount/gross*100).
-	affJoin := ""
-	commPctExpr := `CASE WHEN COALESCE(o.total,0) > 0
-		             THEN ROUND( (COALESCE(o.affiliate_amount,0) / o.total * 100)::numeric, 2)
-		             ELSE 0
-		        END`
-	if hasAffiliates {
-		affJoin = `LEFT JOIN (
-			SELECT afiliado_id, produtor_id, MAX(comissao_pct) AS comissao_pct
-			FROM senderzz_affiliates
-			WHERE comissao_pct IS NOT NULL AND comissao_pct > 0
-			GROUP BY afiliado_id, produtor_id
-		) saff ON saff.afiliado_id = o.affiliate_id AND saff.produtor_id = o.produtor_id`
-		commPctExpr = `CASE WHEN COALESCE(saff.comissao_pct, 0) > 0
-		             THEN ROUND(saff.comissao_pct::numeric, 2)
-		             WHEN COALESCE(o.total,0) > 0
-		             THEN ROUND( (COALESCE(o.affiliate_amount,0) / o.total * 100)::numeric, 2)
-		             ELSE 0
-		        END`
+	// JOIN do AFILIADO — affiliate_id casa SÓ com senderzz_portal_users.wp_user_id.
+	affUserJoin := ""
+	affNameExpr := `''::text`
+	if hasUsers {
+		affUserJoin = `LEFT JOIN senderzz_portal_users u_aff ON u_aff.wp_user_id = o.affiliate_id`
+		affNameExpr = `COALESCE(u_aff.nome,'')`
 	}
 
-	// TODO(senderzz): frustrado_produtor depende da migração de wp_tpc_transacoes
-	//                 (referencia LIKE 'sz_frustrado_%') para Postgres. Por ora mantemos 0.
+	// Subquery de meta por pedido (comissão %, penalidades, nomes de fallback).
+	// pivota apenas as chaves necessárias para 1 linha por order_id (NÃO multiplica).
+	metaJoin := `LEFT JOIN (SELECT NULL::bigint AS order_id, NULL::numeric AS m_pct,
+	                               NULL::numeric AS m_pen_aff, NULL::numeric AS m_pen_prod,
+	                               NULL::text AS m_aff_name, NULL::text AS m_prod_name) m ON FALSE`
+	if hasMeta {
+		metaJoin = `LEFT JOIN (
+			SELECT order_id,
+			       MAX(CASE WHEN meta_key='_sz_aff_commission_pct'      THEN NULLIF(meta_value,'')::numeric END) AS m_pct,
+			       MAX(CASE WHEN meta_key='_sz_aff_frustration_penalty' THEN NULLIF(meta_value,'')::numeric END) AS m_pen_aff,
+			       MAX(CASE WHEN meta_key='_sz_prod_frustration_penalty' THEN NULLIF(meta_value,'')::numeric END) AS m_pen_prod,
+			       MAX(CASE WHEN meta_key='_sz_aff_name'                THEN meta_value END) AS m_aff_name,
+			       MAX(CASE WHEN meta_key='_sz_aff_producer_name'       THEN meta_value END) AS m_prod_name
+			FROM sz_order_meta
+			WHERE meta_key IN ('_sz_aff_commission_pct','_sz_aff_frustration_penalty',
+			                   '_sz_prod_frustration_penalty','_sz_aff_name','_sz_aff_producer_name')
+			GROUP BY order_id
+		) m ON m.order_id = o.id`
+	}
+
+	// Comissão %: AUDIT-FINANCEIRO-2026-06-25 — da VIEW canônica, sobre a BRUTA
+	// (affiliate_bruta/total). Antes usava a líquida (affiliate_amount/total) → 57% errado.
+	commPctExpr := `COALESCE(ROUND(COALESCE(f.affiliate_bruta,0)/NULLIF(o.total,0)*100), 0)`
+
+	// Frustrado afiliado: penalidade da tx (autoritativa) → fallback meta. Só quando estornado.
+	// Frustrado produtor: só meta (não há tx de penalidade de produtor); 0 quando ausente.
 	rows, err := h.Pool.Query(ctx,
 		`SELECT o.id,
 		        COALESCE(o.created_at::text,'') AS data_pedido,
 		        CASE
 		          WHEN o.status IN (`+codLivroReceivedStatuses+`)   THEN 'Recebido'
-		          WHEN o.status IN (`+codLivroFrustratedStatuses+`) THEN 'Estornado'
+		          WHEN o.status IN (`+codLivroFrustratedStatuses+`) THEN 'Estornado / não recebido'
 		          ELSE 'Previsto'
 		        END AS situacao,
-		        COALESCE(o.affiliate_id, 0)::bigint AS affiliate_id,
-		        `+nameExpr+` AS affiliate_name,
-		        `+emailExpr+` AS affiliate_email,
+		        COALESCE(o.status,'') AS wc_status,
 		        COALESCE(o.produtor_id, 0)::bigint AS producer_id,
+		        COALESCE(NULLIF(`+prodNameExpr+`,''), COALESCE(m.m_prod_name,'')) AS producer_name,
+		        COALESCE(o.affiliate_id, 0)::bigint AS affiliate_id,
+		        COALESCE(NULLIF(`+affNameExpr+`,''), COALESCE(m.m_aff_name,'')) AS affiliate_name,
 		        `+commPctExpr+` AS commission_pct,
 		        COALESCE(o.total,0) AS valor_pedido,
-		        CASE WHEN o.status IN (`+codLivroFrustratedStatuses+`) THEN 0 ELSE COALESCE(o.total,0)             END AS bruto_valido,
-		        CASE WHEN o.status IN (`+codLivroFrustratedStatuses+`) THEN 0 ELSE COALESCE(o.senderzz_fee,0)      END AS taxas_senderzz,
-		        CASE WHEN o.status IN (`+codLivroFrustratedStatuses+`) THEN 0 ELSE COALESCE(o.delivery_fee,0)      END AS taxa_entrega,
-		        CASE WHEN o.status IN (`+codLivroFrustratedStatuses+`) THEN 0 ELSE COALESCE(o.transaction_fee,0)   END AS taxa_transacao,
-		        CASE WHEN o.status IN (`+codLivroFrustratedStatuses+`) THEN 0 ELSE COALESCE(o.affiliate_amount,0)  END AS valor_afiliado,
-		        CASE WHEN o.status IN (`+codLivroFrustratedStatuses+`) THEN 0 ELSE COALESCE(o.producer_net,0)      END AS liquido_produtor,
-		        CASE WHEN o.status IN (`+codLivroFrustratedStatuses+`) THEN COALESCE(o.total,0) ELSE 0             END AS valor_nao_recebido,
+		        COALESCE(o.delivery_fee,0) + COALESCE(o.transaction_fee,0) AS taxas,
 		        CASE WHEN o.status IN (`+codLivroFrustratedStatuses+`)
-		             THEN COALESCE(tx.tx_penalty,0) + 0 /* frustrado_produtor sem fonte ainda */
-		             ELSE 0
-		        END AS bruto_estornado,
-		        CASE WHEN o.status IN (`+codLivroFrustratedStatuses+`) THEN COALESCE(tx.tx_penalty,0) ELSE 0 END AS frustrado_afiliado,
-		        0::numeric AS frustrado_produtor,
-		        COALESCE(tx.tx_pendente,0)    AS repasse_pendente,
-		        COALESCE(tx.tx_disponivel,0)  AS repasse_disponivel,
-		        COALESCE(tx.tx_estornado,0)   AS repasse_estornado,
+		             THEN COALESCE(m.m_pen_prod,0) ELSE 0 END AS frustrado_produtor,
+		        CASE WHEN o.status IN (`+codLivroFrustratedStatuses+`)
+		             THEN COALESCE(NULLIF(tx.tx_penalty,0), m.m_pen_aff, 0) ELSE 0 END AS frustrado_afiliado,
+		        CASE WHEN o.status IN (`+codLivroFrustratedStatuses+`)
+		             THEN 0 ELSE COALESCE(o.affiliate_amount,0) END AS afiliado_rs,
+		        CASE WHEN o.status IN (`+codLivroReceivedStatuses+`)
+		             THEN COALESCE(f.producer_net_live,0) ELSE 0 END AS produtor_rs,
 		        CASE
-		          WHEN o.status IN (`+codLivroFrustratedStatuses+`)                                   THEN 'Não repassar'
-		          WHEN COALESCE(tx.tx_disponivel,0) > 0                                                THEN 'Disponível'
-		          WHEN COALESCE(tx.tx_pendente,0)   > 0                                                THEN 'Pendente'
-		          WHEN COALESCE(o.affiliate_id,0) > 0 AND COALESCE(o.affiliate_amount,0) > 0           THEN 'Previsto'
-		          ELSE 'Sem afiliado'
-		        END AS status_repasse
+		          WHEN o.status IN (`+codLivroFrustratedStatuses+`) THEN 'Não repassar'
+		          WHEN COALESCE(tx.tx_available,FALSE)              THEN 'Disponível'
+		          WHEN COALESCE(tx.tx_pending,FALSE)                THEN 'Pendente'
+		          WHEN o.status IN (`+codLivroReceivedStatuses+`)   THEN 'Pendente'
+		          ELSE 'Previsto'
+		        END AS repasse
 		 FROM sz_orders o
+		 LEFT JOIN sz_order_financials f ON f.order_id = o.id
 		 `+txJoin+`
-		 `+userJoin+`
-		 `+affJoin+`
+		 `+prodJoin+`
+		 `+affUserJoin+`
+		 `+metaJoin+`
 		 WHERE o.created_at::date BETWEEN $1::date AND $2::date
 		 ORDER BY o.id DESC
 		 LIMIT $3`,
@@ -273,14 +285,11 @@ func (h *CodLivroHandler) Orders(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var o CodLivroOrder
 		_ = rows.Scan(
-			&o.OrderID, &o.DataPedido, &o.Situacao,
-			&o.AffiliateID, &o.AffiliateName, &o.AffiliateEmail, &o.ProducerID,
-			&o.CommissionPct, &o.ValorPedido, &o.BrutoValido,
-			&o.TaxasSenderzz, &o.TaxaEntrega, &o.TaxaTransacao,
-			&o.ValorAfiliado, &o.LiquidoProdutor, &o.ValorNaoRecebido,
-			&o.BrutoEstornado, &o.FrustradoAfiliado, &o.FrustradoProdutor,
-			&o.RepassePendente, &o.RepasseDisponivel, &o.RepasseEstornado,
-			&o.StatusRepasse,
+			&o.OrderID, &o.DataPedido, &o.Situacao, &o.WcStatus,
+			&o.ProducerID, &o.ProducerName, &o.AffiliateID, &o.AffiliateName,
+			&o.CommissionPct, &o.ValorPedido, &o.Taxas,
+			&o.FrustradoProdutor, &o.FrustradoAfiliado,
+			&o.AfiliadoRS, &o.ProdutorRS, &o.Repasse,
 		)
 		out = append(out, o)
 	}
@@ -324,18 +333,19 @@ func (h *CodLivroHandler) AffiliatesSummary(w http.ResponseWriter, r *http.Reque
 		txJoin = `LEFT JOIN (
 			SELECT order_id,
 			       SUM(CASE WHEN type='commission' AND status='pending'   THEN amount ELSE 0 END) AS tx_pendente,
-			       SUM(CASE WHEN type='commission' AND status='available' THEN amount ELSE 0 END) AS tx_disponivel
+			       SUM(CASE WHEN type='commission' AND status IN ('approved','paid') THEN amount ELSE 0 END) AS tx_disponivel
 			FROM senderzz_affiliate_transactions
 			WHERE order_id IS NOT NULL AND order_id > 0
 			GROUP BY order_id
 		) tx ON tx.order_id = o.id`
 	}
 
+	// Afiliado casa SÓ por wp_user_id (id-space distinto — ver header do arquivo).
 	userJoin := ""
 	nameExprAff := `''::text`
 	emailExprAff := `''::text`
 	if hasUsers {
-		userJoin = `LEFT JOIN senderzz_portal_users u ON u.id = o.affiliate_id`
+		userJoin = `LEFT JOIN senderzz_portal_users u ON u.wp_user_id = o.affiliate_id`
 		nameExprAff = `MAX(COALESCE(u.nome,''))`
 		emailExprAff = `MAX(COALESCE(u.email,''))`
 	}
@@ -386,6 +396,7 @@ func (h *CodLivroHandler) AffiliatesSummary(w http.ResponseWriter, r *http.Reque
 // CodLivroProducerRow — resumo agrupado por produtor.
 type CodLivroProducerRow struct {
 	ProducerID         int64   `json:"producer_id"`
+	ProducerName       string  `json:"producer_name"`
 	ProducerEmail      string  `json:"producer_email"`
 	Pedidos            int64   `json:"pedidos"`
 	Recebidos          int64   `json:"recebidos"`
@@ -415,6 +426,7 @@ func (h *CodLivroHandler) ProducersSummary(w http.ResponseWriter, r *http.Reques
 
 	hasTx := h.tableExists(ctx, "senderzz_affiliate_transactions")
 	hasUsers := h.tableExists(ctx, "senderzz_portal_users")
+	hasMeta := h.tableExists(ctx, "sz_order_meta")
 
 	txJoin := `LEFT JOIN (SELECT NULL::bigint AS order_id, 0::numeric AS tx_penalty) tx ON FALSE`
 	if hasTx {
@@ -427,16 +439,34 @@ func (h *CodLivroHandler) ProducersSummary(w http.ResponseWriter, r *http.Reques
 		) tx ON tx.order_id = o.id`
 	}
 
+	// MED23: penalidade do PRODUTOR vem do meta _sz_prod_frustration_penalty (não há tx
+	// de penalidade de produtor). Mesma fonte/sinal usados no handler Orders (positivo, sem ABS).
+	metaJoin := `LEFT JOIN (SELECT NULL::bigint AS order_id, NULL::numeric AS m_pen_prod) m ON FALSE`
+	if hasMeta {
+		metaJoin = `LEFT JOIN (
+			SELECT order_id,
+			       MAX(CASE WHEN meta_key='_sz_prod_frustration_penalty' THEN NULLIF(meta_value,'')::numeric END) AS m_pen_prod
+			FROM sz_order_meta
+			WHERE meta_key = '_sz_prod_frustration_penalty'
+			GROUP BY order_id
+		) m ON m.order_id = o.id`
+	}
+
+	// Produtor casa por portal id (role='produtor') — id-space distinto do afiliado.
 	userJoin := ""
+	nameExpr := `''::text`
 	emailExpr := `''::text`
 	if hasUsers {
-		userJoin = `LEFT JOIN senderzz_portal_users up ON up.id = o.produtor_id`
+		userJoin = `LEFT JOIN senderzz_portal_users up ON up.id = o.produtor_id AND up.role = 'produtor'`
+		nameExpr = `MAX(COALESCE(up.nome,''))`
 		emailExpr = `MAX(COALESCE(up.email,''))`
 	}
 
-	// frustrado_valor = soma das penalidades (afiliado + produtor). frustrado_produtor segue 0 (TODO).
+	// MED23: frustrado_produtor = penalidade do produtor (meta); frustrado_afiliados = penalidade
+	// do afiliado (tx); frustrado_valor = soma das duas, por pedido estornado.
 	rows, err := h.Pool.Query(ctx,
 		`SELECT o.produtor_id::bigint AS producer_id,
+		        `+nameExpr+` AS producer_name,
 		        `+emailExpr+` AS producer_email,
 		        COUNT(*)::bigint AS pedidos,
 		        SUM(CASE WHEN o.status IN (`+codLivroReceivedStatuses+`)   THEN 1 ELSE 0 END)::bigint AS recebidos,
@@ -450,18 +480,21 @@ func (h *CodLivroHandler) ProducersSummary(w http.ResponseWriter, r *http.Reques
 		                           AND o.status NOT IN (`+codLivroFrustratedStatuses+`)
 		                          THEN COALESCE(o.total,0) ELSE 0 END), 0)             AS bruto_previsto,
 		        COALESCE(SUM(CASE WHEN o.status NOT IN (`+codLivroFrustratedStatuses+`)
-		                          THEN COALESCE(o.senderzz_fee,0) ELSE 0 END), 0)      AS taxas_senderzz,
+		                          THEN COALESCE(f.delivery_fee,0)+COALESCE(f.producer_take,0) ELSE 0 END), 0)      AS taxas_senderzz,
 		        COALESCE(SUM(CASE WHEN o.status NOT IN (`+codLivroFrustratedStatuses+`)
-		                          THEN COALESCE(o.affiliate_amount,0) ELSE 0 END), 0)  AS afiliado,
+		                          THEN COALESCE(f.affiliate_bruta,0) ELSE 0 END), 0)  AS afiliado,
 		        COALESCE(SUM(CASE WHEN o.status NOT IN (`+codLivroFrustratedStatuses+`)
-		                          THEN COALESCE(o.producer_net,0) ELSE 0 END), 0)      AS liquido_produtor,
-		        0::numeric                                                              AS frustrado_produtor,
+		                          THEN COALESCE(f.producer_net_live,0) ELSE 0 END), 0)      AS liquido_produtor,
+		        COALESCE(SUM(CASE WHEN o.status IN (`+codLivroFrustratedStatuses+`)
+		                          THEN COALESCE(m.m_pen_prod,0) ELSE 0 END), 0)         AS frustrado_produtor,
 		        COALESCE(SUM(CASE WHEN o.status IN (`+codLivroFrustratedStatuses+`)
 		                          THEN COALESCE(tx.tx_penalty,0) ELSE 0 END), 0)        AS frustrado_afiliados,
 		        COALESCE(SUM(CASE WHEN o.status IN (`+codLivroFrustratedStatuses+`)
-		                          THEN COALESCE(tx.tx_penalty,0) ELSE 0 END), 0)        AS frustrado_valor
+		                          THEN COALESCE(tx.tx_penalty,0)+COALESCE(m.m_pen_prod,0) ELSE 0 END), 0) AS frustrado_valor
 		 FROM sz_orders o
+		 LEFT JOIN sz_order_financials f ON f.order_id = o.id
 		 `+txJoin+`
+		 `+metaJoin+`
 		 `+userJoin+`
 		 WHERE o.created_at::date BETWEEN $1::date AND $2::date
 		   AND COALESCE(o.produtor_id, 0) > 0
@@ -478,7 +511,7 @@ func (h *CodLivroHandler) ProducersSummary(w http.ResponseWriter, r *http.Reques
 	for rows.Next() {
 		var p CodLivroProducerRow
 		_ = rows.Scan(
-			&p.ProducerID, &p.ProducerEmail, &p.Pedidos,
+			&p.ProducerID, &p.ProducerName, &p.ProducerEmail, &p.Pedidos,
 			&p.Recebidos, &p.Frustrados, &p.Previstos,
 			&p.Bruto, &p.BrutoPrevisto, &p.TaxasSenderzz,
 			&p.Afiliado, &p.LiquidoProdutor, &p.FrustradoProdutor,

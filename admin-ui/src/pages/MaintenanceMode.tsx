@@ -2,7 +2,9 @@
 // Paridade com includes/senderzz-maintenance.php. Visual: layout em duas colunas
 // (formulário à esquerda, preview ao vivo à direita) seguindo o padrão AuditEngine.
 import { useEffect, useMemo, useState } from 'react'
+import { useToast } from '../hooks/useToast'
 import { api } from '../api'
+import FalkDatePicker from '../components/FalkDatePicker'
 
 type Settings = {
   enabled: boolean
@@ -19,7 +21,7 @@ const DEFAULTS: Settings = {
   return_time: '',
   title: 'Estamos ajustando a operação',
   message:
-    'A plataforma Senderzz está temporariamente em manutenção para melhorias operacionais. Voltaremos em breve.',
+    'A plataforma FALK LOG está temporariamente em manutenção para melhorias operacionais. Voltaremos em breve.',
 }
 
 const TITLE_MAX = 90
@@ -47,7 +49,7 @@ export default function MaintenanceMode() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [err, setErr] = useState('')
-  const [toast, setToast] = useState<{ kind: 'ok' | 'err'; msg: string } | null>(null)
+  const showToast = useToast() // AUDIT-2026-06-18 Onda3
 
   async function load() {
     setLoading(true)
@@ -71,10 +73,6 @@ export default function MaintenanceMode() {
 
   useEffect(() => { load() }, [])
 
-  function showToast(kind: 'ok' | 'err', msg: string) {
-    setToast({ kind, msg })
-    setTimeout(() => setToast(null), 5000)
-  }
 
   // Preview live: usa título/mensagem digitados, com fallback para defaults se vazios.
   const previewTitle   = settings.title.trim()   || DEFAULTS.title
@@ -118,15 +116,6 @@ export default function MaintenanceMode() {
   return (
     <div>
       {err && <div className="sz-alert-danger" style={{ marginBottom: 16 }}>{err}</div>}
-
-      {toast && (
-        <div
-          className={toast.kind === 'ok' ? 'sz-alert-success' : 'sz-alert-danger'}
-          style={{ marginBottom: 16 }}
-        >
-          {toast.msg}
-        </div>
-      )}
 
       {loading ? (
         <div className="szv2-card">
@@ -184,7 +173,7 @@ export default function MaintenanceMode() {
                         width: 52,
                         height: 28,
                         borderRadius: 999,
-                        background: settings.enabled ? '#EA580C' : '#cbd5e1',
+                        background: settings.enabled ? '#1E6FF2' : '#cbd5e1',
                         transition: 'background 0.2s',
                         flexShrink: 0,
                       }}
@@ -300,12 +289,11 @@ export default function MaintenanceMode() {
                       >
                         Data prevista de retorno
                       </label>
-                      <input
+                      <FalkDatePicker
                         id="sz-maint-date"
-                        type="date"
-                        className="szv2-input"
                         value={settings.return_date}
-                        onChange={e => update('return_date', e.target.value)}
+                        onChange={v => update('return_date', v)}
+                        placeholder="dd/mm/aaaa"
                         style={{ width: '100%' }}
                       />
                     </div>
@@ -332,14 +320,14 @@ export default function MaintenanceMode() {
                     style={{
                       fontSize: 13,
                       color: 'var(--szv2-text-muted)',
-                      background: 'rgba(234,88,12,0.06)',
-                      border: '1px solid rgba(234,88,12,0.18)',
+                      background: 'rgba(30, 111, 242,0.06)',
+                      border: '1px solid rgba(30, 111, 242,0.18)',
                       borderRadius: 10,
                       padding: '10px 12px',
                       margin: 0,
                     }}
                   >
-                    <strong style={{ color: '#EA580C' }}>Bypass:</strong> admins (manage_options) e
+                    <strong style={{ color: '#1E6FF2' }}>Bypass:</strong> admins (manage_options) e
                     operadores logísticos continuam acessando normalmente.
                   </p>
                 </div>
@@ -390,7 +378,7 @@ export default function MaintenanceMode() {
                     left: 0,
                     right: 0,
                     height: 5,
-                    background: 'linear-gradient(90deg, #E8650A, #ff7a1a)',
+                    background: 'linear-gradient(90deg, #1E6FF2, #ff7a1a)',
                   }}
                 />
 
@@ -400,14 +388,14 @@ export default function MaintenanceMode() {
                     width: 56,
                     height: 56,
                     borderRadius: 16,
-                    background: 'linear-gradient(135deg, #E8650A, #ff7a1a)',
+                    background: 'linear-gradient(135deg, #1E6FF2, #ff7a1a)',
                     display: 'grid',
                     placeItems: 'center',
                     fontWeight: 700,
                     color: '#fff',
                     fontSize: 22,
                     margin: '0 auto 18px',
-                    boxShadow: '0 14px 34px rgba(232,101,10,.32)',
+                    boxShadow: '0 14px 34px rgba(30, 111, 242,.32)',
                   }}
                 >
                   S
@@ -419,9 +407,9 @@ export default function MaintenanceMode() {
                     display: 'inline-flex',
                     alignItems: 'center',
                     gap: 8,
-                    border: '1px solid rgba(232,101,10,.32)',
-                    background: 'rgba(232,101,10,.12)',
-                    color: '#fed7aa',
+                    border: '1px solid rgba(30, 111, 242,.32)',
+                    background: 'rgba(30, 111, 242,.12)',
+                    color: '#D6E4FD',
                     borderRadius: 999,
                     padding: '6px 12px',
                     fontSize: 12,
@@ -480,7 +468,7 @@ export default function MaintenanceMode() {
                         width: 32,
                         height: 32,
                         borderRadius: 10,
-                        background: 'rgba(232,101,10,.18)',
+                        background: 'rgba(30, 111, 242,.18)',
                         display: 'grid',
                         placeItems: 'center',
                         color: '#fdba74',
@@ -502,7 +490,7 @@ export default function MaintenanceMode() {
                     color: '#94a3b8',
                   }}
                 >
-                  Senderzz Logística · acesso liberado para admins e operação
+                  FALK LOG · acesso liberado para admins e operação
                 </div>
               </div>
 

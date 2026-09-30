@@ -9,6 +9,10 @@ import FilterTopPanel, {
 } from '../components/FilterTopPanel'
 import TableSkeleton from '../components/TableSkeleton'
 import EmptyState from '../components/EmptyState'
+import { confirmAsync } from '../components/ConfirmDialog'
+import FalkSelect from '../components/FalkSelect'
+import FalkDatePicker from '../components/FalkDatePicker'
+import { emitToast } from '../hooks/useToast'
 
 type CD = { id: number; nome: string; ativo: boolean }
 type Zona = { id: number; cd_id: number; nome: string; ativo: boolean }
@@ -142,8 +146,39 @@ export default function Motoboys() {
     })
   }
 
+  // Validação client-side antes de salvar. Todos os dados pessoais do motoboy
+  // são obrigatórios (regra do dono). Devolve mensagem PT-BR ou '' se ok.
+  // CPF/E-mail/Telefone também têm checagem de formato básico.
+  function validate(): string {
+    if (form.nome.trim() === '') return 'Nome é obrigatório.'
+
+    const telDigits = form.telefone.replace(/\D/g, '')
+    if (telDigits === '') return 'Telefone (com DDD) é obrigatório.'
+    if (telDigits.length < 10 || telDigits.length > 11) {
+      return 'Telefone inválido — informe DDD + número (10 a 11 dígitos).'
+    }
+
+    const cpfDigits = form.cpf.replace(/\D/g, '')
+    if (cpfDigits === '') return 'CPF é obrigatório.'
+    if (cpfDigits.length !== 11) return 'CPF inválido — deve conter 11 dígitos.'
+
+    if (form.email.trim() === '') return 'E-mail é obrigatório.'
+    if (!form.email.includes('@')) return 'E-mail inválido.'
+
+    if (form.cd_id == null) return 'CD é obrigatório.'
+
+    if (form.tipo_pgto.trim() === '') return 'Tipo é obrigatório.'
+
+    return ''
+  }
+
   async function save(e: React.FormEvent) {
     e.preventDefault()
+    const v = validate()
+    if (v) {
+      setErr(v)
+      return
+    }
     setSaving(true)
     setErr('')
     try {
@@ -163,23 +198,32 @@ export default function Motoboys() {
       } else {
         await api('/motoboys', { method: 'POST', body: JSON.stringify(payload) })
       }
+      emitToast('ok', form.id ? 'Motoboy atualizado.' : 'Motoboy cadastrado.')
       setShowForm(false)
       setForm(emptyForm())
       load()
     } catch (e: any) {
       setErr(e.message)
+      emitToast('err', e.message || 'Falha ao salvar motoboy.')
     } finally {
       setSaving(false)
     }
   }
 
   async function del(id: number) {
-    if (!confirm('Desativar este motoboy? O histórico de pedidos será preservado.')) return
+    const ok = await confirmAsync({
+      variant: 'danger',
+      title: 'Desativar motoboy',
+      message: 'Tem certeza que deseja desativar este motoboy? Ele perderá o acesso ao app, mas o histórico de pedidos será preservado.',
+    })
+    if (!ok) return
     try {
       await api(`/motoboys/${id}`, { method: 'DELETE' })
+      emitToast('ok', 'Motoboy desativado.')
       load()
     } catch (e: any) {
       setErr(e.message)
+      emitToast('err', e.message || 'Falha ao desativar motoboy.')
     }
   }
 
@@ -200,7 +244,8 @@ export default function Motoboys() {
   const qNorm = q.trim().toLowerCase()
   const filtered = items.filter(m => {
     if (qNorm) {
-      const hay = `${m.nome} ${m.email} ${m.telefone} ${m.cpf}`.toLowerCase()
+      // Regra do dono: busca só por nome, telefone e CPF (sem e-mail).
+      const hay = `${m.nome} ${m.telefone} ${m.cpf}`.toLowerCase()
       if (!hay.includes(qNorm)) return false
     }
     if (filterCdId && String(m.cd_id ?? '') !== filterCdId) return false
@@ -269,47 +314,45 @@ export default function Motoboys() {
         title="Filtros"
       >
         <FilterField label="Cadastro de" hint="Data inicial">
-          <input
-            type="date"
-            style={filterInputStyle}
+          <FalkDatePicker
             value={draftIni}
-            onChange={e => setDraftIni(e.target.value)}
+            onChange={v => setDraftIni(v)}
+            placeholder="dd/mm/aaaa"
           />
         </FilterField>
         <FilterField label="Cadastro até" hint="Data final">
-          <input
-            type="date"
-            style={filterInputStyle}
+          <FalkDatePicker
             value={draftFim}
-            onChange={e => setDraftFim(e.target.value)}
+            onChange={v => setDraftFim(v)}
+            placeholder="dd/mm/aaaa"
           />
         </FilterField>
         <FilterField label="Status (ativo)">
-          <select
-            style={filterInputStyle}
+          <FalkSelect
             value={draftAtivo}
-            onChange={e => setDraftAtivo(e.target.value)}
-          >
-            <option value="">Todos</option>
-            <option value="sim">Ativo</option>
-            <option value="nao">Inativo</option>
-          </select>
+            onChange={v => setDraftAtivo(v)}
+            options={[
+              { value: '', label: 'Todos' },
+              { value: 'sim', label: 'Ativo' },
+              { value: 'nao', label: 'Inativo' },
+            ]}
+          />
         </FilterField>
         <FilterField label="CD">
-          <select
-            style={filterInputStyle}
+          <FalkSelect
             value={draftCd}
-            onChange={e => setDraftCd(e.target.value)}
-          >
-            <option value="">Todos CDs</option>
-            {cds.map(c => <option key={c.id} value={c.id}>{c.nome}</option>)}
-          </select>
+            onChange={v => setDraftCd(v)}
+            options={[
+              { value: '', label: 'Todos CDs' },
+              ...cds.map(c => ({ value: String(c.id), label: c.nome })),
+            ]}
+          />
         </FilterField>
-        <FilterField label="Busca (nome / e-mail / CPF)">
+        <FilterField label="Busca (nome / telefone / CPF)">
           <input
             type="search"
             style={filterInputStyle}
-            placeholder="nome, email, telefone, CPF"
+            placeholder="Buscar por nome, telefone ou CPF"
             value={draftQ}
             onChange={e => setDraftQ(e.target.value)}
           />
@@ -318,13 +361,62 @@ export default function Motoboys() {
 
       {err && <div className="sz-alert-danger">{err}</div>}
 
+      {/* ── Drawer lateral: criar / editar motoboy ──────────────────────
+          Padrão de detalhe/ação do site = drawer lateral direito (igual ao
+          drawer de Pedidos / Afiliados). Antes era um card inline. */}
       {showForm && (
-        <div className="szv2-card" style={{ marginBottom: '24px' }}>
-          <div className="szv2-card-head">
-            <div><h2>{form.id ? 'Editar Motoboy' : 'Novo Motoboy'}</h2></div>
-            <button className="szv2-modal-x" onClick={() => setShowForm(false)}>✕</button>
-          </div>
-          <form onSubmit={save}>
+        <div
+          onClick={() => setShowForm(false)}
+          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.3)', zIndex: 501 }}
+        />
+      )}
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={form.id ? 'Editar motoboy' : 'Novo motoboy'}
+        style={{
+          position: 'fixed',
+          top: 0,
+          right: 0,
+          height: '100vh',
+          width: 560,
+          maxWidth: '100vw',
+          background: 'var(--szv2-surface)',
+          borderLeft: '1px solid var(--szv2-divider)',
+          boxShadow: '-12px 0 32px rgba(0,0,0,.18)',
+          zIndex: 502,
+          display: 'flex',
+          flexDirection: 'column',
+          overflow: 'hidden',
+          transition: 'transform .25s ease',
+          transform: showForm ? 'translateX(0)' : 'translateX(100%)',
+        }}
+      >
+        {showForm && (
+          <>
+            {/* Header */}
+            <div
+              style={{
+                padding: '16px 20px',
+                borderBottom: '1px solid var(--szv2-divider)',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+              }}
+            >
+              <span style={{ fontWeight: 700, fontSize: 15, color: 'var(--szv2-text)' }}>
+                {form.id ? 'Editar Motoboy' : 'Novo Motoboy'}
+              </span>
+              <button
+                type="button"
+                className="szv2-modal-x"
+                aria-label="Fechar painel"
+                onClick={() => setShowForm(false)}
+              >
+                ✕
+              </button>
+            </div>
+          <form onSubmit={save} style={{ flex: 1, overflowY: 'auto', padding: '20px' }}>
             {/* Linha 1: Nome, Telefone, CPF */}
             <div className="sz-form-grid sz-form-grid-3" style={{ marginBottom: '16px' }}>
               <div className="szv2-field">
@@ -337,7 +429,7 @@ export default function Motoboys() {
                 />
               </div>
               <div className="szv2-field">
-                <label className="szv2-label">Telefone (com DDD)</label>
+                <label className="szv2-label">Telefone (com DDD) *</label>
                 <input
                   className="szv2-input"
                   value={form.telefone}
@@ -345,7 +437,7 @@ export default function Motoboys() {
                 />
               </div>
               <div className="szv2-field">
-                <label className="szv2-label">CPF</label>
+                <label className="szv2-label">CPF *</label>
                 <input
                   className="szv2-input"
                   value={form.cpf}
@@ -358,7 +450,7 @@ export default function Motoboys() {
             {/* Linha 2: Email, CD, Tipo */}
             <div className="sz-form-grid sz-form-grid-3" style={{ marginBottom: '16px' }}>
               <div className="szv2-field">
-                <label className="szv2-label">E-mail</label>
+                <label className="szv2-label">E-mail *</label>
                 <input
                   className="szv2-input"
                   type="email"
@@ -368,29 +460,29 @@ export default function Motoboys() {
               </div>
               <div className="szv2-field">
                 <label className="szv2-label">CD *</label>
-                <select
-                  className="szv2-input"
-                  required
-                  value={form.cd_id ?? ''}
-                  onChange={e => setForm({ ...form, cd_id: e.target.value ? Number(e.target.value) : null })}
-                >
-                  <option value="">Selecione...</option>
-                  {cds.map(c => (
-                    <option key={c.id} value={c.id}>{c.nome}</option>
-                  ))}
-                </select>
+                <FalkSelect
+                  aria-label="CD"
+                  placeholder="Selecione..."
+                  value={form.cd_id != null ? String(form.cd_id) : ''}
+                  onChange={v => setForm({ ...form, cd_id: v ? Number(v) : null })}
+                  options={[
+                    { value: '', label: 'Selecione...' },
+                    ...cds.map(c => ({ value: String(c.id), label: c.nome })),
+                  ]}
+                />
               </div>
               <div className="szv2-field">
-                <label className="szv2-label">Tipo</label>
-                <select
-                  className="szv2-input"
+                <label className="szv2-label">Tipo *</label>
+                <FalkSelect
+                  aria-label="Tipo"
                   value={form.tipo_pgto}
-                  onChange={e => setForm({ ...form, tipo_pgto: e.target.value })}
-                >
-                  <option value="autonomo">Autônomo</option>
-                  <option value="pj">PJ / MEI</option>
-                  <option value="clt">CLT</option>
-                </select>
+                  onChange={v => setForm({ ...form, tipo_pgto: v })}
+                  options={[
+                    { value: 'autonomo', label: 'Autônomo' },
+                    { value: 'pj', label: 'PJ / MEI' },
+                    { value: 'clt', label: 'CLT' },
+                  ]}
+                />
               </div>
             </div>
 
@@ -446,7 +538,7 @@ export default function Motoboys() {
               <div className="szv2-field">
                 <label className="szv2-label">
                   PIN de acesso ao PWA{' '}
-                  {form.id && (
+                  {!!form.id && (
                     <span style={{ fontSize: '12px', color: 'var(--szv2-text-muted)' }}>
                       (deixe em branco para não alterar)
                     </span>
@@ -461,7 +553,7 @@ export default function Motoboys() {
                   value={form.pin}
                   onChange={e => setForm({ ...form, pin: e.target.value })}
                 />
-                {form.id && (
+                {!!form.id && (
                   <div style={{ fontSize: '12px', color: 'var(--szv2-text-muted)', marginTop: '4px' }}>
                     {/* pin_set vem do item original — não fica no form state */}
                     Deixe em branco para manter o PIN atual.
@@ -505,8 +597,9 @@ export default function Motoboys() {
               </button>
             </div>
           </form>
-        </div>
-      )}
+          </>
+        )}
+      </div>
 
       {loading && filtered.length === 0 ? (
         <TableSkeleton rows={5} cols={9} />

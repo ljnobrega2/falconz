@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useToast } from '../hooks/useToast'
 import { api } from '../api'
 
 type MotoboyConfig = {
@@ -14,7 +15,7 @@ const DEFAULTS: MotoboyConfig = {
   geofence_metros: 500,
   horario_inicio: '08:00',
   horario_fim: '18:00',
-  cc_fee_pct: 0,
+  cc_fee_pct: 3.29,
 }
 
 const RE_HORA = /^([01]\d|2[0-3]):[0-5]\d$/
@@ -44,7 +45,7 @@ export default function MotoboyConfig() {
   const [saving, setSaving] = useState(false)
   const [err, setErr] = useState('')
   const [errs, setErrs] = useState<Errors>({})
-  const [toast, setToast] = useState<{ kind: 'ok' | 'err'; msg: string } | null>(null)
+  const showToast = useToast() // AUDIT-2026-06-18 Onda3
 
   async function load() {
     setLoading(true)
@@ -55,7 +56,7 @@ export default function MotoboyConfig() {
         geofence_metros: Number(data.geofence_metros) || DEFAULTS.geofence_metros,
         horario_inicio: data.horario_inicio || DEFAULTS.horario_inicio,
         horario_fim: data.horario_fim || DEFAULTS.horario_fim,
-        cc_fee_pct: Number(data.cc_fee_pct) || 0,
+        cc_fee_pct: Number.isFinite(Number(data.cc_fee_pct)) ? Number(data.cc_fee_pct) : DEFAULTS.cc_fee_pct,
       })
     } catch (e: any) {
       setErr(e.message || 'Erro ao carregar configurações')
@@ -66,10 +67,6 @@ export default function MotoboyConfig() {
 
   useEffect(() => { load() }, [])
 
-  function showToast(kind: 'ok' | 'err', msg: string) {
-    setToast({ kind, msg })
-    setTimeout(() => setToast(null), 5000)
-  }
 
   function update<K extends keyof MotoboyConfig>(key: K, value: MotoboyConfig[K]) {
     setCfg(prev => ({ ...prev, [key]: value }))
@@ -114,15 +111,16 @@ export default function MotoboyConfig() {
 
       {err && <div className="sz-alert-danger" style={{ marginBottom: 16 }}>{err}</div>}
 
-      {toast && (
+      {loading ? (
         <div
-          className={toast.kind === 'ok' ? 'sz-alert-success' : 'sz-alert-danger'}
-          style={{ marginBottom: 16 }}
+          className="szv2-card"
+          style={{ padding: 48, textAlign: 'center', color: 'var(--szv2-text-muted)' }}
+          role="status"
+          aria-live="polite"
         >
-          {toast.msg}
+          Carregando configurações…
         </div>
-      )}
-
+      ) : (
       <form onSubmit={handleSave}>
         <div className="szv2-card">
           <div className="szv2-card-head">
@@ -179,7 +177,7 @@ export default function MotoboyConfig() {
                   autoComplete="off"
                 />
                 <small style={{ color: 'var(--szv2-text-muted)', fontSize: 12 }}>
-                  Deixe 0 para não exibir segundo valor. Valor cobrado no cartão = valor pedido × (1 + taxa/100)
+                  Valor cobrado no cartão = valor pedido × (1 + taxa/100). Padrão: 3,29%.
                 </small>
                 {errs.cc_fee_pct && (
                   <small style={{ color: 'var(--szv2-danger)', fontSize: 12 }}>
@@ -244,6 +242,7 @@ export default function MotoboyConfig() {
           </button>
         </div>
       </form>
+      )}
     </div>
   )
 }

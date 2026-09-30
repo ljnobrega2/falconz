@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"math/big"
 	"net/http"
 	"net/url"
@@ -39,13 +40,7 @@ type PushTecnicoHandler struct{ Pool *pgxpool.Pool }
 
 // tableExistsPush verifica presença de uma tabela no schema public.
 func (h *PushTecnicoHandler) tableExists(ctx context.Context, name string) bool {
-	var ok bool
-	_ = h.Pool.QueryRow(ctx,
-		`SELECT EXISTS (
-			SELECT FROM information_schema.tables
-			WHERE table_schema='public' AND table_name=$1
-		)`, name).Scan(&ok)
-	return ok
+	return tableExistsCached(ctx, h.Pool, name) // AUDIT-2026-06-18 Onda2 (go-infoschema-cache)
 }
 
 // getOption lê um valor de senderzz_options; retorna "" se ausente.
@@ -55,7 +50,7 @@ func (h *PushTecnicoHandler) getOption(ctx context.Context, key string) string {
 	}
 	var raw string
 	_ = h.Pool.QueryRow(ctx,
-		`SELECT value FROM senderzz_options WHERE "key"=$1`, key).Scan(&raw)
+		`SELECT value FROM senderzz_options WHERE name=$1`, key).Scan(&raw)
 	return strings.TrimSpace(raw)
 }
 
@@ -65,9 +60,9 @@ func (h *PushTecnicoHandler) upsertOptionStr(ctx context.Context, key, value str
 		return nil
 	}
 	_, err := h.Pool.Exec(ctx,
-		`INSERT INTO senderzz_options ("key", value)
+		`INSERT INTO senderzz_options (name, value)
 		 VALUES ($1, $2)
-		 ON CONFLICT ("key") DO UPDATE SET value = EXCLUDED.value`, key, value)
+		 ON CONFLICT (name) DO UPDATE SET value = EXCLUDED.value`, key, value)
 	return err
 }
 
@@ -406,6 +401,13 @@ func sendPush(sub pushSubscription, payload, vapidPublic, vapidPrivate, sub_emai
 	body = append(body, ciphertext...)
 
 	// --- 3. HTTP POST para o endpoint push ----------------------------------
+	// P2-03: valida o endpoint da assinatura antes do request — bloqueia SSRF
+	// (endpoint apontando para localhost/metadata/rede interna). validatePublicURL
+	// está em expedicao_webhooks.go (mesmo pacote). Retorna "failed" logável,
+	// preservando o fluxo de erro já existente desta função.
+	if err := validatePublicURL(sub.Endpoint); err != nil {
+		return sendPushResult{Status: "failed", ErrorMsg: "Endpoint recusado (P2-03 anti-SSRF): " + err.Error()}
+	}
 	req, err := http.NewRequest("POST", sub.Endpoint, bytes.NewReader(body))
 	if err != nil {
 		return sendPushResult{Status: "failed", ErrorMsg: "Falha ao criar request: " + err.Error()}
@@ -496,6 +498,14 @@ func (h *PushTecnicoHandler) TestSend(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
+
+	// P2-03: rate-limit 5/min por usuário (disparo HTTP externo a push services).
+	if !webhookFireLimiter.allow(rateKeyFromAdmin(ctx)) {
+		slog.Warn("[senderzz_push] P2-03 rate-limit de teste excedido", "key", rateKeyFromAdmin(ctx))
+		w.Header().Set("Retry-After", "60")
+		httpx.Err(w, 429, "rate_limited", "muitos testes de push — aguarde 1 minuto")
+		return
+	}
 
 	// Carrega chaves VAPID.
 	vapidPub, vapidPriv, err := h.loadVapidKeys(ctx)
@@ -638,6 +648,14 @@ func (h *PushTecnicoHandler) ReprocessLog(w http.ResponseWriter, r *http.Request
 	}
 
 	ctx := r.Context()
+
+	// P2-03: rate-limit 5/min por usuário (disparo HTTP externo a push services).
+	if !webhookFireLimiter.allow(rateKeyFromAdmin(ctx)) {
+		slog.Warn("[senderzz_push] P2-03 rate-limit de reprocess excedido", "key", rateKeyFromAdmin(ctx))
+		w.Header().Set("Retry-After", "60")
+		httpx.Err(w, 429, "rate_limited", "muitos reprocessamentos — aguarde 1 minuto")
+		return
+	}
 
 	if !h.tableExists(ctx, "sz_notif_log") {
 		httpx.Err(w, 404, "table_missing", "sz_notif_log não existe")

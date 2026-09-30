@@ -21,11 +21,13 @@ package handlers
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -42,75 +44,184 @@ type MotoboOpsHandler struct {
 // ── Operações do motoboy ──────────────────────────────────────────────────────
 
 // DevolverQR — POST /motoboy/devolver-qr
-// Body: {pedido_id}
-// Reverte status embalado → agendado se o motoboy ainda não iniciou rota.
+// Body: {qr_code|package_code, pedido_id?}
+//
+// Port FIEL de sz_mb_api_devolver_qr() + sz_mbc_declare_return_by_qr():
+// o motoboy DECLARA a devolução de um pedido FRUSTRADO bipando o QR da etiqueta.
+// Não é "desfazer embalado" — é registrar que o pacote frustrado está voltando,
+// movendo a custódia para 'return_declared' (aguardando conferência do OL).
+//   - QR obrigatório (sem QR → 422 qr_required).
+//   - assinatura HMAC confere com packageCode().
+//   - pedido pertence ao motoboy e está 'frustrado'.
+//   - custódia frustrated → return_declared (idempotente: já declarado → ok).
 func (h *MotoboOpsHandler) DevolverQR(w http.ResponseWriter, r *http.Request) {
-	mb := auth.MotoboyfromCtx(r.Context())
+	ctx := r.Context()
+
+	mb := auth.MotoboyfromCtx(ctx)
 	if mb == nil {
-		httpx.WriteErr(w, http.StatusUnauthorized, "não autorizado")
+		httpx.WriteErr(w, http.StatusUnauthorized, "Sessão do motoboy expirada. Faça login novamente.")
 		return
 	}
 
 	var req struct {
-		PedidoID int64 `json:"pedido_id"`
+		QRCode      string `json:"qr_code"`
+		PackageCode string `json:"package_code"`
+		PedidoID    int64  `json:"pedido_id"`
+		// FEAT-SKU: código de barras do produto bipado ao devolver após frustrado.
+		// Opcional p/ compat; quando presente, valida o SKU vs itens do pedido.
+		SKUBipado   string `json:"sku_bipado"`
+		ManualTyped bool   `json:"manual_typed"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		httpx.WriteErr(w, http.StatusBadRequest, "JSON inválido")
 		return
 	}
-	if req.PedidoID == 0 {
-		httpx.WriteErr(w, http.StatusBadRequest, "pedido_id obrigatório")
+
+	pkgCode := strings.TrimSpace(req.PackageCode)
+	if pkgCode == "" {
+		pkgCode = strings.TrimSpace(req.QRCode)
+	}
+	if pkgCode == "" {
+		httpx.WriteJSON(w, http.StatusUnprocessableEntity, map[string]any{
+			"ok":          false,
+			"erro":        "Para declarar devolução, leia o QR Code da etiqueta do pacote.",
+			"qr_required": true,
+		})
 		return
 	}
 
-	ctx := r.Context()
+	// Custódia indisponível (tabela não migrada) → mesmo 500 do WP quando o helper
+	// de custódia não existe ("Controle de custódia indisponível").
+	if !custodyTablesExist(ctx, h.Pool) {
+		httpx.WriteErr(w, http.StatusInternalServerError, "Controle de custódia indisponível. Atualize o plugin.")
+		return
+	}
+
+	salt := wpSaltAuth()
+	if salt == "" {
+		slog.Error("[motoboy] WP_SALT_AUTH não configurado")
+		httpx.WriteErr(w, http.StatusServiceUnavailable, "configuração ausente")
+		return
+	}
+
+	parsed, ok := parsePackageCode(pkgCode)
+	if !ok || parsed.PedidoID == 0 {
+		httpx.WriteErr(w, http.StatusConflict, "QR Code da etiqueta inválido.")
+		return
+	}
+	pedidoID := parsed.PedidoID
+	if req.PedidoID > 0 && pedidoID != req.PedidoID {
+		httpx.WriteErr(w, http.StatusConflict, "QR Code não corresponde ao pedido aberto.")
+		return
+	}
 
 	var status string
-	var motoboyID *int64
+	var donoID *int64
+	var wcOrderID int64
 	err := h.Pool.QueryRow(ctx,
-		`SELECT status, motoboy_id FROM sz_motoboy_pedidos WHERE id = $1`, req.PedidoID,
-	).Scan(&status, &motoboyID)
+		`SELECT status, motoboy_id, wc_order_id FROM sz_motoboy_pedidos WHERE id=$1`, pedidoID,
+	).Scan(&status, &donoID, &wcOrderID)
 	if err != nil {
-		httpx.WriteErr(w, http.StatusNotFound, "pedido não encontrado")
+		httpx.WriteErr(w, http.StatusConflict, "Pedido Motoboy não encontrado.")
 		return
 	}
 
-	// Só pode devolver se ainda está embalado (rota não iniciada).
-	if status != "embalado" {
-		httpx.WriteErr(w, http.StatusConflict, "pedido não está embalado: "+status)
+	expected := packageCode(pedidoID, wcOrderID, salt)
+	if !strings.EqualFold(expected, parsed.Code) {
+		httpx.WriteErr(w, http.StatusConflict, "QR Code não confere com o pacote.")
 		return
 	}
-	// Garante que é do motoboy autenticado.
-	if motoboyID == nil || *motoboyID != mb.ID {
-		httpx.WriteErr(w, http.StatusForbidden, "pedido não pertence a este motoboy")
+	if donoID == nil || *donoID != mb.ID {
+		httpx.WriteErr(w, http.StatusConflict, "Este pacote está em custódia de outro motoboy.")
+		return
+	}
+	if status != "frustrado" {
+		httpx.WriteErr(w, http.StatusConflict, "Só é possível declarar devolução de pedido frustrado.")
 		return
 	}
 
-	_, err = h.Pool.Exec(ctx,
-		`UPDATE sz_motoboy_pedidos SET status = 'agendado', motoboy_id = NULL WHERE id = $1`,
-		req.PedidoID,
+	// FEAT-SKU: se o motoboy bipou o código de barras do produto ao devolver,
+	// valida o SKU contra os itens do pedido ANTES de mover a custódia. SKU
+	// diferente → 422 e NÃO declara devolução. Compat: sku_bipado vazio = não
+	// bipou → mantém comportamento atual (não valida, não registra scan).
+	if strings.TrimSpace(req.SKUBipado) != "" {
+		actor := fmt.Sprintf("motoboy:%d", mb.ID)
+		match, err := validarSKUPedido(ctx, h.Pool, wcOrderID, req.SKUBipado)
+		if err != nil {
+			slog.Error("[FEAT-SKU] falha ao validar SKU (devolucao)", "pedido_id", pedidoID, "err", err)
+			httpx.WriteErr(w, http.StatusInternalServerError, "erro ao validar SKU do produto")
+			return
+		}
+		// Fail-closed quando o pedido não tem SKU cadastrado (sem referência).
+		ok := match.OK && match.HasExpected
+		registrarPackScan(ctx, h.Pool, "devolucao", wcOrderID, match.ProductID,
+			req.SKUBipado, match.ExpectedCSV, ok, req.ManualTyped, actor)
+		if !ok {
+			slog.Warn("[FEAT-SKU] SKU não confere (devolucao)", "pedido_id", pedidoID,
+				"sku_bipado", req.SKUBipado, "esperado", match.ExpectedCSV, "tem_sku", match.HasExpected)
+			httpx.WriteErr(w, http.StatusUnprocessableEntity, "SKU não confere com o pedido.")
+			return
+		}
+	}
+
+	// Estado atual da custódia.
+	var physical string
+	err = h.Pool.QueryRow(ctx,
+		`SELECT physical_status FROM sz_motoboy_stock_custody WHERE pedido_id=$1 LIMIT 1`, pedidoID,
+	).Scan(&physical)
+	if err != nil {
+		httpx.WriteErr(w, http.StatusConflict, "Pacote não encontrado na custódia.")
+		return
+	}
+	if physical == "return_declared" {
+		// Idempotente: já declarado anteriormente.
+		httpx.WriteOK(w, map[string]any{"ok": true, "pedido_id": pedidoID, "aguardando_ol": true})
+		return
+	}
+	if physical != "frustrated" {
+		httpx.WriteErr(w, http.StatusConflict, "Este pacote não está frustrado em custódia do motoboy.")
+		return
+	}
+
+	// Move custódia frustrated → return_declared (sz_mbc_set_pedido_status).
+	tag, err := h.Pool.Exec(ctx, `
+		UPDATE sz_motoboy_stock_custody
+		   SET physical_status='return_declared', visible_status='frustrado',
+		       returned_at=NOW(), updated_at=NOW()
+		 WHERE pedido_id=$1`, pedidoID,
 	)
 	if err != nil {
-		slog.Error("[motoboy] falha ao devolver QR", "pedido_id", req.PedidoID, "err", err)
-		httpx.WriteErr(w, http.StatusInternalServerError, "erro ao devolver pedido")
+		slog.Error("[motoboy] falha ao declarar devolução", "pedido_id", pedidoID, "err", err)
+		httpx.WriteErr(w, http.StatusInternalServerError, "erro ao declarar devolução")
 		return
 	}
+
+	// Movimento de auditoria de custódia (espelha sz_mbc_insert_movement).
+	_, _ = h.Pool.Exec(ctx, `
+		INSERT INTO sz_motoboy_stock_movements
+			(pedido_id, wc_order_id, package_code, from_status, to_status, motoboy_id, actor_tipo, actor_id, note, created_at)
+		VALUES ($1, $2, $3, 'frustrated', 'return_declared', $4, 'motoboy', $4,
+			'Motoboy bipou o QR e declarou devolução. Aguardando confirmação do OL.', NOW())`,
+		pedidoID, wcOrderID, expected, mb.ID,
+	)
 
 	_, _ = h.Pool.Exec(ctx, `
 		INSERT INTO sz_motoboy_audit (pedido_id, acao, de_status, para_status, meta, created_at)
-		VALUES ($1, 'qr_devolvido', 'embalado', 'agendado', $2, NOW())`,
-		req.PedidoID, mb.ID,
+		VALUES ($1, 'qr_devolucao_declarada', 'frustrado', 'frustrado', $2, NOW())`,
+		pedidoID, mb.ID,
 	)
 
-	slog.Info("[motoboy] QR devolvido", "pedido_id", req.PedidoID, "motoboy_id", mb.ID)
-	httpx.WriteOK(w, map[string]any{"ok": true, "status": "agendado"})
+	slog.Info("[motoboy] devolução declarada via QR", "pedido_id", pedidoID, "motoboy_id", mb.ID, "custody_rows", tag.RowsAffected())
+	httpx.WriteOK(w, map[string]any{"ok": true, "pedido_id": pedidoID, "aguardando_ol": true})
 }
 
 // Ping — POST /motoboy/ping
 // Body: {lat, lng}
 // Upsert sz_motoboy_localizacoes com lat/lng do motoboy.
 //
-// TODO: migration — criar tabela se não existir:
+// AUDIT CODE-MOTOBOY-TODOS-08: DDL de sz_motoboy_localizacoes em
+// infra/postgres/190-fixes-v471-motoboy-todos.sql — aplicar em staging+prod
+// antes de remover este aviso (schema pode estar incompleto até lá).
 //
 //	CREATE TABLE IF NOT EXISTS sz_motoboy_localizacoes (
 //	  motoboy_id BIGINT PRIMARY KEY REFERENCES sz_motoboys(id),
@@ -154,7 +265,9 @@ func (h *MotoboOpsHandler) Ping(w http.ResponseWriter, r *http.Request) {
 // Retorna o fechamento atual do motoboy (entregues, frustrados, total_rs, repasse_rs).
 // repasse_rs considera sz_motoboy_cc_fee_pct da tabela wp_options.
 //
-// TODO: migration — verificar colunas em sz_motoboy_fechamento:
+// AUDIT CODE-MOTOBOY-TODOS-08: DDL das colunas de confirmação em
+// infra/postgres/190-fixes-v471-motoboy-todos.sql — aplicar em staging+prod
+// antes de remover este aviso (schema pode estar incompleto até lá).
 //
 //	ALTER TABLE sz_motoboy_fechamento
 //	  ADD COLUMN IF NOT EXISTS confirmado_motoboy    BOOLEAN NOT NULL DEFAULT FALSE,
@@ -172,20 +285,27 @@ func (h *MotoboOpsHandler) Fechamento(w http.ResponseWriter, r *http.Request) {
 
 	// Busca taxa de cartão do WP Options.
 	var ccFeeStr string
-	_ = h.Pool.QueryRow(ctx,
+	var ccFeePct float64
+	err := h.Pool.QueryRow(ctx,
 		`SELECT option_value FROM wp_options WHERE option_name = 'sz_motoboy_cc_fee_pct' LIMIT 1`,
 	).Scan(&ccFeeStr)
-	ccFeePct, _ := strconv.ParseFloat(ccFeeStr, 64)
+	if err != nil {
+		ccFeePct = 3.29
+	} else if strings.TrimSpace(ccFeeStr) == "" {
+		ccFeePct = 3.29
+	} else {
+		ccFeePct, _ = strconv.ParseFloat(ccFeeStr, 64)
+	}
 
 	type fechamentoRow struct {
-		ID                int64    `json:"id"`
-		DataFechamento    string   `json:"data_fechamento"`
-		Entregues         int      `json:"entregues"`
-		Frustrados        int      `json:"frustrados"`
-		TotalRS           float64  `json:"total_rs"`
-		RepasseRS         float64  `json:"repasse_rs"`
-		ConfirmadoMotoboy bool     `json:"confirmado_motoboy"`
-		ConfirmadoAlan    bool     `json:"confirmado_alan"`
+		ID                int64   `json:"id"`
+		DataFechamento    string  `json:"data_fechamento"`
+		Entregues         int     `json:"entregues"`
+		Frustrados        int     `json:"frustrados"`
+		TotalRS           float64 `json:"total_rs"`
+		RepasseRS         float64 `json:"repasse_rs"`
+		ConfirmadoMotoboy bool    `json:"confirmado_motoboy"`
+		ConfirmadoAlan    bool    `json:"confirmado_alan"`
 	}
 
 	rows, err := h.Pool.Query(ctx, `
@@ -292,6 +412,9 @@ func (h *MotoboOpsHandler) PendentesConfirmacao(w http.ResponseWriter, r *http.R
 
 	ctx := r.Context()
 
+	// Taxa de cartão (uma vez por request) para expor valor_cartao por pedido.
+	feePct := ccFeePct(ctx, h.Pool)
+
 	rows, err := h.Pool.Query(ctx, `
 		SELECT
 			p.id,
@@ -325,6 +448,7 @@ func (h *MotoboOpsHandler) PendentesConfirmacao(w http.ResponseWriter, r *http.R
 		DestNome    *string `json:"dest_nome"`
 		DestProduto *string `json:"dest_produto"`
 		ValorPedido float64 `json:"valor_pedido"`
+		ValorCartao float64 `json:"valor_cartao"`
 		TsEntregue  *string `json:"ts_entregue"`
 	}
 
@@ -337,6 +461,7 @@ func (h *MotoboOpsHandler) PendentesConfirmacao(w http.ResponseWriter, r *http.R
 			slog.Error("[motoboy] erro ao scanear pedido pendente", "err", err)
 			continue
 		}
+		p.ValorCartao = valorCartao(p.ValorPedido, feePct)
 		pedidos = append(pedidos, p)
 	}
 
@@ -347,7 +472,9 @@ func (h *MotoboOpsHandler) PendentesConfirmacao(w http.ResponseWriter, r *http.R
 // multipart/form-data: {pedido_id, foto}
 // Salva metadados + bytes base64 em sz_motoboy_comprovantes.
 //
-// TODO: migration — verificar/criar coluna foto_base64:
+// AUDIT CODE-MOTOBOY-TODOS-08: DDL de foto_base64 em
+// infra/postgres/190-fixes-v471-motoboy-todos.sql — aplicar em staging+prod
+// antes de remover este aviso (schema pode estar incompleto até lá).
 //
 //	ALTER TABLE sz_motoboy_comprovantes
 //	  ADD COLUMN IF NOT EXISTS foto_base64 TEXT;
@@ -479,7 +606,9 @@ func (h *MotoboOpsHandler) Comprovantes(w http.ResponseWriter, r *http.Request) 
 // Body: {token, plataforma}
 // Upsert sz_motoboy_push_tokens para o motoboy autenticado.
 //
-// TODO: migration — criar tabela se não existir:
+// AUDIT CODE-MOTOBOY-TODOS-08: DDL de sz_motoboy_push_tokens em
+// infra/postgres/190-fixes-v471-motoboy-todos.sql — aplicar em staging+prod
+// antes de remover este aviso (schema pode estar incompleto até lá).
 //
 //	CREATE TABLE IF NOT EXISTS sz_motoboy_push_tokens (
 //	  id         BIGSERIAL PRIMARY KEY,
@@ -559,9 +688,9 @@ func (h *MotoboOpsHandler) WalletSaldo(w http.ResponseWriter, r *http.Request) {
 	}
 
 	httpx.WriteOK(w, map[string]any{
-		"motoboy_id":      mb.ID,
-		"saldo_pendente":  saldoPendente,
-		"saldo_total":     saldoTotal,
+		"motoboy_id":     mb.ID,
+		"saldo_pendente": saldoPendente,
+		"saldo_total":    saldoTotal,
 	})
 }
 
@@ -771,11 +900,11 @@ func (h *MotoboOpsHandler) PedidoHistorico(w http.ResponseWriter, r *http.Reques
 	}
 
 	httpx.WriteOK(w, map[string]any{
-		"pedido_id":  pedidoID,
+		"pedido_id":   pedidoID,
 		"wc_order_id": wcOrderID,
-		"status":     status,
-		"historico":  logs,
-		"total":      len(logs),
+		"status":      status,
+		"historico":   logs,
+		"total":       len(logs),
 	})
 }
 
@@ -783,8 +912,7 @@ func (h *MotoboOpsHandler) PedidoHistorico(w http.ResponseWriter, r *http.Reques
 
 // LinkExpedicao — GET /link-expedicao?sz=TOKEN
 // Valida sz contra sz_motoboys.token_expedicao e redireciona para a tela de embalar.
-//
-// TODO: definir URL base da tela de embalar via env var EXPEDICAO_URL (default: /motoboy-app/).
+// URL base configurável via env var EXPEDICAO_URL (default: /motoboy-app/).
 func (h *MotoboOpsHandler) LinkExpedicao(w http.ResponseWriter, r *http.Request) {
 	sz := r.URL.Query().Get("sz")
 	if sz == "" {
@@ -796,14 +924,13 @@ func (h *MotoboOpsHandler) LinkExpedicao(w http.ResponseWriter, r *http.Request)
 
 	var motoboyID int64
 	err := h.Pool.QueryRow(ctx,
-		`SELECT id FROM sz_motoboys WHERE token_expedicao = $1 AND ativo = 1 LIMIT 1`, sz,
+		`SELECT id FROM sz_motoboys WHERE token_expedicao = $1 AND ativo = true LIMIT 1`, sz, // QA-FIX P0: ativo é boolean
 	).Scan(&motoboyID)
 	if err != nil {
 		httpx.WriteErr(w, http.StatusUnauthorized, "link inválido ou expirado")
 		return
 	}
 
-	// TODO: configurar via env var EXPEDICAO_URL se a URL base mudar.
 	expedicaoURL := os.Getenv("EXPEDICAO_URL")
 	if expedicaoURL == "" {
 		expedicaoURL = "/motoboy-app/"
@@ -819,7 +946,9 @@ func (h *MotoboOpsHandler) LinkExpedicao(w http.ResponseWriter, r *http.Request)
 // Body: {pedido_id, motivo}
 // Marca CPF como dispensado nos metadados do pedido.
 //
-// TODO: migration — verificar/criar coluna cpf_dispensado em sz_motoboy_pedidos:
+// AUDIT CODE-MOTOBOY-TODOS-08: DDL de cpf_dispensado em
+// infra/postgres/190-fixes-v471-motoboy-todos.sql — aplicar em staging+prod
+// antes de remover este aviso (schema pode estar incompleto até lá).
 //
 //	ALTER TABLE sz_motoboy_pedidos
 //	  ADD COLUMN IF NOT EXISTS cpf_dispensado        BOOLEAN NOT NULL DEFAULT FALSE,

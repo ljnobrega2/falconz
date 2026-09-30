@@ -74,14 +74,44 @@ type CodWalletStatsTotals struct {
 // tableExists — utilitário compartilhado com audit/affiliate_wallet. Graceful
 // degradation: tabela ausente devolve resposta vazia em vez de 500.
 func (h *CodWalletTransactionsHandler) tableExists(ctx context.Context, name string) bool {
-	var ok bool
-	_ = h.Pool.QueryRow(ctx,
-		`SELECT EXISTS (
-			SELECT FROM information_schema.tables
-			WHERE table_schema='public' AND table_name=$1
-		)`, name).Scan(&ok)
-	return ok
+	return tableExistsCached(ctx, h.Pool, name) // AUDIT-2026-06-18 Onda2 (go-infoschema-cache)
 }
+
+// codEffNetExpr é o SQL do "net efetivo" de uma transação COD.
+//
+// REGRA DE NEGÓCIO (includes/senderzz-cod-wallet.php ::
+// sz_cod_wallet_record_delivery): num recebimento COD `fee = 0` e
+// `net = gross` — o "gross" gravado já é o crédito líquido do produtor
+// (gross − comissão afiliado − taxas Senderzz). Logo não há split adicional.
+//
+// Vários registros migrados do WordPress têm `net = 0` no banco porque a
+// migração só populou `gross`/`amount` e deixou `net` no default 0.00
+// (infra/scripts/migrate-wp-to-pg.py mapeou apenas {"net":"amount"} → coluna
+// `amount`, nunca para a coluna `net`). Para créditos COD sem taxa, o net
+// coerente é o próprio gross. NÃO mutamos o dado gravado — apenas projetamos
+// o valor coerente na leitura, mantendo tabela, KPIs e CSV consistentes.
+//
+// Só aplicamos o fallback a créditos (cod_received/refund). 'credit' e
+// 'manual_credit' removidos 2026-07-14: nunca existiram na tabela (fora do
+// CHECK constraint de type) — literais mortos.
+const codEffNetExpr = `CASE
+		WHEN COALESCE(t.net,0) = 0 AND COALESCE(t.fee,0) = 0 AND COALESCE(t.gross,0) > 0
+		     AND COALESCE(t.type,'') IN ('cod_received','refund')
+		THEN COALESCE(t.gross,0)
+		ELSE COALESCE(t.net,0)
+	END`
+
+// codBrutoExpr é o "Bruto" (principal, ANTES da taxa) usado nos agregados do
+// breakdown. Para saques o gross gravado já inclui a taxa (gross = -(principal
+// + fee), negativo), então somamos a fee de volta para exibir o principal;
+// créditos têm fee=0 e ficam intactos. Assim Bruto reflete o valor antes da taxa.
+const codBrutoExpr = `(COALESCE(t.gross,0) + CASE WHEN COALESCE(t.type,'') = 'withdrawal' THEN COALESCE(t.fee,0) ELSE 0 END)`
+
+// codLiquidoExpr é o "Líquido" (DEPOIS da taxa) = dinheiro real no bucket,
+// idêntico à fórmula de disponível/pendente: saque usa gross (débito total já
+// com a taxa), crédito usa o net efetivo. Garante a relação Líquido = Bruto −
+// Taxa no breakdown (a taxa de saque SUBTRAI, não soma).
+const codLiquidoExpr = `CASE WHEN COALESCE(t.type,'') = 'withdrawal' THEN COALESCE(t.gross,0) ELSE ` + codEffNetExpr + ` END`
 
 // clampCodPage clampa page e per_page em ranges seguros (default 1 / 50).
 // per_page máx 200 para evitar varredura acidental.
@@ -196,7 +226,7 @@ func (h *CodWalletTransactionsHandler) List(w http.ResponseWriter, r *http.Reque
 	userJoin := ""
 	nomeExpr := "''::text AS user_nome"
 	if hasUsers {
-		userJoin = `LEFT JOIN senderzz_portal_users p ON p.wp_user_id = t.user_id`
+		userJoin = `LEFT JOIN senderzz_portal_users p ON (p.wp_user_id = t.user_id OR (COALESCE(p.wp_user_id,0) <= 0 AND -p.id = t.user_id))`
 		nomeExpr = `COALESCE(NULLIF(p.nome,''), p.email, '') AS user_nome`
 	}
 
@@ -218,7 +248,7 @@ func (h *CodWalletTransactionsHandler) List(w http.ResponseWriter, r *http.Reque
 			t.id, t.user_id, ` + nomeExpr + `,
 			t.order_id,
 			COALESCE(t.type,''), COALESCE(t.status,''),
-			COALESCE(t.gross,0), COALESCE(t.fee,0), COALESCE(t.net,0),
+			COALESCE(t.gross,0), COALESCE(t.fee,0), ` + codEffNetExpr + `,
 			t.release_at::text, t.created_at::text,
 			COUNT(*) OVER() AS total_count
 		FROM sz_cod_wallet_transactions t
@@ -267,13 +297,15 @@ func (h *CodWalletTransactionsHandler) List(w http.ResponseWriter, r *http.Reque
 // A lista é estática (PHP não expõe esse enum) — refere-se aos valores que
 // o PHP grava em sz_cod_wallet_transactions.type.
 func (h *CodWalletTransactionsHandler) Types(w http.ResponseWriter, r *http.Request) {
+	// Espelha o CHECK constraint sz_cod_wallet_transactions_type_check do banco.
+	// (Antes esta lista trazia enums que não existem no schema PG: credit/
+	//  manual_credit/manual_debit — corrigido para o enum real.)
 	types := []string{
-		"credit",
+		"cod_received",
 		"withdrawal",
-		"manual_credit",
-		"manual_debit",
-		"refund",
 		"adjustment",
+		"refund",
+		"fee",
 	}
 	httpx.JSON(w, 200, map[string]any{"items": types})
 }
@@ -301,7 +333,7 @@ func (h *CodWalletTransactionsHandler) Stats(w http.ResponseWriter, r *http.Requ
 	hasUsers := h.tableExists(ctx, "senderzz_portal_users")
 	userJoin := ""
 	if hasUsers {
-		userJoin = `LEFT JOIN senderzz_portal_users p ON p.wp_user_id = t.user_id`
+		userJoin = `LEFT JOIN senderzz_portal_users p ON (p.wp_user_id = t.user_id OR (COALESCE(p.wp_user_id,0) <= 0 AND -p.id = t.user_id))`
 	}
 
 	conds, args := buildCodTxWhere(q, hasUsers, true)
@@ -313,7 +345,7 @@ func (h *CodWalletTransactionsHandler) Stats(w http.ResponseWriter, r *http.Requ
 	// totals — resumo global do escopo filtrado.
 	var totals CodWalletStatsTotals
 	_ = h.Pool.QueryRow(ctx,
-		`SELECT COUNT(*), COALESCE(SUM(t.gross),0), COALESCE(SUM(t.fee),0), COALESCE(SUM(t.net),0)
+		`SELECT COUNT(*), COALESCE(SUM(`+codBrutoExpr+`),0), COALESCE(SUM(t.fee),0), COALESCE(SUM(`+codLiquidoExpr+`),0)
 		 FROM sz_cod_wallet_transactions t
 		 `+userJoin+`
 		 `+where, args...).Scan(
@@ -323,9 +355,9 @@ func (h *CodWalletTransactionsHandler) Stats(w http.ResponseWriter, r *http.Requ
 	typeRows, err := h.Pool.Query(ctx,
 		`SELECT COALESCE(t.type,'') AS k,
 		        COUNT(*),
-		        COALESCE(SUM(t.gross),0),
+		        COALESCE(SUM(`+codBrutoExpr+`),0),
 		        COALESCE(SUM(t.fee),0),
-		        COALESCE(SUM(t.net),0)
+		        COALESCE(SUM(`+codLiquidoExpr+`),0)
 		 FROM sz_cod_wallet_transactions t
 		 `+userJoin+`
 		 `+where+`
@@ -354,9 +386,9 @@ func (h *CodWalletTransactionsHandler) Stats(w http.ResponseWriter, r *http.Requ
 	statusRows, err := h.Pool.Query(ctx,
 		`SELECT COALESCE(t.status,'') AS k,
 		        COUNT(*),
-		        COALESCE(SUM(t.gross),0),
+		        COALESCE(SUM(`+codBrutoExpr+`),0),
 		        COALESCE(SUM(t.fee),0),
-		        COALESCE(SUM(t.net),0)
+		        COALESCE(SUM(`+codLiquidoExpr+`),0)
 		 FROM sz_cod_wallet_transactions t
 		 `+userJoin+`
 		 `+where+`
@@ -406,7 +438,7 @@ func (h *CodWalletTransactionsHandler) ExportCSV(w http.ResponseWriter, r *http.
 	userJoin := ""
 	nomeExpr := "''::text AS user_nome, ''::text AS user_email"
 	if hasUsers {
-		userJoin = `LEFT JOIN senderzz_portal_users p ON p.wp_user_id = t.user_id`
+		userJoin = `LEFT JOIN senderzz_portal_users p ON (p.wp_user_id = t.user_id OR (COALESCE(p.wp_user_id,0) <= 0 AND -p.id = t.user_id))`
 		nomeExpr = `COALESCE(NULLIF(p.nome,''), p.email, '') AS user_nome,
 		             COALESCE(p.email, '') AS user_email`
 	}
@@ -422,7 +454,7 @@ func (h *CodWalletTransactionsHandler) ExportCSV(w http.ResponseWriter, r *http.
 			t.id, t.user_id, `+nomeExpr+`,
 			COALESCE(t.order_id::text, ''),
 			COALESCE(t.type,''), COALESCE(t.status,''),
-			COALESCE(t.gross,0), COALESCE(t.fee,0), COALESCE(t.net,0),
+			COALESCE(t.gross,0), COALESCE(t.fee,0), `+codEffNetExpr+`,
 			COALESCE(t.release_at::text, ''),
 			t.created_at::text
 		FROM sz_cod_wallet_transactions t
@@ -456,8 +488,8 @@ func (h *CodWalletTransactionsHandler) ExportCSV(w http.ResponseWriter, r *http.
 	cw.Comma = ';'
 
 	_ = cw.Write([]string{
-		"ID", "User ID", "Nome", "Email", "Order ID",
-		"Tipo", "Status", "Gross", "Fee", "Net",
+		"ID", "User ID", "Nome", "Email", "Pedido",
+		"Tipo", "Status", "Bruto", "Taxa", "Líquido",
 		"Liberação", "Criado em",
 	})
 

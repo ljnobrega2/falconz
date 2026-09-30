@@ -249,13 +249,7 @@ type AdminUser struct {
 
 // tableExists verifica presença de uma tabela no schema public.
 func (h *NotificacoesPwaHandler) tableExists(ctx context.Context, name string) bool {
-	var ok bool
-	_ = h.Pool.QueryRow(ctx,
-		`SELECT EXISTS (
-			SELECT FROM information_schema.tables
-			WHERE table_schema='public' AND table_name=$1
-		)`, name).Scan(&ok)
-	return ok
+	return tableExistsCached(ctx, h.Pool, name) // AUDIT-2026-06-18 Onda2 (go-infoschema-cache)
 }
 
 // getOptionJSON lê option e decodifica como JSON em out.
@@ -265,7 +259,7 @@ func (h *NotificacoesPwaHandler) getOptionJSON(ctx context.Context, key string, 
 	}
 	var raw string
 	if err := h.Pool.QueryRow(ctx,
-		`SELECT value FROM senderzz_options WHERE "key"=$1`, key).Scan(&raw); err != nil {
+		`SELECT value FROM senderzz_options WHERE name=$1`, key).Scan(&raw); err != nil {
 		return
 	}
 	if strings.TrimSpace(raw) == "" {
@@ -280,9 +274,9 @@ func (h *NotificacoesPwaHandler) upsertOption(ctx context.Context, key, value st
 		return nil
 	}
 	_, err := h.Pool.Exec(ctx,
-		`INSERT INTO senderzz_options ("key", value)
+		`INSERT INTO senderzz_options (name, value)
 		 VALUES ($1, $2)
-		 ON CONFLICT ("key") DO UPDATE SET value = EXCLUDED.value`, key, value)
+		 ON CONFLICT (name) DO UPDATE SET value = EXCLUDED.value`, key, value)
 	return err
 }
 

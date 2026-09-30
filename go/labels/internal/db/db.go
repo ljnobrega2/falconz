@@ -13,6 +13,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -35,6 +36,17 @@ func Connect(ctx context.Context) (*pgxpool.Pool, error) {
 	if err != nil {
 		return nil, fmt.Errorf("[db] erro ao parsear DATABASE_URL: %w", err)
 	}
+
+	// AUDIT PERF-pool-sizing-inconsistent (IMPROVEMENT-PLAN-2026-06-18 P1-07):
+	// tuning explícito do pool, igual a admin/portal. Antes este serviço usava o
+	// default do pgx (≈max(4,NumCPU) MaxConns, sem min/idle/healthcheck), o que em
+	// pico podia esfomear conexões no mesmo Postgres compartilhado. Só config de
+	// pool — não toca lógica de etiquetas/fila.
+	cfg.MaxConns = 20
+	cfg.MinConns = 2
+	cfg.MaxConnLifetime = 30 * time.Minute
+	cfg.MaxConnIdleTime = 5 * time.Minute
+	cfg.HealthCheckPeriod = 30 * time.Second
 
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {

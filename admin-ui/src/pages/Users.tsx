@@ -1,5 +1,8 @@
 import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { api } from '../api'
+import { useToast } from '../hooks/useToast'
+import { brDate } from '../utils/format'
 import FilterButton from '../components/FilterButton'
 import FilterTopPanel, {
   FilterField,
@@ -9,8 +12,10 @@ import FilterTopPanel, {
 } from '../components/FilterTopPanel'
 import TableSkeleton from '../components/TableSkeleton'
 import EmptyState from '../components/EmptyState'
+import FalkSelect from '../components/FalkSelect'
+import FalkDatePicker from '../components/FalkDatePicker'
 
-type User = { id: number; email: string; nome: string; role: string; ativo: boolean; plano: string; created_at: string }
+type User = { id: number; email: string; nome: string; role: string; ativo: boolean; created_at: string }
 
 function roleBadge(role: string) {
   const map: Record<string, string> = {
@@ -22,19 +27,16 @@ function roleBadge(role: string) {
   return <span className={`szv2-role-badge ${map[role] || 'role-default'}`}>{role}</span>
 }
 
-function planBadge(plano: string) {
-  const colors: Record<string, string> = { pro: 'var(--szv2-brand)', enterprise: 'var(--szv2-info)' }
-  const color = colors[plano] || 'var(--szv2-neutral)'
-  return <span style={{ fontFamily: 'var(--szv2-font-mono)', fontSize: '11px', color }}>{plano}</span>
-}
-
 const ROLES = ['admin', 'operator', 'producer', 'produtor', 'affiliate', 'afiliado']
 
 export default function Users() {
+  const navigate = useNavigate()
+  const showToast = useToast()
   const [items, setItems] = useState<User[]>([])
   const [loading, setLoading] = useState(true)
   const [total, setTotal] = useState(0)
   const [err, setErr] = useState('')
+  const [promoting, setPromoting] = useState<number | null>(null)
 
   // Filtros aplicados (disparam fetch).
   const [q, setQ] = useState('')
@@ -54,6 +56,7 @@ export default function Users() {
 
   async function load() {
     setLoading(true)
+    setErr('')
     try {
       const p = new URLSearchParams()
       if (q.trim()) p.set('q', q.trim())
@@ -71,6 +74,20 @@ export default function Users() {
 
   useEffect(() => { load() /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [q, role, ativo, dataIni, dataFim])
 
+  async function promoteToProducer(u: User) {
+    if (!confirm(`Promover ${u.nome || u.email} a produtor?`)) return
+    setPromoting(u.id)
+    try {
+      await api(`/users/${u.id}`, { method: 'PUT', body: JSON.stringify({ role: 'produtor' }) })
+      showToast('ok', `${u.nome || u.email} promovido a produtor.`)
+      await load()
+    } catch (e: any) {
+      showToast('err', e.message || 'Falha ao promover a produtor')
+    } finally {
+      setPromoting(null)
+    }
+  }
+
   // Aplica filtros client-side complementares (caso o backend ignore params).
   const qNorm = q.trim().toLowerCase()
   const filtered = items.filter(u => {
@@ -81,6 +98,8 @@ export default function Users() {
     if (role && u.role !== role) return false
     if (ativo === 'sim' && !u.ativo) return false
     if (ativo === 'nao' && u.ativo) return false
+    if (dataIni && u.created_at.slice(0, 10) < dataIni) return false
+    if (dataFim && u.created_at.slice(0, 10) > dataFim) return false
     return true
   })
 
@@ -115,6 +134,10 @@ export default function Users() {
           <p>{filtered.length} de {total} usuário(s)</p>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
+          {/* FEAT-DOC-CHANGE-2026-07-03: fila de trocas CPF⇄CNPJ p/ aprovação. */}
+          <button className="szv2-btn szv2-btn-secondary" onClick={() => navigate('/document-changes')}>
+            Trocas CPF/CNPJ
+          </button>
           <FilterButton active={activeCount > 0} count={activeCount} onClick={openPanel} />
         </div>
       </div>
@@ -130,12 +153,13 @@ export default function Users() {
           icon="👤"
           title={items.length === 0 ? 'Nenhum usuário cadastrado ainda.' : 'Nenhum usuário encontrado com esses filtros.'}
           description={items.length === 0
-            ? 'Cadastre o primeiro usuário do portal para começar.'
+            ? 'Usuários do portal são criados ao aprovar uma solicitação de onboarding.'
             : 'Ajuste o filtro de busca ou remova os filtros aplicados.'}
-          // TODO: substituir alert por modal de criação de usuário quando o endpoint existir.
+          // O serviço admin não expõe criação direta de usuário; o fluxo oficial é
+          // aprovar uma solicitação em "Solicitações de onboarding" (rota existente).
           action={items.length === 0 ? {
-            label: 'Cadastrar usuário',
-            onClick: () => alert('Em breve: cadastro de usuário pelo painel. Por enquanto, crie via "Solicitações de onboarding".'),
+            label: 'Ir para Solicitações de onboarding',
+            onClick: () => navigate('/onboarding-requests'),
           } : undefined}
         />
       ) : (
@@ -147,9 +171,9 @@ export default function Users() {
               <th>Email</th>
               <th>Nome</th>
               <th>Role</th>
-              <th>Plano</th>
               <th>Ativo</th>
               <th>Criado</th>
+              <th></th>
             </tr>
           </thead>
           <tbody>
@@ -159,14 +183,24 @@ export default function Users() {
                 <td style={{ fontWeight: 500 }}>{u.email}</td>
                 <td style={{ color: 'var(--szv2-text-soft)' }}>{u.nome}</td>
                 <td>{roleBadge(u.role)}</td>
-                <td>{planBadge(u.plano)}</td>
                 <td>
                   {u.ativo
                     ? <span className="sz-badge szv2-badge-success">Ativo</span>
                     : <span className="sz-badge szv2-badge-neutral">Inativo</span>}
                 </td>
                 <td style={{ color: 'var(--szv2-text-muted)', fontSize: '12px' }}>
-                  {u.created_at.slice(0, 10)}
+                  {brDate(u.created_at)}
+                </td>
+                <td>
+                  {u.role !== 'produtor' && (
+                    <button
+                      className="szv2-btn szv2-btn-secondary"
+                      disabled={promoting === u.id}
+                      onClick={() => promoteToProducer(u)}
+                    >
+                      {promoting === u.id ? 'Promovendo…' : 'Promover a produtor'}
+                    </button>
+                  )}
                 </td>
               </tr>
             ))}
@@ -183,43 +217,43 @@ export default function Users() {
         title="Filtros"
       >
         <FilterField label="Data inicial">
-          <input
-            type="date"
-            style={filterInputStyle}
+          <FalkDatePicker
             value={draftIni}
             max={draftFim || undefined}
-            onChange={e => setDraftIni(e.target.value)}
+            onChange={v => setDraftIni(v)}
+            placeholder="dd/mm/aaaa"
           />
         </FilterField>
         <FilterField label="Data final">
-          <input
-            type="date"
-            style={filterInputStyle}
+          <FalkDatePicker
             value={draftFim}
             min={draftIni || undefined}
-            onChange={e => setDraftFim(e.target.value)}
+            onChange={v => setDraftFim(v)}
+            placeholder="dd/mm/aaaa"
           />
         </FilterField>
         <FilterField label="Role">
-          <select
-            style={filterInputStyle}
+          <FalkSelect
             value={draftRole}
-            onChange={e => setDraftRole(e.target.value)}
-          >
-            <option value="">Todas roles</option>
-            {ROLES.map(r => <option key={r} value={r}>{r}</option>)}
-          </select>
+            onChange={v => setDraftRole(v)}
+            aria-label="Role"
+            options={[
+              { value: '', label: 'Todas roles' },
+              ...ROLES.map(r => ({ value: r, label: r })),
+            ]}
+          />
         </FilterField>
         <FilterField label="Ativo">
-          <select
-            style={filterInputStyle}
+          <FalkSelect
             value={draftAtivo}
-            onChange={e => setDraftAtivo(e.target.value)}
-          >
-            <option value="">Todos</option>
-            <option value="sim">Sim</option>
-            <option value="nao">Não</option>
-          </select>
+            onChange={v => setDraftAtivo(v)}
+            aria-label="Ativo"
+            options={[
+              { value: '', label: 'Todos' },
+              { value: 'sim', label: 'Sim' },
+              { value: 'nao', label: 'Não' },
+            ]}
+          />
         </FilterField>
         <FilterField label="Busca (email / nome)">
           <input

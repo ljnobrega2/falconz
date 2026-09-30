@@ -2,14 +2,18 @@
 package handlers
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
+	"sort"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/senderzz/motoboy-service/internal/auth"
+	"github.com/senderzz/motoboy-service/internal/geo"
 	"github.com/senderzz/motoboy-service/internal/httpx"
+	"github.com/senderzz/motoboy-service/internal/routing"
 )
 
 // brLocation é o fuso horário canônico da operação — América/São_Paulo.
@@ -47,6 +51,9 @@ func (h *LoteHandler) Lote(w http.ResponseWriter, r *http.Request) {
 	// "Hoje" em horário de Brasília.
 	hoje := time.Now().In(brLocation).Format("2006-01-02")
 
+	// Taxa de cartão (uma vez por request) para expor valor_cartao por pedido.
+	feePct := ccFeePct(r.Context(), h.Pool)
+
 	// NOTA DE MIGRAÇÃO: sz_motoboy_pedidos.created_at é DATETIME sem timezone no MySQL
 	// (gerado por sz_motoboy_now_mysql() que grava horário de Brasília como wall-clock).
 	// Após pgloader o tipo vira TIMESTAMP WITHOUT TIME ZONE contendo horário SP.
@@ -77,7 +84,10 @@ func (h *LoteHandler) Lote(w http.ResponseWriter, r *http.Request) {
 			updated_at
 		 FROM sz_motoboy_pedidos
 		WHERE motoboy_id = $1
-		  AND DATE(created_at) = $2::date
+		  AND (
+		    created_at::date = $2::date
+		    OR status NOT IN ('entregue','frustrado','cancelado')
+		  )
 		ORDER BY created_at ASC`,
 		mb.ID, hoje,
 	)
@@ -105,10 +115,18 @@ func (h *LoteHandler) Lote(w http.ResponseWriter, r *http.Request) {
 		DestLng        *float64 `json:"dest_lng"`
 		DestProduto    *string  `json:"dest_produto"`
 		ValorPedido    float64  `json:"valor_pedido"`
+		ValorCartao    float64  `json:"valor_cartao"`
 		ValorTaxa      float64  `json:"valor_taxa"`
 		ReagendadoPara *string  `json:"reagendado_para"`
 		CreatedAt      string   `json:"created_at"`
 		UpdatedAt      string   `json:"updated_at"`
+
+		// FEAT-ETA-WIRE: posição na rota otimizada (1..N, só p/ pedidos em
+		// rota/a caminho) + previsão de chegada "HH:MM". Sequencia=0 e ETA=nil
+		// quando o pedido não está em rota OU a roteirização não foi possível
+		// (sem GPS do motoboy / destinos sem geocode) — degrada graciosamente.
+		Sequencia int     `json:"sequencia"`
+		ETA       *string `json:"eta,omitempty"`
 	}
 
 	pedidos := []Pedido{}
@@ -131,6 +149,7 @@ func (h *LoteHandler) Lote(w http.ResponseWriter, r *http.Request) {
 		}
 		p.CreatedAt = createdAt.In(brLocation).Format("2006-01-02T15:04:05-03:00")
 		p.UpdatedAt = updatedAt.In(brLocation).Format("2006-01-02T15:04:05-03:00")
+		p.ValorCartao = valorCartao(p.ValorPedido, feePct)
 		pedidos = append(pedidos, p)
 	}
 	if err := rows.Err(); err != nil {
@@ -139,10 +158,135 @@ func (h *LoteHandler) Lote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// FEAT-ETA-WIRE: ROTEIRIZAÇÃO DA ROTA DO DIA.
+	//
+	// Os pedidos EM ROTA (em_rota / a_caminho) são as paradas ativas da entrega.
+	// Calcula a ordem ótima (nearest-neighbor a partir do GPS atual do motoboy) e
+	// a ETA acumulada por parada via internal/routing, atribui `sequencia` (1..N)
+	// e `eta` ("HH:MM") a cada um, e REORDENA o slice para que a lista já saia na
+	// ordem da rota. Pedidos fora de rota mantêm sequencia=0 e vão ao final na
+	// ordem original (created_at). Degrada graciosamente: sem GPS do motoboy ou
+	// sem destinos geocodados → nada muda (ordem original, sem sequencia/eta).
+	seqETA := h.rotaSequenciaETA(r.Context(), mb.ID)
+	if len(seqETA) > 0 {
+		for i := range pedidos {
+			if info, ok := seqETA[pedidos[i].ID]; ok {
+				pedidos[i].Sequencia = info.seq
+				if info.eta != "" {
+					eta := info.eta
+					pedidos[i].ETA = &eta
+				}
+			}
+		}
+		// Reordena: paradas roteirizadas primeiro (por sequencia asc), depois o
+		// resto na ordem original (created_at asc, preservada por sort estável).
+		sort.SliceStable(pedidos, func(a, b int) bool {
+			sa, sb := pedidos[a].Sequencia, pedidos[b].Sequencia
+			switch {
+			case sa > 0 && sb > 0:
+				return sa < sb
+			case sa > 0:
+				return true // a está na rota, b não → a antes
+			case sb > 0:
+				return false
+			default:
+				return false // ambos fora de rota → mantém ordem original
+			}
+		})
+	}
+
 	httpx.WriteOK(w, map[string]any{
 		"motoboy_id": mb.ID,
 		"data":       hoje,
 		"pedidos":    pedidos,
 		"total":      len(pedidos),
 	})
+}
+
+// rotaInfo agrega a posição na rota (1..N) e a ETA "HH:MM" de uma parada.
+type rotaInfo struct {
+	seq int
+	eta string
+}
+
+// rotaSequenciaETA calcula, para o motoboy informado, a SEQUÊNCIA otimizada e a
+// ETA de cada pedido EM ROTA (status em_rota / a_caminho) do dia.
+//
+// FEAT-ETA-WIRE: reusa o motor PURO internal/routing (mesmo usado no rastreio
+// público em tracking.go):
+//  1. lê o GPS atual do motoboy (sz_motoboys.ultimo_lat/ultimo_lng);
+//  2. coleta os pedidos em rota e geocoda o destino de cada um (cache em
+//     dest_lat/dest_lng), sob um orçamento de tempo único (~2,5s) para não
+//     segurar o request em cache frio (Nominatim é serializado a 1 req/s);
+//  3. ordena por nearest-neighbor a partir do GPS e estima a ETA acumulada.
+//
+// Retorna mapa vazio (não-nil) quando não há como roteirizar — sem GPS, sem
+// pedidos em rota, ou nenhum destino geocodável. O caller trata isso como
+// "sem roteirização" (ordem original, sem sequencia/eta), nunca como erro.
+func (h *LoteHandler) rotaSequenciaETA(ctx context.Context, motoboyID int64) map[int64]rotaInfo {
+	out := map[int64]rotaInfo{}
+
+	// 1. GPS atual do motoboy.
+	var mLat, mLng *float64
+	if err := h.Pool.QueryRow(ctx,
+		`SELECT ultimo_lat, ultimo_lng FROM sz_motoboys WHERE id=$1`, motoboyID,
+	).Scan(&mLat, &mLng); err != nil || mLat == nil || mLng == nil {
+		return out // sem GPS → sem roteirização (degrada)
+	}
+
+	// 2. Pedidos em rota do dia. Coleta os IDs antes de geocodar para não segurar
+	// a conexão do pool durante chamadas de rede.
+	rows, err := h.Pool.Query(ctx, `
+		SELECT id FROM sz_motoboy_pedidos
+		WHERE motoboy_id=$1 AND status IN ('em_rota','a_caminho')`,
+		motoboyID,
+	)
+	if err != nil {
+		slog.Warn("[lote] falha ao listar pedidos em rota p/ roteirização", "motoboy_id", motoboyID, "err", err)
+		return out
+	}
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if rows.Scan(&id) == nil {
+			ids = append(ids, id)
+		}
+	}
+	rows.Close()
+	if len(ids) == 0 {
+		return out
+	}
+
+	// Orçamento único de geocoding (~2,5s) — mesma política de tracking.go.
+	geoCtx, cancel := context.WithTimeout(ctx, 2500*time.Millisecond)
+	defer cancel()
+
+	stops := make([]routing.Stop, 0, len(ids))
+	for _, id := range ids {
+		if geoCtx.Err() != nil {
+			break // orçamento esgotado → para de tentar cache frio
+		}
+		lat, lng, gerr := geo.GeocodePedido(geoCtx, h.Pool, id)
+		if gerr != nil {
+			continue // parada sem coordenada não entra na rota
+		}
+		stops = append(stops, routing.Stop{PedidoID: id, Lat: lat, Lng: lng})
+	}
+	if len(stops) == 0 {
+		return out
+	}
+
+	// 3. Ordena (nearest-neighbor) e estima ETA acumulada por parada.
+	loc := brLocation
+	agora := time.Now().In(loc)
+	ordenada := routing.OrdenarRota(*mLat, *mLng, stops)
+	etaMap := routing.EstimarETA(*mLat, *mLng, ordenada, agora, 0, 0)
+	for i, s := range ordenada {
+		info := rotaInfo{seq: i + 1}
+		if t, ok := etaMap[s.PedidoID]; ok {
+			info.eta = t.In(loc).Format("15:04")
+		}
+		out[s.PedidoID] = info
+	}
+	return out
 }

@@ -10,6 +10,15 @@ require (
 	github.com/shopspring/decimal v1.3.1
 )
 
+require (
+	github.com/jackc/pgpassfile v1.0.0 // indirect
+	github.com/jackc/pgservicefile v0.0.0-20221227161230-091c0ba34f0a // indirect
+	github.com/jackc/puddle/v2 v2.2.1 // indirect
+	golang.org/x/crypto v0.17.0 // indirect
+	golang.org/x/sync v0.1.0 // indirect
+	golang.org/x/text v0.14.0 // indirect
+)
+
 // Nota: asynq declarado para Fase 3 mas sem workers implementados ainda.
 // Executar `go mod tidy` após implementar o primeiro job em internal/jobs/.
 // Até lá, tidy irá remover asynq — readicionar manualmente se necessário antes de jobs.

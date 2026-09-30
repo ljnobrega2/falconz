@@ -50,13 +50,7 @@ type transacaoRow struct {
 }
 
 func (h *TpcTransacoesHandler) tableExists(ctx context.Context, name string) bool {
-	var ok bool
-	_ = h.Pool.QueryRow(ctx,
-		`SELECT EXISTS (
-			SELECT FROM information_schema.tables
-			WHERE table_schema='public' AND table_name=$1
-		)`, name).Scan(&ok)
-	return ok
+	return tableExistsCached(ctx, h.Pool, name) // AUDIT-2026-06-18 Onda2 (go-infoschema-cache)
 }
 
 // List — GET /tpc-transacoes?user_id=&tipo=&status=&data_ini=&data_fim=&page=1&per_page=20
@@ -108,12 +102,23 @@ func (h *TpcTransacoesHandler) List(w http.ResponseWriter, r *http.Request) {
 
 	// Cláusula WHERE compartilhada entre SELECT e COUNT — placeholders idênticos.
 	// $1=user_id (0=all), $2=tipo (''=all), $3=status (''=all), $4=data_ini, $5=data_fim.
+	//
+	// ISOLAMENTO COD (FALK): esta tela é EXCLUSIVA de Expedição (frete pré-pago).
+	// Transações COD (Cash-on-Delivery) NÃO podem aparecer aqui — o dono pediu COD
+	// fora das telas de Expedição. As linhas COD vazaram para tpc_transacoes com
+	// referencia 'sz_cod_produtor_<order>' e descricao "Venda COD Senderzz ...".
+	// Discriminador robusto = referencia LIKE 'sz_cod%' (estruturado, 27/27 no prod);
+	// descricao ILIKE '%cod%' como cinto-e-suspensório. referencia é NULLABLE, então
+	// tratamos NULL como NÃO-COD (linha legítima de frete) explicitamente. As linhas
+	// COD continuam visíveis nas telas próprias de COD (sz_cod_*, Transações COD).
 	whereClause := `
 		WHERE ($1 = 0 OR t.user_id = $1)
 		  AND ($2 = '' OR t.tipo = $2)
 		  AND ($3 = '' OR t.status = $3)
-		  AND ($4 = '' OR t.created_at >= ($4 || ' 00:00:00')::timestamp)
-		  AND ($5 = '' OR t.created_at <= ($5 || ' 23:59:59')::timestamp)`
+		  AND ($4 = '' OR t.created_at >= ($4::date)::timestamp AT TIME ZONE 'America/Sao_Paulo')
+		  AND ($5 = '' OR t.created_at <= (($5::date + 1)::timestamp AT TIME ZONE 'America/Sao_Paulo' - interval '1 second'))
+		  AND (t.referencia IS NULL OR t.referencia NOT LIKE 'sz_cod%')
+		  AND COALESCE(t.descricao, '') NOT ILIKE '%cod%'`
 
 	// SELECT principal — usa LEFT JOIN com portal_users quando disponível.
 	var sqlList string
@@ -132,7 +137,7 @@ func (h *TpcTransacoesHandler) List(w http.ResponseWriter, r *http.Request) {
 			       COALESCE(t.status, 'confirmado'),
 			       t.created_at::text
 			FROM tpc_transacoes t
-			LEFT JOIN senderzz_portal_users u ON u.wp_user_id = t.user_id` +
+			LEFT JOIN senderzz_portal_users u ON u.id = t.user_id` +
 			whereClause + `
 			ORDER BY t.created_at DESC, t.id DESC
 			LIMIT $6 OFFSET $7`
@@ -242,14 +247,16 @@ func (h *TpcTransacoesHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 3) Recalcula saldo via soma dos confirmados (credito - debito).
+	// 3) Recalcula saldo via soma dos confirmados (credito - reserva).
 	//    Segue a spec da tarefa: status='confirmado', sem exclusão de admin allocation
 	//    (a UI já filtra a visualização; o saldo refletido aqui é o real do ledger).
+	// AUDIT-2026-07-28: tipo='debito' nunca existe em tpc_transacoes (só 'credito'
+	// e 'reserva') — subtração virava sempre 0, saldo recalculado ficava inflado.
 	var novoSaldo float64
 	err = tx.QueryRow(ctx,
 		`SELECT
 		   COALESCE(SUM(CASE WHEN tipo='credito' THEN valor ELSE 0 END), 0)
-		 - COALESCE(SUM(CASE WHEN tipo='debito'  THEN valor ELSE 0 END), 0)
+		 - COALESCE(SUM(CASE WHEN tipo='reserva' THEN valor ELSE 0 END), 0)
 		 FROM tpc_transacoes
 		 WHERE user_id = $1 AND status = 'confirmado'`, userID).Scan(&novoSaldo)
 	if err != nil {

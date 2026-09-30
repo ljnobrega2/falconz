@@ -20,6 +20,10 @@
 }
 .sz-dashboard-v2 .szv2-card-head h2 { margin: 0; font-size: var(--szv2-text-lg); font-weight: 700; line-height: 1.2; }
 .sz-dashboard-v2 .szv2-card-head > div { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1; min-width: 0; }
+/* Divs de AÇÕES (não o título, que é o 1º filho) ficam horizontais e com largura
+   natural — antes herdavam column+flex:1 e empilhavam os botões verticalmente em
+   largura total. Pedido do dono: botões lado a lado, tamanho padrão. */
+.sz-dashboard-v2 .szv2-card-head > div:not(:first-child) { flex-direction: row; align-items: center; flex: 0 0 auto; gap: 8px; flex-wrap: wrap; }
 .sz-dashboard-v2 .szv2-card-head > div h2 { margin: 0; font-size: var(--szv2-text-lg); font-weight: 700; line-height: 1.2; }
 .sz-dashboard-v2 .szv2-card-head > div .szv2-card-sub { margin: 0; font-size: var(--szv2-text-sm); color: var(--szv2-text-muted); line-height: 1.4; }
 
@@ -135,6 +139,66 @@
 .sz-dashboard-v2 .szv2-input:focus,
 .sz-dashboard-v2 .szv2-select:focus { border-color: var(--szv2-brand); outline: none; box-shadow: var(--szv2-shadow-focus); }
 .sz-dashboard-v2 .szv2-input::placeholder { color: var(--szv2-text-faint); }
+
+/* ── <select> nativo — identidade FALK (regra global) ──────────────
+ * Estiliza TODO <select> nativo do admin sem precisar editar cada tela.
+ * Exclui os que já têm classe própria (.szv2-select / .szv2-input) para
+ * não sobrescrever estilos existentes. O opt-in .falk-select força o
+ * estilo mesmo em selects com outras classes. Tokens reutilizados →
+ * funciona em tema claro e [data-theme="dark"] automaticamente.
+ * Seta custom (SVG chevron) muda de cor conforme o tema.            */
+.sz-dashboard-v2 select:not(.szv2-select):not(.szv2-input),
+.sz-dashboard-v2 select.falk-select {
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+  height: 40px;
+  padding: 0 36px 0 var(--szv2-space-3);
+  background-color: var(--szv2-surface);
+  border: 1px solid var(--szv2-border);
+  border-radius: var(--szv2-radius-md);
+  color: var(--szv2-text);
+  font: inherit;
+  line-height: 1.2;
+  cursor: pointer;
+  /* chevron escuro para o tema claro */
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2364748B' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  background-size: 12px 12px;
+  transition: border-color var(--szv2-transition), box-shadow var(--szv2-transition);
+}
+.sz-dashboard-v2 select:not(.szv2-select):not(.szv2-input):hover,
+.sz-dashboard-v2 select.falk-select:hover {
+  border-color: var(--szv2-border-strong);
+}
+.sz-dashboard-v2 select:not(.szv2-select):not(.szv2-input):focus,
+.sz-dashboard-v2 select:not(.szv2-select):not(.szv2-input):focus-visible,
+.sz-dashboard-v2 select.falk-select:focus,
+.sz-dashboard-v2 select.falk-select:focus-visible {
+  border-color: var(--szv2-brand);
+  outline: none;
+  box-shadow: var(--szv2-shadow-focus);
+}
+.sz-dashboard-v2 select:not(.szv2-select):not(.szv2-input):disabled,
+.sz-dashboard-v2 select.falk-select:disabled {
+  background-color: var(--szv2-surface-alt);
+  color: var(--szv2-text-faint);
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+/* chevron claro para o tema escuro */
+.sz-dashboard-v2[data-theme="dark"] select:not(.szv2-select):not(.szv2-input),
+.sz-dashboard-v2[data-theme="dark"] select.falk-select {
+  background-color: var(--szv2-graphite2, var(--szv2-surface));
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2394A3B8' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+}
+/* opções legíveis no dark (browsers que herdam do select) */
+.sz-dashboard-v2[data-theme="dark"] select:not(.szv2-select):not(.szv2-input) option,
+.sz-dashboard-v2[data-theme="dark"] select.falk-select option {
+  background-color: var(--szv2-surface);
+  color: var(--szv2-text);
+}
 
 /* ── Barra de filtros ────────────────────────────────────────── */
 .sz-dashboard-v2 .szv2-filter-bar {
@@ -260,6 +324,61 @@
 .sz-dashboard-v2 .szv2-toast-danger  { border-left-color: var(--szv2-danger); }
 .sz-dashboard-v2 .szv2-toast-warning { border-left-color: var(--szv2-warning); }
 .sz-dashboard-v2 .szv2-toast-info    { border-left-color: var(--szv2-info); }
+/* AUDIT-2026-06-18 Onda3 — layout interno do toast com botão fechar */
+.sz-dashboard-v2 .szv2-toast {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--szv2-space-2);
+}
+.sz-dashboard-v2 .szv2-toast-msg {
+  flex: 1;
+  line-height: 1.5;
+}
+.sz-dashboard-v2 .szv2-toast-close {
+  flex-shrink: 0;
+  background: transparent;
+  border: none;
+  color: var(--szv2-text-muted);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0 2px;
+  line-height: 1;
+}
+.sz-dashboard-v2 .szv2-toast-close:hover {
+  color: var(--szv2-text);
+}
+/* Toasts renderizados via portal ficam dentro de .sz-dashboard-v2 na DOM */
+.szv2-toasts {
+  position: fixed;
+  top: var(--szv2-space-5, 20px);
+  right: var(--szv2-space-5, 20px);
+  display: flex;
+  flex-direction: column;
+  gap: var(--szv2-space-2, 8px);
+  z-index: var(--szv2-z-toast, 1000);
+  width: 320px;
+  max-width: calc(100vw - 40px);
+  pointer-events: none;
+}
+.szv2-toasts .szv2-toast {
+  pointer-events: auto;
+  background: var(--szv2-surface, #fff);
+  border: 1px solid var(--szv2-border, #e6eaf0);
+  border-left-width: 3px;
+  border-left-color: var(--szv2-neutral, #64748b);
+  border-radius: var(--szv2-radius-md, 10px);
+  box-shadow: var(--szv2-shadow-float, 0 12px 30px rgba(15,23,42,.1));
+  padding: var(--szv2-space-3, 12px) var(--szv2-space-4, 16px);
+  font-size: var(--szv2-text-sm, 12px);
+  color: var(--szv2-text, #111827);
+  display: flex; align-items: flex-start;
+  justify-content: space-between; gap: 8px;
+}
+.szv2-toasts .szv2-toast-success { border-left-color: var(--szv2-success, #16a34a); }
+.szv2-toasts .szv2-toast-danger  { border-left-color: var(--szv2-danger, #dc2626); }
+.szv2-toasts .szv2-toast-warning { border-left-color: var(--szv2-warning, #d97706); }
+.szv2-toasts .szv2-toast-info    { border-left-color: var(--szv2-info, #2563eb); }
 
 /* ── Nota de fase (aviso discreto no rodapé da seção) ────────── */
 .sz-dashboard-v2 .szv2-note {
@@ -287,3 +406,27 @@
 .szv2-fw-700 { font-weight: 700; }
 .szv2-fw-600 { font-weight: 600; }
 .szv2-w-full { width: 100%; }
+
+/* ── A11y: foco visível por teclado (não afeta clique do mouse) ──────────
+ * Os inputs/selects já tinham :focus com ring; faltava um anel consistente
+ * para botões, links e linhas/células clicáveis navegadas via Tab. Usamos
+ * :focus-visible para NÃO mostrar o anel em clique de mouse, só no teclado.
+ * Escopo .sz-dashboard-v2 para não vazar para o login/legado.                */
+.sz-dashboard-v2 a:focus-visible,
+.sz-dashboard-v2 button:focus-visible,
+.sz-dashboard-v2 [role="button"]:focus-visible,
+.sz-dashboard-v2 [tabindex]:focus-visible,
+.sz-dashboard-v2 summary:focus-visible,
+.sz-dashboard-v2 .szv2-btn:focus-visible {
+  outline: 2px solid var(--szv2-brand);
+  outline-offset: 2px;
+  border-radius: var(--szv2-radius-sm);
+}
+/* Inputs/selects: mantém o ring por box-shadow também no teclado. */
+.sz-dashboard-v2 .szv2-input:focus-visible,
+.sz-dashboard-v2 .szv2-select:focus-visible {
+  outline: 2px solid var(--szv2-brand);
+  outline-offset: 1px;
+}
+/* Responsividade (kpi-grid → 1col, section-head empilhado, padding lateral)
+ * já está coberta no @media (max-width:980px) de layout.css. Não duplicar. */

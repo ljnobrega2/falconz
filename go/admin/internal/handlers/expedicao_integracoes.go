@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/senderzz/admin-service/internal/httpx"
 )
@@ -37,13 +38,7 @@ const (
 
 // tableExists verifica presença de uma tabela no schema public.
 func (h *ExpedicaoIntegracoesHandler) tableExists(ctx context.Context, name string) bool {
-	var ok bool
-	_ = h.Pool.QueryRow(ctx,
-		`SELECT EXISTS (
-			SELECT FROM information_schema.tables
-			WHERE table_schema='public' AND table_name=$1
-		)`, name).Scan(&ok)
-	return ok
+	return tableExistsCached(ctx, h.Pool, name) // AUDIT-2026-06-18 Onda2 (go-infoschema-cache)
 }
 
 // getOptionRaw lê value bruto da option (string). Tabela ausente → "".
@@ -53,7 +48,7 @@ func (h *ExpedicaoIntegracoesHandler) getOptionRaw(ctx context.Context, key stri
 	}
 	var raw string
 	err := h.Pool.QueryRow(ctx,
-		`SELECT value FROM senderzz_options WHERE "key"=$1`, key).Scan(&raw)
+		`SELECT value FROM senderzz_options WHERE name=$1`, key).Scan(&raw)
 	if err != nil {
 		return ""
 	}
@@ -66,9 +61,9 @@ func (h *ExpedicaoIntegracoesHandler) upsertOption(ctx context.Context, key, val
 		return nil
 	}
 	_, err := h.Pool.Exec(ctx,
-		`INSERT INTO senderzz_options ("key", value)
+		`INSERT INTO senderzz_options (name, value)
 		 VALUES ($1, $2)
-		 ON CONFLICT ("key") DO UPDATE SET value = EXCLUDED.value`, key, value)
+		 ON CONFLICT (name) DO UPDATE SET value = EXCLUDED.value`, key, value)
 	return err
 }
 
@@ -127,9 +122,15 @@ type MarkupResponse struct {
 }
 
 // ShippingClass — item de classe de entrega (para o dropdown do modal).
+// ProducerName — nome do produtor dono do produto casado por nome (sz_products.nome =
+// senderzz_shipping_classes.name, case-insensitive). Não há FK real entre as tabelas
+// (vínculo por convenção de nome); "" quando nenhum produto casa. Como o casamento é
+// pelo NOME BASE (não por variação), um produto com múltiplas variações (ex.: "Egipzya"
+// Sérum/Espuma) casa com a MESMA classe — a config já vale pra todas as variações.
 type ShippingClass struct {
-	ID   int64  `json:"id"`
-	Name string `json:"name"`
+	ID           int64  `json:"id"`
+	Name         string `json:"name"`
+	ProducerName string `json:"producer_name"`
 }
 
 // PreviewRequest body do POST /expedicao/markup/preview.
@@ -227,45 +228,66 @@ func (h *ExpedicaoIntegracoesHandler) readRules(ctx context.Context) map[int64]M
 	return out
 }
 
-// resolveClassName busca o nome da classe; retorna "Classe #N" se não houver tabela ou linha.
+// resolveClassName busca o nome do produto; retorna "Produto #N" se não houver linha.
+// AUDIT-2026-07-17: markup passou a ser configurado POR PRODUTO (sz_products.id),
+// não mais por "classe de entrega" solta (senderzz_shipping_classes foi abandonada
+// como fonte — ver listShippingClasses).
 func (h *ExpedicaoIntegracoesHandler) resolveClassName(ctx context.Context, classID int64) string {
-	fallback := fmt.Sprintf("Classe #%d", classID)
-	if !h.tableExists(ctx, "senderzz_shipping_classes") {
-		return fallback
-	}
+	fallback := fmt.Sprintf("Produto #%d", classID)
 	var name string
 	err := h.Pool.QueryRow(ctx,
-		`SELECT COALESCE(name,'') FROM senderzz_shipping_classes WHERE id=$1`, classID).Scan(&name)
+		`SELECT nome FROM sz_products WHERE id = $1`, classID).Scan(&name)
 	if err != nil || strings.TrimSpace(name) == "" {
 		return fallback
 	}
 	return name
 }
 
-// listShippingClasses lista todas as classes disponíveis.
-// Tabela ausente → slice vazio (degradação graciosa).
+// listShippingClasses lista TODOS os produtos existentes (todas as variações,
+// cada linha = 1 config individual), com o nome do produtor ao lado. Substitui a
+// antiga tabela solta senderzz_shipping_classes (sem produtor/vínculo real).
 func (h *ExpedicaoIntegracoesHandler) listShippingClasses(ctx context.Context) []ShippingClass {
 	out := []ShippingClass{}
-	if !h.tableExists(ctx, "senderzz_shipping_classes") {
-		return out
-	}
 	rows, err := h.Pool.Query(ctx,
-		`SELECT id, COALESCE(name,'') FROM senderzz_shipping_classes ORDER BY name ASC, id ASC`)
+		`SELECT sp.id, sp.nome, COALESCE(p.name, '')
+		   FROM sz_products sp
+		   LEFT JOIN senderzz_portal_users p ON p.id = sp.produtor_id
+		  WHERE 1=1`+productListableFilter+`
+		  ORDER BY sp.nome ASC, sp.id ASC`)
 	if err != nil {
 		return out
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var c ShippingClass
-		if err := rows.Scan(&c.ID, &c.Name); err != nil {
+		if err := rows.Scan(&c.ID, &c.Name, &c.ProducerName); err != nil {
 			continue
 		}
 		if strings.TrimSpace(c.Name) == "" {
-			c.Name = fmt.Sprintf("Classe #%d", c.ID)
+			c.Name = fmt.Sprintf("Produto #%d", c.ID)
 		}
 		out = append(out, c)
 	}
 	return out
+}
+
+// clearProductMarkupRule remove só a REGRA de markup do produto (volta a herdar o
+// padrão global) — NÃO apaga o produto do catálogo. Idempotente.
+func (h *ExpedicaoIntegracoesHandler) clearProductMarkupRule(ctx context.Context, id int64) error {
+	rules := h.readRules(ctx)
+	if _, ok := rules[id]; !ok {
+		return nil
+	}
+	delete(rules, id)
+	rulesMap := map[string]MarkupPair{}
+	for cid, pair := range rules {
+		rulesMap[strconv.FormatInt(cid, 10)] = pair
+	}
+	b, err := json.Marshal(rulesMap)
+	if err != nil {
+		return err
+	}
+	return h.upsertOption(ctx, expIntOptRules, string(b))
 }
 
 // ----- GET /expedicao/markup --------------------------------------------
@@ -406,6 +428,23 @@ func (h *ExpedicaoIntegracoesHandler) GetShippingClasses(w http.ResponseWriter, 
 	ctx := r.Context()
 	items := h.listShippingClasses(ctx)
 	httpx.JSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+// ----- DELETE /expedicao/shipping-classes/{id} --------------------------
+
+// DeleteShippingClass remove a regra de markup custom do produto (volta ao padrão
+// global) — NÃO exclui o produto do catálogo.
+func (h *ExpedicaoIntegracoesHandler) DeleteShippingClass(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil || id <= 0 {
+		httpx.Err(w, http.StatusBadRequest, "bad_request", "id inválido")
+		return
+	}
+	if err := h.clearProductMarkupRule(r.Context(), id); err != nil {
+		httpx.Err(w, http.StatusInternalServerError, "db_error", err.Error())
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 // ----- POST /expedicao/markup/preview -----------------------------------

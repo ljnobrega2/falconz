@@ -41,6 +41,61 @@ type AffiliatesHandler struct {
 	Pool *pgxpool.Pool
 }
 
+// inviteTTL é o prazo de validade de um convite de afiliação: 7 dias.
+// Extraído como constante de pacote (sem mudança de comportamento — antes era o
+// literal inline `7 * 24 * time.Hour` em CreateInvite) para travar o prazo contra
+// regressão acidental via teste (TestInviteTTLCanonico), no mesmo espírito de
+// takePctAfiliado. ListInvites/RevokeInvite continuam usando o critério
+// expires_at > NOW() no SQL — esta constante define a janela na criação.
+const inviteTTL = 7 * 24 * time.Hour
+
+// SEC-AFFILIATES: o REDEEM canônico de convite (resgate → cria vínculo em
+// senderzz_affiliates) vive NO PORTAL (PHP), não neste serviço. Decisão e justificativa:
+//
+//  1. A tabela senderzz_affiliate_invites (070-affiliates.sql) NÃO tem coluna produto_id,
+//     mas senderzz_affiliates exige produto_id NOT NULL e o próprio Request() rejeita
+//     produto_id == 0. Logo, transformar um convite em vínculo exige resolver o produto
+//     a partir de regras de negócio que pertencem ao portal (produto/oferta do produtor)
+//     — não há mapeamento convite→produto neste schema. Inserir produto_id=0 criaria uma
+//     linha que viola o invariante do sistema (algo que nenhum Request() consegue gerar).
+//  2. Durante o strangler-fig, manter UM único write-path canônico para o redeem é a
+//     escolha defensiva: duplicar a lógica de uso-único aqui arriscaria divergência
+//     (anti-auto-afiliação, escolha de produto, criação de conta) com o PHP.
+//  3. go/affiliates permanece dono de CreateInvite/ListInvites/RevokeInvite (token, prazo,
+//     ownership) — apenas o resgate fica no portal. Quando o cutover mover o redeem para Go,
+//     a forma consistente é: UPDATE senderzz_affiliate_invites SET used_at=NOW()
+//     WHERE token=$1 AND used_at IS NULL AND expires_at>NOW() RETURNING produtor_id (uso
+//     único atômico), barrar auto-afiliação (produtor_id != afiliado), e
+//     INSERT senderzz_affiliates ... WHERE NOT EXISTS — porém só após a tabela ganhar
+//     produto_id (ou uma regra explícita de resolução de produto). Até lá, NÃO adicionamos
+//     redeem aqui para não gravar vínculo inconsistente.
+
+// SEC-AFFILIATES: valida que um percentual de comissão está no intervalo [0,100].
+// O schema usa DECIMAL(5,2) SEM CHECK (aceitaria 999.99) e Approve() gravava o pct
+// informado pelo cliente sem qualquer limite — esta guarda fecha esse vão (CWE-20).
+// Retorna false quando o valor é negativo ou maior que 100.
+func comissaoPctValida(pct decimal.Decimal) bool {
+	return pct.GreaterThanOrEqual(decimal.Zero) &&
+		pct.LessThanOrEqual(decimal.NewFromInt(100))
+}
+
+// takePctAfiliado é o "take" canônico da Senderzz sobre a comissão BRUTA do afiliado:
+// 4,99% (ver project_commission_formula / senderzz_revenue). O valor canônico é
+// originado e assinado upstream (PHP + triggers Postgres) — aqui ele serve apenas como
+// constante de referência para travar a fórmula contra regressão acidental.
+var takePctAfiliado = decimal.RequireFromString("4.99")
+
+// comissaoLiquida calcula a comissão líquida do afiliado = bruta − (bruta × 4,99%),
+// arredondada a 2 casas (mesma precisão de senderzz_affiliate_commissions.valor).
+//
+// SEC-AFFILIATES: NÃO é o caminho de produção (a comissão chega pronta via double-write,
+// ver parseCommissionValor em internal.go) — é um pino de regressão da TAXA canônica de
+// 4,99%. Se alguém alterar a alíquota sem intenção, o teste TestComissaoLiquida quebra.
+func comissaoLiquida(bruta decimal.Decimal) decimal.Decimal {
+	take := bruta.Mul(takePctAfiliado).Div(decimal.NewFromInt(100))
+	return bruta.Sub(take).Round(2)
+}
+
 // ── GET /affiliates ───────────────────────────────────────────────────────────
 
 // List retorna os vínculos do usuário autenticado.
@@ -66,6 +121,13 @@ func (h *AffiliatesHandler) List(w http.ResponseWriter, r *http.Request) {
 	base := `SELECT id, produtor_id, afiliado_id, produto_id, status, comissao_pct, created_at, updated_at
 	           FROM senderzz_affiliates`
 
+	// SEC-IDOR-affiliate-list-endpoints: escopo SEMPRE pelo dono da sessão (user.ID,
+	// extraído do JWT/sessão), nunca por id arbitrário do path/query. Não aceitamos
+	// produtor_id/afiliado_id do cliente. O branch por role apenas escolhe a COLUNA
+	// de propriedade (produtor_id OU afiliado_id) — ambas comparadas a user.ID; trocar
+	// de role só alterna entre "linhas onde sou produtor" e "linhas onde sou afiliado",
+	// ambas legítimas do próprio usuário. NUNCA fazer OR-join (regra de id-space do
+	// CLAUDE.md): afiliado=wp_user_id, produtor=wp_user_id nesta tabela (070-affiliates.sql).
 	if user.Role == "produtor" {
 		if statusFilter != "" {
 			rows, err = h.Pool.Query(r.Context(),
@@ -260,6 +322,12 @@ func (h *AffiliatesHandler) Approve(w http.ResponseWriter, r *http.Request) {
 	// Determina percentual de comissão (usa valor informado ou mantém o atual).
 	newPct := currentPct
 	if req.ComissaoPct != nil {
+		// SEC-AFFILIATES: valida o intervalo 0..100 antes de gravar — o schema não
+		// tem CHECK e este era o único ponto onde o cliente injeta o pct.
+		if !comissaoPctValida(*req.ComissaoPct) {
+			httpx.WriteErr(w, http.StatusBadRequest, "comissao_pct deve estar entre 0 e 100")
+			return
+		}
 		newPct = req.ComissaoPct.StringFixed(2)
 	}
 
@@ -345,6 +413,9 @@ func (h *AffiliatesHandler) ListInvites(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// SEC-IDOR-affiliate-list-endpoints: filtra exclusivamente por produtor_id=user.ID
+	// (dono da sessão). Sem parâmetro de produtor no path/query → não há como listar
+	// convites de outro produtor.
 	rows, err := h.Pool.Query(r.Context(), `
 		SELECT id, email, token, expires_at, used_at, created_at
 		  FROM senderzz_affiliate_invites
@@ -412,7 +483,7 @@ func (h *AffiliatesHandler) CreateInvite(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	expiresAt := time.Now().UTC().Add(7 * 24 * time.Hour)
+	expiresAt := time.Now().UTC().Add(inviteTTL)
 
 	var id int64
 	err = h.Pool.QueryRow(r.Context(), `
@@ -516,6 +587,9 @@ func (h *AffiliatesHandler) ListCommissions(w http.ResponseWriter, r *http.Reque
 	           FROM senderzz_affiliate_commissions c
 	           JOIN senderzz_affiliates a ON a.id = c.affiliate_id`
 
+	// SEC-IDOR-affiliate-list-endpoints: o JOIN nunca afrouxa o escopo — o WHERE sempre
+	// fixa a.produtor_id=user.ID (produtor) OU a.afiliado_id=user.ID (afiliado), ambos
+	// o dono da sessão. Nenhum id de produtor/afiliado é aceito do path/query.
 	if user.Role == "produtor" {
 		if statusFilter != "" {
 			rows, err = h.Pool.Query(r.Context(),
@@ -593,6 +667,8 @@ func (h *AffiliatesHandler) CommissionsSummary(w http.ResponseWriter, r *http.Re
 	           FROM senderzz_affiliate_commissions c
 	           JOIN senderzz_affiliates a ON a.id = c.affiliate_id`
 
+	// SEC-IDOR-affiliate-list-endpoints: resumo agregado também escopado por user.ID
+	// da sessão (produtor_id OU afiliado_id) — sem aceitar id de terceiro do cliente.
 	if user.Role == "produtor" {
 		rows, err = h.Pool.Query(r.Context(),
 			base+` WHERE a.produtor_id=$1 GROUP BY c.status`, user.ID)
@@ -637,6 +713,9 @@ func (h *AffiliatesHandler) ListLinks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// SEC-IDOR-affiliate-list-endpoints: o JOIN com senderzz_affiliates fixa
+	// a.afiliado_id=user.ID (dono da sessão), impedindo listar links de outro afiliado/
+	// produtor. Nenhum affiliate_id é aceito do path/query nesta listagem.
 	rows, err := h.Pool.Query(r.Context(), `
 		SELECT l.id, l.affiliate_id, l.link_token, l.produto_id, l.active, l.clicks, l.created_at
 		  FROM senderzz_affiliate_links l

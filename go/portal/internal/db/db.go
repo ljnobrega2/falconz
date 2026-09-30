@@ -16,6 +16,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -37,6 +39,24 @@ func Connect(ctx context.Context) (*pgxpool.Pool, error) {
 	if err != nil {
 		return nil, fmt.Errorf("[db] erro ao parsear DATABASE_URL: %w", err)
 	}
+
+	// AUDIT PERF-pool-sizing-inconsistent: tuning explícito do pool. Antes o portal
+	// usava o default do pgx (≈max(4, NumCPU) MaxConns, sem idle/min/healthcheck), o
+	// que em pico podia esfomear conexões enquanto outros serviços do mesmo Postgres
+	// não. O portal é dos serviços com mais leitura concorrente (dashboard com vários
+	// GETs por carga), então MaxConns=20. MinConns mantém conexões quentes; idle/lifetime
+	// reciclam conexões mortas; HealthCheckPeriod descarta conexões quebradas no pool.
+	// Override por env opcional (PORTAL_DB_MAX_CONNS) sem recompilar.
+	cfg.MaxConns = 20
+	if v := os.Getenv("PORTAL_DB_MAX_CONNS"); v != "" {
+		if n, perr := strconv.ParseInt(v, 10, 32); perr == nil && n > 0 {
+			cfg.MaxConns = int32(n)
+		}
+	}
+	cfg.MinConns = 2
+	cfg.MaxConnLifetime = 30 * time.Minute
+	cfg.MaxConnIdleTime = 5 * time.Minute
+	cfg.HealthCheckPeriod = 30 * time.Second
 
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {

@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
+import { confirmAsync } from '../components/ConfirmDialog'
+import { useToast } from '../hooks/useToast'
 import { api } from '../api'
+import FalkSelect from '../components/FalkSelect'
 
 type BrandItem = {
   class_id: number
@@ -17,7 +20,7 @@ type ShippingClass = {
 }
 
 function PreviewCard({ item }: { item: BrandItem }) {
-  const bg = item.cor || '#E8650A'
+  const bg = item.cor || '#1E6FF2'
   const fg = item.cor_texto || '#FFFFFF'
   return (
     <div
@@ -91,16 +94,12 @@ export default function TrackingBrand() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [err, setErr] = useState('')
-  const [toast, setToast] = useState<{ kind: 'ok' | 'err'; msg: string } | null>(null)
+  const showToast = useToast() // AUDIT-2026-06-18 Onda3
   const [addBusy, setAddBusy] = useState(false)
   // classe selecionada no dropdown para adicionar (classes ainda não configuradas)
   const [selectedNewClass, setSelectedNewClass] = useState<string>('')
   const localRef = useRef<BrandItem[]>([])
 
-  function showToast(kind: 'ok' | 'err', msg: string) {
-    setToast({ kind, msg })
-    setTimeout(() => setToast(null), 5000)
-  }
 
   // Mescla as classes de envio existentes com os dados de marca configurados.
   // Garante que toda classe de envio aparece como linha editável, mesmo sem configuração salva.
@@ -119,12 +118,12 @@ export default function TrackingBrand() {
         // Já configurada — usa dados salvos mas garante class_name do catálogo.
         merged.push({ ...existing, class_name: sc.name })
       } else {
-        // Não configurada — linha em branco com defaults do WP (#E8650A / #ffffff).
+        // Não configurada — linha em branco com defaults do WP (#1E6FF2 / #ffffff).
         merged.push({
           class_id: sc.id,
           class_name: sc.name,
           logo: '',
-          cor: '#E8650A',
+          cor: '#1E6FF2',
           cor_texto: '#ffffff',
           nome: '',
           rodape: '',
@@ -219,7 +218,7 @@ export default function TrackingBrand() {
   }
 
   async function handleDelete(classID: number, className: string) {
-    if (!window.confirm(`Remover marca da classe "${className}"?`)) return
+    if (!await confirmAsync({ message: `Remover marca da classe "${className}"?`, danger: true })) return
     try {
       const res = await api<{ items: BrandItem[] }>(`/tracking-brand/${classID}`, {
         method: 'DELETE',
@@ -238,14 +237,6 @@ export default function TrackingBrand() {
   return (
     <div>
       {err && <div className="sz-alert-danger" style={{ marginBottom: 16 }}>{err}</div>}
-      {toast && (
-        <div
-          className={toast.kind === 'ok' ? 'sz-alert-success' : 'sz-alert-danger'}
-          style={{ marginBottom: 16 }}
-        >
-          {toast.msg}
-        </div>
-      )}
 
       {/* Barra superior — cabeçalho + adicionar classe extra (apenas quando não está no catálogo) */}
       <div className="szv2-card" style={{ marginBottom: 24 }}>
@@ -260,17 +251,17 @@ export default function TrackingBrand() {
           {/* Só mostra o seletor de adição manual quando há classes fora do catálogo carregado */}
           {availableToAdd.length > 0 && (
             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-              <select
+              <FalkSelect
                 value={selectedNewClass}
-                onChange={e => setSelectedNewClass(e.target.value)}
-                className="szv2-input"
+                onChange={v => setSelectedNewClass(v)}
+                placeholder="Selecione uma classe…"
+                aria-label="Selecione uma classe de envio"
+                options={[
+                  { value: '', label: 'Selecione uma classe…' },
+                  ...availableToAdd.map(sc => ({ value: String(sc.id), label: sc.name })),
+                ]}
                 style={{ minWidth: 200 }}
-              >
-                <option value="">Selecione uma classe…</option>
-                {availableToAdd.map(sc => (
-                  <option key={sc.id} value={sc.id}>{sc.name}</option>
-                ))}
-              </select>
+              />
               <button
                 type="button"
                 className="szv2-btn-brand"
@@ -334,7 +325,7 @@ export default function TrackingBrand() {
                       type="text"
                       value={item.nome}
                       onChange={e => updateItem(item.class_id, 'nome', e.target.value)}
-                      placeholder="Ex: Senderzz Express"
+                      placeholder="Ex: FALK LOG Express"
                       className="szv2-input"
                     />
                   </label>
@@ -360,7 +351,7 @@ export default function TrackingBrand() {
                       <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
                         <input
                           type="color"
-                          value={item.cor || '#E8650A'}
+                          value={item.cor || '#1E6FF2'}
                           onChange={e => updateItem(item.class_id, 'cor', e.target.value)}
                           style={{ width: 36, height: 36, border: 'none', cursor: 'pointer', borderRadius: 6 }}
                         />
@@ -368,7 +359,7 @@ export default function TrackingBrand() {
                           type="text"
                           value={item.cor}
                           onChange={e => updateItem(item.class_id, 'cor', e.target.value)}
-                          placeholder="#E8650A"
+                          placeholder="#1E6FF2"
                           className="szv2-input"
                           style={{ flex: 1 }}
                           maxLength={7}

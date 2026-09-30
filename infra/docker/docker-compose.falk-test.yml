@@ -1,0 +1,101 @@
+name: falk-test
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: falk-test-postgres
+    restart: unless-stopped
+    environment: { POSTGRES_DB: falk, POSTGRES_USER: falk, POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?}", TZ: America/Sao_Paulo }
+    volumes: [ falk_test_pg_data:/var/lib/postgresql/data ]
+    networks: [falk-test-net]
+    healthcheck: { test: ["CMD-SHELL","pg_isready -U falk -d falk"], interval: 5s, timeout: 5s, retries: 12 }
+  redis:
+    image: redis:7-alpine
+    container_name: falk-test-redis
+    restart: unless-stopped
+    networks: [falk-test-net]
+    healthcheck: { test: ["CMD","redis-cli","ping"], interval: 5s, timeout: 3s, retries: 5 }
+  migrate-runner:
+    image: postgres:16
+    container_name: falk-test-migrate
+    restart: "no"
+    environment: { DATABASE_URL: "postgresql://falk:${POSTGRES_PASSWORD}@postgres:5432/falk?sslmode=disable", APPLY_SEEDS: "0", TZ: America/Sao_Paulo }
+    volumes: [ ../../:/repo:ro ]
+    entrypoint: ["bash","/repo/infra/docker/migrate-entrypoint.sh"]
+    networks: [falk-test-net]
+    depends_on: { postgres: { condition: service_healthy } }
+  motoboy-service:
+    image: falk-motoboy-service:latest
+    container_name: falk-test-motoboy
+    restart: unless-stopped
+    environment: { DATABASE_URL: "postgresql://falk:${POSTGRES_PASSWORD}@postgres:5432/falk?sslmode=disable", REDIS_URL: "redis://redis:6379/0", PORT: 8080, WP_SALT_AUTH: "${WP_SALT_AUTH:?}", JWT_SECRET: "${JWT_SECRET:?}", APP_ENV: staging, TZ: America/Sao_Paulo }
+    networks: [falk-test-net]
+    depends_on: { postgres: { condition: service_healthy }, migrate-runner: { condition: service_completed_successfully }, redis: { condition: service_healthy } }
+  wallet-service:
+    image: falk-wallet-service:latest
+    container_name: falk-test-wallet
+    restart: unless-stopped
+    environment: { DATABASE_URL: "postgresql://falk:${POSTGRES_PASSWORD}@postgres:5432/falk?sslmode=disable", REDIS_URL: "redis://redis:6379/1", PORT: 8081, JWT_SECRET: "${JWT_SECRET:?}", WEBHOOK_SECRET: "${WEBHOOK_SECRET:?}", WP_SALT_AUTH: "${WP_SALT_AUTH:?}", WALLET_INTERNAL_SECRET: "${WALLET_INTERNAL_SECRET:-}", ASYNQ_REDIS_ADDR: "redis:6379", TZ: America/Sao_Paulo }
+    networks: [falk-test-net]
+    depends_on: { postgres: { condition: service_healthy }, migrate-runner: { condition: service_completed_successfully }, redis: { condition: service_healthy } }
+  affiliates-service:
+    image: falk-affiliates-service:latest
+    container_name: falk-test-affiliates
+    restart: unless-stopped
+    environment: { DATABASE_URL: "postgresql://falk:${POSTGRES_PASSWORD}@postgres:5432/falk?sslmode=disable", REDIS_URL: "redis://redis:6379/2", PORT: 8083, JWT_SECRET: "${JWT_SECRET:?}", WP_SALT_AUTH: "${WP_SALT_AUTH:?}", TZ: America/Sao_Paulo }
+    networks: [falk-test-net]
+    depends_on: { postgres: { condition: service_healthy }, migrate-runner: { condition: service_completed_successfully }, redis: { condition: service_healthy } }
+  labels-service:
+    image: falk-labels-service:latest
+    container_name: falk-test-labels
+    restart: unless-stopped
+    environment: { DATABASE_URL: "postgresql://falk:${POSTGRES_PASSWORD}@postgres:5432/falk?sslmode=disable", REDIS_URL: "redis://redis:6379/3", PORT: 8084, JWT_SECRET: "${JWT_SECRET:?}", ME_TOKEN: "${ME_TOKEN:-x}", ME_BASE_URL: "${ME_BASE_URL:-https://melhorenvio.com.br/api/v2}", TRACKING_WEBHOOK_SECRET: "${TRACKING_WEBHOOK_SECRET:?}", ME_WEBHOOK_SECRET: "${ME_WEBHOOK_SECRET:-}", WALLET_SERVICE_URL: "http://wallet-service:8081", WALLET_INTERNAL_SECRET: "${WALLET_INTERNAL_SECRET:-}", TZ: America/Sao_Paulo }
+    networks: [falk-test-net]
+    depends_on: { postgres: { condition: service_healthy }, migrate-runner: { condition: service_completed_successfully }, redis: { condition: service_healthy } }
+  portal-service:
+    image: falk-portal-service:latest
+    container_name: falk-test-portal
+    restart: unless-stopped
+    environment: { DATABASE_URL: "postgresql://falk:${POSTGRES_PASSWORD}@postgres:5432/falk?sslmode=disable", REDIS_URL: "redis://redis:6379/4", PORT: 8085, JWT_SECRET: "${JWT_SECRET:?}", WP_SALT_AUTH: "${WP_SALT_AUTH:?}", APP_ENV: staging, TZ: America/Sao_Paulo, DOC_CHANGE_UPLOAD_PATH: /app/uploads/doc-changes }
+    volumes: [ falk_test_uploads:/app/uploads ]
+    networks: [falk-test-net]
+    depends_on: { postgres: { condition: service_healthy }, migrate-runner: { condition: service_completed_successfully }, redis: { condition: service_healthy } }
+  orders-service:
+    image: falk-orders-service:latest
+    container_name: falk-test-orders
+    restart: unless-stopped
+    environment: { DATABASE_URL: "postgresql://falk:${POSTGRES_PASSWORD}@postgres:5432/falk?sslmode=disable", REDIS_URL: "redis://redis:6379/5", PORT: 8086, JWT_SECRET: "${JWT_SECRET:?}", WP_SALT_AUTH: "${WP_SALT_AUTH:?}", WEBHOOK_SECRET: "${WEBHOOK_SECRET:?}", ADMIN_JWT_SECRET: "${ADMIN_JWT_SECRET:-}", WALLET_URL: "http://wallet-service:8081", MOTOBOY_URL: "http://motoboy-service:8080", TZ: America/Sao_Paulo }
+    networks: [falk-test-net]
+    depends_on: { postgres: { condition: service_healthy }, migrate-runner: { condition: service_completed_successfully }, redis: { condition: service_healthy } }
+  admin-service:
+    image: falk-admin-service:latest
+    container_name: falk-test-admin
+    restart: unless-stopped
+    environment: { DATABASE_URL: "postgresql://falk:${POSTGRES_PASSWORD}@postgres:5432/falk?sslmode=disable", ADMIN_JWT_SECRET: "${ADMIN_JWT_SECRET:?}", JWT_SECRET: "${JWT_SECRET:?}", WP_SALT_AUTH: "${WP_SALT_AUTH:?}", APP_BASE_URL: "https://testes.falklog.com.br", PORT: 8087, TZ: America/Sao_Paulo, DOC_CHANGE_UPLOAD_PATH: /app/uploads/doc-changes, LABELS_SERVICE_URL: "http://labels-service:8084" }
+    volumes: [ falk_test_uploads:/app/uploads ]
+    networks: [falk-test-net]
+    depends_on: { postgres: { condition: service_healthy }, migrate-runner: { condition: service_completed_successfully } }
+  admin-ui:
+    image: falk-admin-ui:latest
+    container_name: falk-test-admin-ui
+    restart: unless-stopped
+    networks: [falk-test-net]
+  portal-ui:
+    # Reusa a imagem prod falk-portal-ui:latest (mesmo padrão de admin-ui de teste).
+    # Sem build próprio — o stack de teste serve o SPA já buildado pelo compose prod.
+    image: falk-portal-ui:latest
+    container_name: falk-test-portal-ui
+    restart: unless-stopped
+    networks: [falk-test-net]
+  gateway:
+    image: nginx:alpine
+    container_name: falk-test-gateway
+    restart: unless-stopped
+    volumes: [ ../falk/gateway-test.conf:/etc/nginx/conf.d/default.conf:ro ]
+    ports: [ "127.0.0.1:9188:80" ]
+    networks: [falk-test-net]
+    depends_on: [admin-ui, portal-ui]
+volumes:
+  falk_test_pg_data: { driver: local }
+  falk_test_uploads: { driver: local }
+networks:
+  falk-test-net: { driver: bridge }

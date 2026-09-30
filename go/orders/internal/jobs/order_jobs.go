@@ -167,13 +167,25 @@ func ProcessOrderExpiry(ctx context.Context, pool *pgxpool.Pool, t *asynq.Task) 
 	slog.Info("[jobs/expiry] iniciando verificação de pedidos expirados")
 
 	// Busca pedidos pending com mais de 30 minutos sem pagamento.
+	// QA-FIX P0 (cod-expiry-bug): FALKZ é plataforma Cash on Delivery — pedido COD
+	// NASCE payment_status='pending' e só paga NA ENTREGA. O critério antigo
+	// cancelava todo COD antigo, inclusive os JÁ EM ROTA/ENTREGUES pelo motoboy
+	// (cancelou pedido real em entrega).
+	//
+	// AUDIT-2026-06-21 #3 (HIGH-3): a heurística "payment_status='pending' por 30 min
+	// = abandono" é INVÁLIDA para COD — pending é o estado NORMAL e permanente de todo
+	// pedido COD (paga na entrega). O fix de raiz é EXCLUIR payment_method='cod' da
+	// varredura: só pré-pago abandonado expira. Isso substitui (e torna redundante) o
+	// NOT EXISTS pontual por motoboy do fix anterior — todo pedido motoboy é COD, logo
+	// já fica fora pela condição de raiz. Não empilhamos mais um NOT EXISTS.
 	rows, err := pool.Query(ctx,
-		`SELECT id, order_number, payment_status
-		   FROM sz_orders
-		  WHERE status = 'pending'
-		    AND payment_status = 'pending'
-		    AND created_at < NOW() - INTERVAL '30 minutes'
-		  ORDER BY created_at ASC
+		`SELECT o.id, o.order_number, o.payment_status
+		   FROM sz_orders o
+		  WHERE o.status = 'pending'
+		    AND o.payment_status = 'pending'
+		    AND o.payment_method <> 'cod'
+		    AND o.created_at < NOW() - INTERVAL '30 minutes'
+		  ORDER BY o.created_at ASC
 		  LIMIT 200`,
 	)
 	if err != nil {

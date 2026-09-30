@@ -14,9 +14,13 @@ import FilterTopPanel, {
   ActiveFilterChips,
   type ActiveChip,
 } from '../components/FilterTopPanel'
+import FalkDatePicker from '../components/FalkDatePicker'
 import TableSkeleton from '../components/TableSkeleton'
 import EmptyState from '../components/EmptyState'
+import ErrorState from '../components/ErrorState'
 import CardKpiSkeleton from '../components/CardKpiSkeleton'
+import StatusBadge from '../components/StatusBadge'
+import FalkSelect from '../components/FalkSelect'
 
 // ─── Tipos ────────────────────────────────────────────────────────────────
 
@@ -43,8 +47,8 @@ type StatusFiltro = '' | 'aguardando' | 'pago'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
-const fmt = (v: number) =>
-  v.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+const fmt = (v: number | null | undefined) =>
+  Number(v ?? 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
 const fmtDate = (s: string) => {
   if (!s) return '—'
@@ -144,7 +148,7 @@ export default function MotoboySaques() {
     }
   }
 
-  useEffect(() => { load() /* eslint-disable-next-line */ }, [from, to, status])
+  useEffect(() => { load() /* eslint-disable-next-line */ }, [from, to, status, motoboyID])
 
   function handleApply(e?: React.FormEvent) {
     if (e) e.preventDefault()
@@ -196,7 +200,9 @@ export default function MotoboySaques() {
 
       <ActiveFilterChips chips={chips} onClearAll={clearFilters} />
 
-      {err && <div className="sz-alert-danger" style={{ marginBottom: 16 }}>{err}</div>}
+      {/* Banner só com dados na tela (erro de refresh/ação). Falha de
+          carregamento inicial vira ErrorState na área da tabela. */}
+      {err && items.length > 0 && <div className="sz-alert-danger" style={{ marginBottom: 16 }}>{err}</div>}
 
       {/* 4 KPI cards */}
       {!summary && loading ? <CardKpiSkeleton count={4} /> : (
@@ -244,29 +250,25 @@ export default function MotoboySaques() {
         title="Filtros"
       >
         <FilterField label="Data inicial">
-          <input
-            type="date"
-            style={filterInputStyle}
+          <FalkDatePicker
             value={draftFrom}
-            onChange={e => setDraftFrom(e.target.value)}
+            onChange={v => setDraftFrom(v)}
+            placeholder="dd/mm/aaaa"
           />
         </FilterField>
         <FilterField label="Data final">
-          <input
-            type="date"
-            style={filterInputStyle}
+          <FalkDatePicker
             value={draftTo}
-            onChange={e => setDraftTo(e.target.value)}
+            onChange={v => setDraftTo(v)}
+            placeholder="dd/mm/aaaa"
           />
         </FilterField>
         <FilterField label="Status">
-          <select
-            style={filterInputStyle}
+          <FalkSelect
             value={draftStatus}
-            onChange={e => setDraftStatus(e.target.value as StatusFiltro)}
-          >
-            {STATUS_FILTERS.map(f => <option key={f.key || 'all'} value={f.key}>{f.label}</option>)}
-          </select>
+            onChange={v => setDraftStatus(v as StatusFiltro)}
+            options={STATUS_FILTERS.map(f => ({ value: f.key, label: f.label }))}
+          />
         </FilterField>
         <FilterField label="Motoboy (ID) / Busca">
           <input
@@ -290,6 +292,8 @@ export default function MotoboySaques() {
 
         {loading && items.length === 0 ? (
           <TableSkeleton rows={6} cols={8} />
+        ) : err && items.length === 0 ? (
+          <ErrorState message={err} onRetry={load} />
         ) : !loading && items.length === 0 ? (
           <EmptyState
             icon="💸"
@@ -331,11 +335,10 @@ export default function MotoboySaques() {
                       </td>
                       <td>{fmtDate(s.data_pagamento)}</td>
                       <td>
-                        <span
-                          className={`sz-badge ${isPago ? 'szv2-badge-success' : 'szv2-badge-warning'}`}
-                        >
-                          {isPago ? '✅ Pago' : '⏳ Aguardando'}
-                        </span>
+                        <StatusBadge
+                          status={isPago ? 'pago' : 'aguardando'}
+                          label={isPago ? 'Pago' : 'Aguardando'}
+                        />
                       </td>
                       <td
                         style={{

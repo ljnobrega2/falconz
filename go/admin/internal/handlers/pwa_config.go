@@ -82,13 +82,7 @@ type PwaConfig struct {
 
 // tableExistsPwa verifica presença de uma tabela no schema public.
 func (h *PwaConfigHandler) tableExists(ctx context.Context, name string) bool {
-	var ok bool
-	_ = h.Pool.QueryRow(ctx,
-		`SELECT EXISTS (
-			SELECT FROM information_schema.tables
-			WHERE table_schema='public' AND table_name=$1
-		)`, name).Scan(&ok)
-	return ok
+	return tableExistsCached(ctx, h.Pool, name) // AUDIT-2026-06-18 Onda2 (go-infoschema-cache)
 }
 
 // readPwaOption lê valor único de senderzz_options; retorna fallback se ausente.
@@ -98,7 +92,7 @@ func (h *PwaConfigHandler) readPwaOption(ctx context.Context, key, fallback stri
 	}
 	var raw string
 	err := h.Pool.QueryRow(ctx,
-		`SELECT value FROM senderzz_options WHERE "key"=$1`, key).Scan(&raw)
+		`SELECT value FROM senderzz_options WHERE name=$1`, key).Scan(&raw)
 	raw = strings.TrimSpace(raw)
 	if err != nil || raw == "" || raw == `""` {
 		return fallback
@@ -118,9 +112,9 @@ func (h *PwaConfigHandler) upsertPwaOption(ctx context.Context, key, value strin
 	}
 	b, _ := json.Marshal(value)
 	_, err := h.Pool.Exec(ctx,
-		`INSERT INTO senderzz_options ("key", value)
+		`INSERT INTO senderzz_options (name, value)
 		 VALUES ($1, $2)
-		 ON CONFLICT ("key") DO UPDATE SET value = EXCLUDED.value`,
+		 ON CONFLICT (name) DO UPDATE SET value = EXCLUDED.value`,
 		key, string(b))
 	return err
 }

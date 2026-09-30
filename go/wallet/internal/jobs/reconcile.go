@@ -83,7 +83,68 @@ func (t *ReconcileTask) ProcessReconcile(ctx context.Context, task *asynq.Task) 
 	slog.Info("[tpc_reconcile] recargas expiradas marcadas",
 		"total_expiradas", expiradas)
 
+	// AUDIT INFRA-no-observability-alerting: sem stack de métricas (Prometheus/
+	// Datadog) no escopo deste pacote, emitimos os sinais nomeados pela auditoria
+	// num resumo estruturado (JSON via slog) para que um filtro de log-métrica
+	// (CloudWatch Logs Insights / Datadog log pipeline) consiga gerar alertas:
+	//   - divergence_count        → alerta se > 0 (já é slog.Error por user_id)
+	//   - transaction_count_synced → volume de transações confirmadas conferidas
+	//   - pending_recargas         → recargas PIX ainda pendentes (top-up não pago)
+	//   - oldest_pending_age_min   → idade da recarga pendente mais antiga (minutos)
+	// (Prometheus :2112/metrics, Vector/Filebeat e PagerDuty pertencem à camada
+	//  infra — fora do escopo go/wallet; ver finding INFRA na chave "infra".)
+	txSynced, pendentes, oldestAgeMin := t.coletarMetricasReconcile(ctx)
+	logFn := slog.Info
+	if divergencias > 0 {
+		// Resumo em nível ERROR quando há divergência — facilita alerta paginável
+		// via padrão de log (CloudWatch Alarm sobre "level":"ERROR" + msg).
+		logFn = slog.Error
+	}
+	logFn("[tpc_reconcile] resumo de reconciliação (observabilidade)",
+		"divergence_count", divergencias,
+		"transaction_count_synced", txSynced,
+		"recargas_expiradas", expiradas,
+		"pending_recargas", pendentes,
+		"oldest_pending_age_min", oldestAgeMin,
+	)
+
 	return nil
+}
+
+// coletarMetricasReconcile reúne os sinais de observabilidade nomeados pela
+// auditoria (INFRA-no-observability-alerting) num único passo de leitura.
+// Best-effort: erros de query são logados mas não abortam a reconciliação —
+// métrica ausente nunca deve mascarar ou bloquear o trabalho financeiro.
+//
+// Retorna:
+//   - txSynced     — nº de transações confirmadas consideradas no ledger
+//   - pendentes    — nº de recargas PIX ainda 'pendente' (top-up não pago/expirado)
+//   - oldestAgeMin — idade (minutos) da recarga pendente mais antiga (0 se nenhuma)
+func (t *ReconcileTask) coletarMetricasReconcile(ctx context.Context) (txSynced, pendentes, oldestAgeMin int64) {
+	if err := t.Pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM tpc_transacoes WHERE status = 'confirmado'`,
+	).Scan(&txSynced); err != nil {
+		slog.Warn("[tpc_reconcile] métrica transaction_count_synced indisponível", "err", err)
+	}
+
+	// COALESCE garante 0 (e não NULL) quando não há recarga pendente.
+	// ::bigint é obrigatório: EXTRACT(EPOCH ...) devolve numeric/double precision,
+	// que o pgx NÃO consegue scanear num *int64 — mesma convenção de recarga.go:188.
+	// Sem o cast, o Scan da linha inteira falha e a métrica volta sempre 0 (cego).
+	if err := t.Pool.QueryRow(ctx,
+		`SELECT
+		     COUNT(*),
+		     COALESCE(
+		         FLOOR(EXTRACT(EPOCH FROM (NOW() - MIN(created_at))) / 60),
+		         0
+		     )::bigint
+		 FROM tpc_recargas
+		 WHERE status = 'pendente'`,
+	).Scan(&pendentes, &oldestAgeMin); err != nil {
+		slog.Warn("[tpc_reconcile] métricas de recargas pendentes indisponíveis", "err", err)
+	}
+
+	return txSynced, pendentes, oldestAgeMin
 }
 
 // reconciliarSaldos compara a soma das transações confirmadas com o saldo

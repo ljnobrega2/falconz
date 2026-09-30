@@ -12,8 +12,13 @@
 //   - Soft-delete via DELETE /motoboy-comprovantes/{id} com X-Confirm: DELETE
 
 import { useEffect, useState } from 'react'
+import { confirmAsync } from '../components/ConfirmDialog'
+import { useToast } from '../hooks/useToast'
 import { api, getToken } from '../api'
+import { safeUrl } from '../utils/safeUrl' // AUDIT-2026-06-21 #13
 import FilterButton from '../components/FilterButton'
+import FalkSelect from '../components/FalkSelect'
+import FalkDatePicker from '../components/FalkDatePicker'
 import FilterTopPanel, {
   FilterField,
   filterInputStyle,
@@ -22,6 +27,7 @@ import FilterTopPanel, {
 } from '../components/FilterTopPanel'
 import TableSkeleton from '../components/TableSkeleton'
 import EmptyState from '../components/EmptyState'
+import ErrorState from '../components/ErrorState'
 import CardKpiSkeleton from '../components/CardKpiSkeleton'
 
 // ─── Tipos ────────────────────────────────────────────────────────────────
@@ -107,17 +113,25 @@ function daysAgoISO(n: number): string {
 }
 const todayISO = () => new Date().toISOString().slice(0, 10)
 
+// Janela padrão da galeria. 7 dias deixava a galeria quase vazia mesmo havendo
+// comprovantes (a maioria dos dados é mais antiga que 1 semana) — 30 dias evita
+// o falso "vazio" no primeiro carregamento. Usado em 3 pontos (default, clear e
+// comparação do chip) — manter sincronizado.
+const DEFAULT_FROM_DAYS = 30
+const defaultFromISO = () => daysAgoISO(DEFAULT_FROM_DAYS)
+
 // ─── Página ───────────────────────────────────────────────────────────────
 
 export default function MotoboyComprovantes() {
   // Filtros
-  const [from, setFrom]               = useState<string>(daysAgoISO(7))
+  const [from, setFrom]               = useState<string>(defaultFromISO())
   const [to, setTo]                   = useState<string>(todayISO())
   const [tipo, setTipo]               = useState<TipoFiltro>('')
   const [baixaPor, setBaixaPor]       = useState<BaixaPorFiltro>('')
   const [statusFiltro, setStatusFiltro] = useState<StatusFiltro>('')
   const [zonaID, setZonaID]           = useState<string>('')
   const [motoboyID, setMotoboyID]     = useState<string>('')
+  const [warnDismissed, setWarnDismissed] = useState(false)
   const [pedidoBusca, setPedidoBusca] = useState<string>('')
 
   // Dados
@@ -130,7 +144,7 @@ export default function MotoboyComprovantes() {
   const [loadingStats, setLoadingStats] = useState(true)
   const [busy, setBusy]               = useState(false)
   const [err, setErr]                 = useState('')
-  const [toast, setToast]             = useState<{ kind: 'ok' | 'err'; msg: string } | null>(null)
+  const showToast = useToast() // AUDIT-2026-06-18 Onda3
   const [modal, setModal]             = useState<Comprovante | null>(null)
 
   // Painel de filtros
@@ -144,10 +158,6 @@ export default function MotoboyComprovantes() {
   const [draftMotoboyID, setDraftMotoboyID] = useState('')
   const [draftPedidoBusca, setDraftPedidoBusca] = useState('')
 
-  function showToast(kind: 'ok' | 'err', msg: string) {
-    setToast({ kind, msg })
-    setTimeout(() => setToast(null), 5000)
-  }
 
   // Carrega zonas para o select (uma vez).
   useEffect(() => {
@@ -277,9 +287,7 @@ export default function MotoboyComprovantes() {
 
   // Exclusão (soft) — exige header X-Confirm: DELETE.
   async function handleDelete(id: number) {
-    if (!window.confirm(
-      `Excluir comprovante #${id}?\n\nEssa ação remove a foto da listagem (soft-delete).\nO registro continua disponível para auditoria.`,
-    )) return
+    if (!await confirmAsync({ message: `Excluir comprovante #${id}? Remove a foto da listagem (soft-delete). O registro continua disponível para auditoria.`, danger: true })) return
 
     setBusy(true)
     try {
@@ -323,7 +331,7 @@ export default function MotoboyComprovantes() {
     setTimeout(() => { loadStats(); loadGallery() }, 0)
   }
   function clearFilters() {
-    const def_from = daysAgoISO(7)
+    const def_from = defaultFromISO()
     const def_to = todayISO()
     setFrom(def_from); setTo(def_to)
     setTipo(''); setBaixaPor(''); setStatusFiltro('')
@@ -340,14 +348,14 @@ export default function MotoboyComprovantes() {
   }
   // Chips ativos.
   const chips: ActiveChip[] = []
-  if (from && from !== daysAgoISO(7)) chips.push({ key: 'from', label: `De: ${from}`, onRemove: () => setFrom(daysAgoISO(7)) })
+  if (from && from !== defaultFromISO()) chips.push({ key: 'from', label: `De: ${from}`, onRemove: () => setFrom(defaultFromISO()) })
   if (to && to !== todayISO()) chips.push({ key: 'to', label: `Até: ${to}`, onRemove: () => setTo(todayISO()) })
   if (tipo) chips.push({ key: 'tipo', label: `Tipo: ${tipo}`, onRemove: () => { setTipo(''); reloadGallery({ tipo: '' }) } })
   if (baixaPor) chips.push({ key: 'baixa', label: `Baixa: ${baixaPor}`, onRemove: () => { setBaixaPor(''); reloadGallery({ baixaPor: '' }) } })
   if (statusFiltro) chips.push({ key: 'status', label: `Status: ${statusFiltro}`, onRemove: () => { setStatusFiltro(''); triggerReload() } })
   if (zonaID) chips.push({ key: 'zona', label: `Zona: ${zonas.find(z => String(z.id) === zonaID)?.nome || zonaID}`, onRemove: () => { setZonaID(''); triggerReload() } })
   if (motoboyID) chips.push({ key: 'mb', label: `Motoboy: #${motoboyID}`, onRemove: () => { setMotoboyID(''); triggerReload() } })
-  if (pedidoBusca) chips.push({ key: 'ped', label: `Pedido: #${pedidoBusca}`, onRemove: () => { setPedidoBusca(''); triggerReload() } })
+  if (pedidoBusca) chips.push({ key: 'ped', label: `Pedido: ${pedidoBusca}`, onRemove: () => { setPedidoBusca(''); triggerReload() } })
 
   // ─── KPI card helper ──────────────────────────────────────────────────────
   function KpiCard({
@@ -369,16 +377,9 @@ export default function MotoboyComprovantes() {
 
   return (
     <div>
-      {err && <div className="sz-alert-danger" style={{ marginBottom: 16 }}>{err}</div>}
-      {toast && (
-        <div
-          className={toast.kind === 'ok' ? 'sz-alert-success' : 'sz-alert-danger'}
-          style={{ marginBottom: 16 }}
-        >
-          {toast.msg}
-        </div>
-      )}
-
+      {/* Banner só com dados na tela (erro de refresh/ação). Falha de
+          carregamento inicial vira ErrorState na galeria. */}
+      {err && items.length > 0 && <div className="sz-alert-danger" style={{ marginBottom: 16 }}>{err}</div>}
       <style>{`
         .sz-comp-grid {
           display: grid;
@@ -559,8 +560,8 @@ export default function MotoboyComprovantes() {
       </div>
       )}
 
-      {/* ─── Alerta sem_comp ─── (espelha relatorios.php:177-181) */}
-      {!loadingStats && stats && stats.sem_comp > 0 && (
+      {/* ─── Alerta sem_comp ─── (espelha relatorios.php:177-181) — dismissível */}
+      {!loadingStats && stats && stats.sem_comp > 0 && !warnDismissed && (
         <div style={{
           background: '#fef3c7',
           border: '1px solid #f59e0b',
@@ -570,8 +571,20 @@ export default function MotoboyComprovantes() {
           fontSize: 13,
           color: '#92400e',
           fontWeight: 700,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 12,
         }}>
-          ⚠️ {stats.sem_comp} pedido(s) entregue(s) sem comprovante de pagamento registrado.
+          <span>⚠️ {stats.sem_comp} pedido(s) entregue(s) sem comprovante de pagamento registrado.</span>
+          <button
+            type="button"
+            onClick={() => setWarnDismissed(true)}
+            aria-label="Dispensar aviso"
+            style={{ background: 'none', border: 'none', color: '#92400e', fontSize: 18, lineHeight: 1, cursor: 'pointer', padding: '0 4px', fontWeight: 700 }}
+          >
+            ✕
+          </button>
         </div>
       )}
 
@@ -586,6 +599,8 @@ export default function MotoboyComprovantes() {
 
         {loading && items.length === 0 ? (
           <TableSkeleton rows={3} cols={6} />
+        ) : err && items.length === 0 ? (
+          <ErrorState message={err} onRetry={() => { loadStats(); loadGallery() }} />
         ) : !loading && items.length === 0 ? (
           <EmptyState
             icon="📸"
@@ -626,7 +641,7 @@ export default function MotoboyComprovantes() {
                 </div>
                 <div className="sz-comp-meta">
                   <strong>{c.motoboy_nome || `Motoboy ${c.motoboy_id}`}</strong>
-                  <div>Pedido #{c.wc_order_id}</div>
+                  <div>Pedido {c.wc_order_id}</div>
                   <div style={{ fontSize: 11, color: '#9ca3af' }}>{fmtTs(c.created_at)}</div>
                 </div>
               </div>
@@ -652,7 +667,7 @@ export default function MotoboyComprovantes() {
                 </div>
                 <div>
                   Motoboy: <strong>{modal.motoboy_nome || `#${modal.motoboy_id}`}</strong>
-                  {' · '}Pedido <strong>#{modal.wc_order_id}</strong>
+                  {' · '}Pedido <strong>{modal.wc_order_id}</strong>
                   {' · '}Baixa:{' '}
                   {modal.baixa_por === 'admin' ? (
                     <span style={{ background: '#dbeafe', color: '#1e40af', borderRadius: 99, padding: '1px 7px', fontWeight: 700, fontSize: 11 }}>ADM</span>
@@ -663,7 +678,7 @@ export default function MotoboyComprovantes() {
                 <div style={{ fontSize: 12, color: '#6b7280' }}>{fmtTs(modal.created_at)}</div>
               </div>
               <a
-                href={modal.foto_url}
+                href={safeUrl(modal.foto_url)}
                 download={`comprovante-${modal.id}.jpg`}
                 className="szv2-btn szv2-btn-secondary"
                 target="_blank"
@@ -700,57 +715,55 @@ export default function MotoboyComprovantes() {
         title="Filtros"
       >
         <FilterField label="Data inicial">
-          <input
-            type="date"
-            style={filterInputStyle}
+          <FalkDatePicker
+            aria-label="Data inicial"
             value={draftFrom}
-            onChange={e => setDraftFrom(e.target.value)}
+            onChange={v => setDraftFrom(v)}
+            placeholder="dd/mm/aaaa"
           />
         </FilterField>
         <FilterField label="Data final">
-          <input
-            type="date"
-            style={filterInputStyle}
+          <FalkDatePicker
+            aria-label="Data final"
             value={draftTo}
-            onChange={e => setDraftTo(e.target.value)}
+            onChange={v => setDraftTo(v)}
+            placeholder="dd/mm/aaaa"
           />
         </FilterField>
         <FilterField label="Tipo pgto">
-          <select
-            style={filterInputStyle}
+          <FalkSelect
+            aria-label="Tipo pgto"
             value={draftTipo}
-            onChange={e => setDraftTipo(e.target.value as TipoFiltro)}
-          >
-            {TIPO_LABELS.map(t => <option key={t.key} value={t.key}>{t.icon} {t.label}</option>)}
-          </select>
+            onChange={v => setDraftTipo(v as TipoFiltro)}
+            options={TIPO_LABELS.map(t => ({ value: t.key, label: `${t.icon} ${t.label}` }))}
+          />
         </FilterField>
         <FilterField label="Baixa por">
-          <select
-            style={filterInputStyle}
+          <FalkSelect
+            aria-label="Baixa por"
             value={draftBaixa}
-            onChange={e => setDraftBaixa(e.target.value as BaixaPorFiltro)}
-          >
-            {BAIXA_POR_LABELS.map(b => <option key={b.key} value={b.key}>{b.label}</option>)}
-          </select>
+            onChange={v => setDraftBaixa(v as BaixaPorFiltro)}
+            options={BAIXA_POR_LABELS.map(b => ({ value: b.key, label: b.label }))}
+          />
         </FilterField>
         <FilterField label="Status do pedido">
-          <select
-            style={filterInputStyle}
+          <FalkSelect
+            aria-label="Status do pedido"
             value={draftStatusF}
-            onChange={e => setDraftStatusF(e.target.value as StatusFiltro)}
-          >
-            {STATUS_OPTIONS.map(s => <option key={s.key} value={s.key}>{s.label}</option>)}
-          </select>
+            onChange={v => setDraftStatusF(v as StatusFiltro)}
+            options={STATUS_OPTIONS.map(s => ({ value: s.key, label: s.label }))}
+          />
         </FilterField>
         <FilterField label="Zona">
-          <select
-            style={filterInputStyle}
+          <FalkSelect
+            aria-label="Zona"
             value={draftZona}
-            onChange={e => setDraftZona(e.target.value)}
-          >
-            <option value="">Todas</option>
-            {zonas.map(z => <option key={z.id} value={String(z.id)}>{z.nome}</option>)}
-          </select>
+            onChange={v => setDraftZona(v)}
+            options={[
+              { value: '', label: 'Todas' },
+              ...zonas.map(z => ({ value: String(z.id), label: z.nome })),
+            ]}
+          />
         </FilterField>
         <FilterField label="Motoboy (ID)">
           <input

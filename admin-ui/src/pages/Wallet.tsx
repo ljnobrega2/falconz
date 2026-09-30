@@ -1,5 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useToast } from '../hooks/useToast'
+import { confirmAsync } from '../components/ConfirmDialog'
+import DetailDrawer from '../components/DetailDrawer'
 import { api } from '../api'
+import { brDate } from '../utils/format'
 import FilterButton from '../components/FilterButton'
 import FilterTopPanel, {
   FilterField,
@@ -9,6 +13,8 @@ import FilterTopPanel, {
 } from '../components/FilterTopPanel'
 import TableSkeleton from '../components/TableSkeleton'
 import EmptyState from '../components/EmptyState'
+import FalkSelect from '../components/FalkSelect'
+import FalkDatePicker from '../components/FalkDatePicker'
 
 // ── Tipos ─────────────────────────────────────────────────────────────────────
 
@@ -37,14 +43,6 @@ type TransacaoRow = {
   me_order_id: string | null
   status: string
   created_at: string
-}
-
-type WalletOwnerItem = {
-  class_id: number
-  class_name: string
-  user_id: number
-  user_nome: string
-  user_email: string
 }
 
 type ConfigME = {
@@ -211,89 +209,86 @@ function PixModal({
     try { await navigator.clipboard.writeText(result.copia_cola) } catch { /* ignora */ }
   }
 
+  // AUDIT-2026-06-18 Onda3 — migrado para <Modal> acessível
+  // 2026-06-19 — migrado para DetailDrawer (lateral direito, marca registrada)
   return (
-    <div className="szv2-modal-overlay szv2-open" onClick={onClose}>
-      <div className="szv2-modal szv2-modal-lg" onClick={e => e.stopPropagation()}>
-        <div className="szv2-modal-head">
-          <h3>Emitir PIX{cliente ? ` para ${cliente.nome || `#${cliente.user_id}`}` : ''}</h3>
-          <button className="szv2-modal-x" onClick={onClose}>✕</button>
+    <DetailDrawer
+      open
+      onClose={onClose}
+      large
+      title={`Emitir PIX${cliente ? ` para ${cliente.nome || `#${cliente.user_id}`}` : ''}`}
+      footer={!result ? (
+        <>
+          <button type="button" className="szv2-btn szv2-btn-secondary" onClick={onClose}>Cancelar</button>
+          <button type="button" className="szv2-btn szv2-btn-brand" onClick={submit as any} disabled={busy}>
+            {busy ? 'Gerando…' : 'Gerar PIX'}
+          </button>
+        </>
+      ) : (
+        <button type="button" className="szv2-btn szv2-btn-brand" onClick={onClose}>Fechar</button>
+      )}
+    >
+      {!result ? (
+        <form onSubmit={submit}>
+          {err && <div className="sz-alert-danger" style={{ marginBottom: 12 }}>{err}</div>}
+          <div className="szv2-field" style={{ marginBottom: 12 }}>
+            <label className="szv2-label">Cliente (user_id) *</label>
+            <input className="szv2-input" type="number" required value={userIdInput}
+              disabled={!!cliente} onChange={e => setUserIdInput(e.target.value)}
+              placeholder="ID do usuário WordPress" />
+            {cliente && (
+              <small style={{ color: 'var(--szv2-text-muted)', fontSize: 12 }}>
+                {cliente.email || cliente.nome || `Usuário #${cliente.user_id}`}
+              </small>
+            )}
+          </div>
+          <div className="szv2-field" style={{ marginBottom: 12 }}>
+            <label className="szv2-label">Valor (R$) *</label>
+            <input className="szv2-input" type="number" required min="1" step="0.01"
+              value={valor} onChange={e => setValor(e.target.value)} />
+          </div>
+          <div className="szv2-field" style={{ marginBottom: 12 }}>
+            <label className="szv2-label">Motivo</label>
+            <textarea className="szv2-input" rows={3} value={motivo}
+              onChange={e => setMotivo(e.target.value)}
+              placeholder="Ex.: ajuste de saldo solicitado pelo cliente" />
+          </div>
+        </form>
+      ) : (
+        <div>
+          <div style={{ textAlign: 'center', marginBottom: 16 }}>
+            <h3 style={{ margin: '0 0 4px', color: 'var(--szv2-brand)' }}>
+              PIX gerado — {fmt(result.valor)}
+            </h3>
+            <p style={{ margin: 0, fontSize: 13, color: 'var(--szv2-text-muted)' }}>
+              Recarga #{result.recarga_id} · user_id #{result.user_id}
+            </p>
+            {result.stub && (
+              <p style={{ margin: '8px 0 0', fontSize: 11, color: 'var(--szv2-warning)' }}>
+                Placeholder (modo dev) — aguardando integração com wallet-service.
+              </p>
+            )}
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 12 }}>
+            <img src={result.qr_src} alt="QR Code PIX"
+              style={{ width: 240, height: 240, border: '1px solid var(--szv2-divider)', borderRadius: 8, background: '#fff' }} />
+          </div>
+          <div style={{ textAlign: 'center', marginBottom: 12 }}>
+            <span className="szv2-status-badge s-pendente" style={{ fontSize: 13, padding: '4px 12px' }}>
+              Expira em {fmtCountdown(remaining)}
+            </span>
+          </div>
+          <div className="szv2-field">
+            <label className="szv2-label">Copia e cola</label>
+            <textarea className="szv2-input" rows={3} readOnly value={result.copia_cola}
+              onFocus={e => e.currentTarget.select()}
+              style={{ fontFamily: 'monospace', fontSize: 11 }} />
+            <button type="button" className="szv2-btn szv2-btn-sm szv2-btn-secondary"
+              onClick={copyCopiaCola} style={{ marginTop: 8 }}>Copiar</button>
+          </div>
         </div>
-        <div className="szv2-modal-body">
-          {!result ? (
-            <form onSubmit={submit}>
-              {err && <div className="sz-alert-danger" style={{ marginBottom: 12 }}>{err}</div>}
-              <div className="szv2-field" style={{ marginBottom: 12 }}>
-                <label className="szv2-label">Cliente (user_id) *</label>
-                <input className="szv2-input" type="number" required value={userIdInput}
-                  disabled={!!cliente} onChange={e => setUserIdInput(e.target.value)}
-                  placeholder="ID do usuário WordPress" />
-                {cliente && (
-                  <small style={{ color: 'var(--szv2-text-muted)', fontSize: 12 }}>
-                    {cliente.email || cliente.nome || `Usuário #${cliente.user_id}`}
-                  </small>
-                )}
-              </div>
-              <div className="szv2-field" style={{ marginBottom: 12 }}>
-                <label className="szv2-label">Valor (R$) *</label>
-                <input className="szv2-input" type="number" required min="1" step="0.01"
-                  value={valor} onChange={e => setValor(e.target.value)} />
-              </div>
-              <div className="szv2-field" style={{ marginBottom: 12 }}>
-                <label className="szv2-label">Motivo</label>
-                <textarea className="szv2-input" rows={3} value={motivo}
-                  onChange={e => setMotivo(e.target.value)}
-                  placeholder="Ex.: ajuste de saldo solicitado pelo cliente" />
-              </div>
-            </form>
-          ) : (
-            <div>
-              <div style={{ textAlign: 'center', marginBottom: 16 }}>
-                <h3 style={{ margin: '0 0 4px', color: 'var(--szv2-brand)' }}>
-                  PIX gerado — {fmt(result.valor)}
-                </h3>
-                <p style={{ margin: 0, fontSize: 13, color: 'var(--szv2-text-muted)' }}>
-                  Recarga #{result.recarga_id} · user_id #{result.user_id}
-                </p>
-                {result.stub && (
-                  <p style={{ margin: '8px 0 0', fontSize: 11, color: 'var(--szv2-warning)' }}>
-                    Placeholder (modo dev) — aguardando integração com wallet-service.
-                  </p>
-                )}
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 12 }}>
-                <img src={result.qr_src} alt="QR Code PIX"
-                  style={{ width: 240, height: 240, border: '1px solid var(--szv2-divider)', borderRadius: 8, background: '#fff' }} />
-              </div>
-              <div style={{ textAlign: 'center', marginBottom: 12 }}>
-                <span className="szv2-status-badge s-pendente" style={{ fontSize: 13, padding: '4px 12px' }}>
-                  Expira em {fmtCountdown(remaining)}
-                </span>
-              </div>
-              <div className="szv2-field">
-                <label className="szv2-label">Copia e cola</label>
-                <textarea className="szv2-input" rows={3} readOnly value={result.copia_cola}
-                  onFocus={e => e.currentTarget.select()}
-                  style={{ fontFamily: 'monospace', fontSize: 11 }} />
-                <button type="button" className="szv2-btn szv2-btn-sm szv2-btn-secondary"
-                  onClick={copyCopiaCola} style={{ marginTop: 8 }}>Copiar</button>
-              </div>
-            </div>
-          )}
-        </div>
-        <div className="szv2-modal-foot">
-          {!result ? (
-            <>
-              <button type="button" className="szv2-btn szv2-btn-secondary" onClick={onClose}>Cancelar</button>
-              <button type="button" className="szv2-btn szv2-btn-brand" onClick={submit as any} disabled={busy}>
-                {busy ? 'Gerando…' : 'Gerar PIX'}
-              </button>
-            </>
-          ) : (
-            <button type="button" className="szv2-btn szv2-btn-brand" onClick={onClose}>Fechar</button>
-          )}
-        </div>
-      </div>
-    </div>
+      )}
+    </DetailDrawer>
   )
 }
 
@@ -322,7 +317,7 @@ function ExtratoModal({
   useEffect(() => { load() }, [cliente.user_id])
 
   async function cancelarRecarga(recargaID: number) {
-    if (!window.confirm(`Cancelar recarga #${recargaID}?`)) return
+    if (!await confirmAsync({ message: `Cancelar recarga #${recargaID}?`, danger: true })) return
     setCancelling(recargaID)
     try {
       await api(`/tpc-clientes/${cliente.user_id}/cancelar-recarga/${recargaID}`, { method: 'POST' })
@@ -331,94 +326,93 @@ function ExtratoModal({
     finally { setCancelling(null) }
   }
 
+  // AUDIT-2026-06-18 Onda3 — migrado para <Modal> acessível
+  // 2026-06-19 — migrado para DetailDrawer (lateral direito, marca registrada)
   return (
-    <div className="szv2-modal-overlay szv2-open" onClick={onClose}>
-      <div className="szv2-modal szv2-modal-lg" onClick={e => e.stopPropagation()}>
-        <div className="szv2-modal-head">
-          <h3>
-            Extrato — {cliente.nome || `Usuário #${cliente.user_id}`}
-            {cliente.email && (
-              <span style={{ fontWeight: 400, fontSize: 13, color: 'var(--szv2-text-muted)', marginLeft: 8 }}>
-                {cliente.email}
-              </span>
-            )}
-          </h3>
-          <button className="szv2-modal-x" onClick={onClose}>✕</button>
-        </div>
-        <div className="szv2-modal-body">
-          {detail && (
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginBottom: 16 }}>
-              {[
-                { label: 'Saldo total', value: fmt(detail.cliente.saldo), color: 'inherit' },
-                { label: 'Reservado', value: fmt(detail.cliente.saldo_reservado), color: 'var(--szv2-warning)' },
-                { label: 'Disponível', value: fmt(detail.cliente.saldo_disponivel), color: 'var(--szv2-success)' },
-              ].map(k => (
-                <div key={k.label} className="szv2-card" style={{ padding: 12, margin: 0 }}>
-                  <div style={{ fontSize: 11, color: 'var(--szv2-text-muted)', textTransform: 'uppercase', letterSpacing: 0.5 }}>{k.label}</div>
-                  <div style={{ fontSize: 20, fontWeight: 700, color: k.color, marginTop: 4 }}>{k.value}</div>
-                </div>
-              ))}
-            </div>
+    <DetailDrawer
+      open
+      onClose={onClose}
+      large
+      title={
+        <>
+          Extrato — {cliente.nome || `Usuário #${cliente.user_id}`}
+          {cliente.email && (
+            <span style={{ fontWeight: 400, fontSize: 13, color: 'var(--szv2-text-muted)', marginLeft: 8 }}>
+              {cliente.email}
+            </span>
           )}
-          <div className="szv2-tabs" style={{ marginBottom: 12 }}>
-            <button className="szv2-tab" aria-selected={subtab === 'transacoes'} onClick={() => setSubtab('transacoes')}>Transações</button>
-            <button className="szv2-tab" aria-selected={subtab === 'recargas'} onClick={() => setSubtab('recargas')}>Recargas</button>
-          </div>
-          {err && <div className="sz-alert-danger" style={{ marginBottom: 12 }}>{err}</div>}
-          {loading ? (
-            <div className="szv2-empty"><h3>Carregando…</h3></div>
-          ) : subtab === 'transacoes' ? (
-            <div className="szv2-table-wrap">
-              <table className="szv2-table">
-                <thead><tr><th>Data</th><th>Tipo</th><th className="szv2-td-num">Valor</th><th>Status</th><th>Descrição</th></tr></thead>
-                <tbody>
-                  {(detail?.transacoes || []).map(t => (
-                    <tr key={t.id}>
-                      <td style={{ fontSize: 12, color: 'var(--szv2-text-muted)' }}>{fmtDate(t.created_at)}</td>
-                      <td><span className={`szv2-status-badge ${t.tipo === 'credito' ? 's-confirmado' : t.tipo === 'debito' ? 's-cancelado' : 's-pendente'}`}>{t.tipo}</span></td>
-                      <td className="szv2-td-num" style={{ fontWeight: 700, color: t.tipo === 'credito' ? 'var(--szv2-success)' : t.tipo === 'debito' ? 'var(--szv2-danger)' : 'inherit' }}>{fmt(t.valor)}</td>
-                      <td><span className={`sz-badge ${STATUS_BADGE[t.status] || 'szv2-badge-neutral'}`}>{t.status}</span></td>
-                      <td style={{ fontSize: 12, color: 'var(--szv2-text-soft)' }}>{t.descricao}</td>
-                    </tr>
-                  ))}
-                  {(detail?.transacoes || []).length === 0 && (
-                    <tr><td colSpan={5}><div className="szv2-empty"><h3>Sem transações</h3></div></td></tr>
-                  )}
-                </tbody>
-              </table>
+        </>
+      }
+      footer={<button type="button" className="szv2-btn szv2-btn-secondary" onClick={onClose}>Fechar</button>}
+    >
+      {detail && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginBottom: 16 }}>
+          {[
+            { label: 'Saldo total', value: fmt(detail.cliente.saldo), color: 'inherit' },
+            { label: 'Reservado', value: fmt(detail.cliente.saldo_reservado), color: 'var(--szv2-warning)' },
+            { label: 'Disponível', value: fmt(detail.cliente.saldo_disponivel), color: 'var(--szv2-success)' },
+          ].map(k => (
+            <div key={k.label} className="szv2-card" style={{ padding: 12, margin: 0 }}>
+              <div style={{ fontSize: 11, color: 'var(--szv2-text-muted)', textTransform: 'uppercase', letterSpacing: 0.5 }}>{k.label}</div>
+              <div style={{ fontSize: 20, fontWeight: 700, color: k.color, marginTop: 4 }}>{k.value}</div>
             </div>
-          ) : (
-            <div className="szv2-table-wrap">
-              <table className="szv2-table">
-                <thead><tr><th>Data</th><th className="szv2-td-num">Valor</th><th>Status</th><th>PIX ID</th><th style={{ width: 140 }}>Ação</th></tr></thead>
-                <tbody>
-                  {(detail?.recargas || []).map(r => (
-                    <tr key={r.id}>
-                      <td style={{ fontSize: 12, color: 'var(--szv2-text-muted)' }}>{fmtDate(r.created_at)}</td>
-                      <td className="szv2-td-num" style={{ fontWeight: 700 }}>{fmt(r.valor)}</td>
-                      <td><span className={`sz-badge ${STATUS_BADGE[r.status] || 'szv2-badge-neutral'}`}>{r.status}</span></td>
-                      <td style={{ fontFamily: 'monospace', fontSize: 11, color: 'var(--szv2-text-muted)', maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.me_pix_id ?? '—'}</td>
-                      <td>{r.status === 'pendente' && (
-                        <button type="button" className="szv2-btn szv2-btn-sm szv2-btn-danger"
-                          disabled={cancelling === r.id} onClick={() => cancelarRecarga(r.id)}>
-                          {cancelling === r.id ? '…' : 'Cancelar'}
-                        </button>
-                      )}</td>
-                    </tr>
-                  ))}
-                  {(detail?.recargas || []).length === 0 && (
-                    <tr><td colSpan={5}><div className="szv2-empty"><h3>Sem recargas</h3></div></td></tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          )}
+          ))}
         </div>
-        <div className="szv2-modal-foot">
-          <button type="button" className="szv2-btn szv2-btn-secondary" onClick={onClose}>Fechar</button>
-        </div>
+      )}
+      <div className="szv2-tabs" style={{ marginBottom: 12 }}>
+        <button className="szv2-tab" aria-selected={subtab === 'transacoes'} onClick={() => setSubtab('transacoes')}>Transações</button>
+        <button className="szv2-tab" aria-selected={subtab === 'recargas'} onClick={() => setSubtab('recargas')}>Recargas</button>
       </div>
-    </div>
+      {err && <div className="sz-alert-danger" style={{ marginBottom: 12 }}>{err}</div>}
+      {loading ? (
+        <TableSkeleton rows={5} cols={5} />
+      ) : subtab === 'transacoes' ? (
+        <div className="szv2-table-wrap">
+          <table className="szv2-table">
+            <thead><tr><th>Data</th><th>Tipo</th><th className="szv2-td-num">Valor</th><th>Status</th><th>Descrição</th></tr></thead>
+            <tbody>
+              {(detail?.transacoes || []).map(t => (
+                <tr key={t.id}>
+                  <td style={{ fontSize: 12, color: 'var(--szv2-text-muted)' }}>{fmtDate(t.created_at)}</td>
+                  <td><span className={`szv2-status-badge ${t.tipo === 'credito' ? 's-confirmado' : t.tipo === 'debito' ? 's-cancelado' : 's-pendente'}`}>{t.tipo}</span></td>
+                  <td className="szv2-td-num" style={{ fontWeight: 700, color: t.tipo === 'credito' ? 'var(--szv2-success)' : t.tipo === 'debito' ? 'var(--szv2-danger)' : 'inherit' }}>{fmt(t.valor)}</td>
+                  <td><span className={`sz-badge ${STATUS_BADGE[t.status] || 'szv2-badge-neutral'}`}>{t.status}</span></td>
+                  <td style={{ fontSize: 12, color: 'var(--szv2-text-soft)' }}>{t.descricao}</td>
+                </tr>
+              ))}
+              {(detail?.transacoes || []).length === 0 && (
+                <tr><td colSpan={5}><div className="szv2-empty"><h3>Sem transações</h3></div></td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <div className="szv2-table-wrap">
+          <table className="szv2-table">
+            <thead><tr><th>Data</th><th className="szv2-td-num">Valor</th><th>Status</th><th>PIX ID</th><th style={{ width: 140 }}>Ação</th></tr></thead>
+            <tbody>
+              {(detail?.recargas || []).map(r => (
+                <tr key={r.id}>
+                  <td style={{ fontSize: 12, color: 'var(--szv2-text-muted)' }}>{fmtDate(r.created_at)}</td>
+                  <td className="szv2-td-num" style={{ fontWeight: 700 }}>{fmt(r.valor)}</td>
+                  <td><span className={`sz-badge ${STATUS_BADGE[r.status] || 'szv2-badge-neutral'}`}>{r.status}</span></td>
+                  <td style={{ fontFamily: 'monospace', fontSize: 11, color: 'var(--szv2-text-muted)', maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.me_pix_id ?? '—'}</td>
+                  <td>{r.status === 'pendente' && (
+                    <button type="button" className="szv2-btn szv2-btn-sm szv2-btn-danger"
+                      disabled={cancelling === r.id} onClick={() => cancelarRecarga(r.id)}>
+                      {cancelling === r.id ? '…' : 'Cancelar'}
+                    </button>
+                  )}</td>
+                </tr>
+              ))}
+              {(detail?.recargas || []).length === 0 && (
+                <tr><td colSpan={5}><div className="szv2-empty"><h3>Sem recargas</h3></div></td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </DetailDrawer>
   )
 }
 
@@ -434,7 +428,7 @@ function TabClientes() {
   const [filterOpen, setFilterOpen] = useState(false)
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState('')
-  const [toast, setToast] = useState<{ kind: 'ok' | 'err'; msg: string } | null>(null)
+  const showToast = useToast() // AUDIT-2026-06-18 Onda3
   const [pixModal, setPixModal] = useState<ClienteRow | null>(null)
   const [extratoModal, setExtratoModal] = useState<ClienteRow | null>(null)
 
@@ -450,9 +444,6 @@ function TabClientes() {
 
   useEffect(() => { load() }, [q, page])
 
-  function showToast(kind: 'ok' | 'err', msg: string) {
-    setToast({ kind, msg }); setTimeout(() => setToast(null), 5000)
-  }
 
   function openPanel()   { setDraftQ(q); setFilterOpen(true) }
   function applyFilters() { setPage(1); setQ(draftQ.trim()); setFilterOpen(false) }
@@ -479,11 +470,6 @@ function TabClientes() {
       <ActiveFilterChips chips={chips} onClearAll={clearFilters} />
 
       {err && <div className="sz-alert-danger" style={{ marginBottom: 16 }}>{err}</div>}
-      {toast && (
-        <div className={toast.kind === 'ok' ? 'sz-alert-success' : 'sz-alert-danger'} style={{ marginBottom: 16 }}>
-          {toast.msg}
-        </div>
-      )}
 
       <FilterTopPanel
         open={filterOpen}
@@ -602,7 +588,7 @@ function ResetWalletPanel({
 
   async function reset() {
     if (!ready) return
-    if (!window.confirm('Tem ABSOLUTA certeza? Essa ação apaga TODAS as carteiras, transações e recargas.')) return
+    if (!await confirmAsync({ message: 'Tem ABSOLUTA certeza? Essa ação apaga TODAS as carteiras, transações e recargas.', danger: true })) return
     setBusy(true)
     try {
       const r = await api<{ ok: boolean; result: { carteira_deleted: number; transacoes_deleted: number; recargas_deleted: number } }>(
@@ -684,13 +670,10 @@ function TabTransacoes() {
   const [userIdApplied, setUserIdApplied] = useState('')
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState('')
-  const [toast, setToast] = useState<{ kind: 'ok' | 'err'; msg: string } | null>(null)
+  const showToast = useToast() // AUDIT-2026-06-18 Onda3
   const [busy, setBusy] = useState(false)
   const [deletingId, setDeletingId] = useState<number | null>(null)
 
-  function showToast(kind: 'ok' | 'err', msg: string) {
-    setToast({ kind, msg }); setTimeout(() => setToast(null), 5000)
-  }
 
   async function load() {
     setLoading(true); setErr('')
@@ -746,7 +729,7 @@ function TabTransacoes() {
   }
 
   async function handleDelete(id: number) {
-    if (!window.confirm(`Excluir transação #${id}?\n\nO saldo do cliente será recalculado. IRREVERSÍVEL.`)) return
+    if (!await confirmAsync({ message: `Excluir transação #${id}? O saldo do cliente será recalculado. IRREVERSÍVEL.`, danger: true })) return
     setDeletingId(id)
     try {
       const r = await api<{ ok: boolean; user_id: number; novo_saldo: number }>(`/tpc-transacoes/${id}`, { method: 'DELETE' })
@@ -758,7 +741,7 @@ function TabTransacoes() {
   }
 
   async function handleVerificarPix() {
-    if (!window.confirm('Disparar verificação de PIX pendentes agora?')) return
+    if (!await confirmAsync({ message: 'Disparar verificação de PIX pendentes agora?' })) return
     setBusy(true)
     try {
       const r = await api<{ ok: boolean; queued: number; stub?: boolean }>('/tpc-transacoes/verificar-pix', { method: 'POST' })
@@ -802,11 +785,6 @@ function TabTransacoes() {
       <ActiveFilterChips chips={chips} onClearAll={clearAll} />
 
       {err && <div className="sz-alert-danger" style={{ marginBottom: 16 }}>{err}</div>}
-      {toast && (
-        <div className={toast.kind === 'ok' ? 'sz-alert-success' : 'sz-alert-danger'} style={{ marginBottom: 16 }}>
-          {toast.msg}
-        </div>
-      )}
 
       <FilterTopPanel
         open={filterOpen}
@@ -816,38 +794,34 @@ function TabTransacoes() {
         title="Filtros"
       >
         <FilterField label="Data inicial">
-          <input
-            type="date"
-            style={filterInputStyle}
+          <FalkDatePicker
             value={draftIni}
-            onChange={e => setDraftIni(e.target.value)}
+            onChange={v => setDraftIni(v)}
+            placeholder="dd/mm/aaaa"
           />
         </FilterField>
         <FilterField label="Data final">
-          <input
-            type="date"
-            style={filterInputStyle}
+          <FalkDatePicker
             value={draftFim}
-            onChange={e => setDraftFim(e.target.value)}
+            onChange={v => setDraftFim(v)}
+            placeholder="dd/mm/aaaa"
           />
         </FilterField>
         <FilterField label="Tipo">
-          <select
-            style={filterInputStyle}
+          <FalkSelect
             value={draftTipo}
-            onChange={e => setDraftTipo(e.target.value as TipoFilter)}
-          >
-            {TIPO_CHIPS.map(c => <option key={c.key || 'all-t'} value={c.key}>{c.label}</option>)}
-          </select>
+            onChange={v => setDraftTipo(v as TipoFilter)}
+            aria-label="Tipo"
+            options={TIPO_CHIPS.map(c => ({ value: c.key, label: c.label }))}
+          />
         </FilterField>
         <FilterField label="Status">
-          <select
-            style={filterInputStyle}
+          <FalkSelect
             value={draftStatus}
-            onChange={e => setDraftStatus(e.target.value as StatusTxFilter)}
-          >
-            {STATUS_TX_CHIPS.map(c => <option key={c.key || 'all-s'} value={c.key}>{c.label}</option>)}
-          </select>
+            onChange={v => setDraftStatus(v as StatusTxFilter)}
+            aria-label="Status"
+            options={STATUS_TX_CHIPS.map(c => ({ value: c.key, label: c.label }))}
+          />
         </FilterField>
         <FilterField label="Busca (user_id)">
           <input
@@ -861,7 +835,8 @@ function TabTransacoes() {
         </FilterField>
       </FilterTopPanel>
 
-      {/* Tabela */}
+      {/* Tabela — AUDIT-2026-06-18 Onda3: TableSkeleton durante loading */}
+      {loading && items.length === 0 ? <TableSkeleton rows={8} cols={9} /> : (
       <div className="szv2-table-wrap">
         <table className="szv2-table">
           <thead>
@@ -872,9 +847,7 @@ function TabTransacoes() {
             </tr>
           </thead>
           <tbody>
-            {loading ? (
-              <tr><td colSpan={9}><div className="szv2-empty"><h3>Carregando…</h3></div></td></tr>
-            ) : items.length === 0 ? (
+            {items.length === 0 ? (
               <tr><td colSpan={9}><div className="szv2-empty"><h3>Nenhuma transação encontrada</h3>{hasFilter && <p>Tente ajustar os filtros.</p>}</div></td></tr>
             ) : items.map(t => {
               const isC = t.tipo === 'credito'; const isD = t.tipo === 'debito'
@@ -898,7 +871,7 @@ function TabTransacoes() {
                   <td className="szv2-td-num" style={{ color: 'var(--szv2-text-muted)' }}>{fmt(t.saldo_apos)}</td>
                   <td style={{ fontSize: 12, color: 'var(--szv2-text-soft)', maxWidth: 280 }}>
                     {t.descricao || <span style={{ color: 'var(--szv2-text-faint)' }}>—</span>}
-                    {t.order_id && <div style={{ fontSize: 11, color: 'var(--szv2-text-muted)', marginTop: 2 }}>Pedido #{t.order_id}</div>}
+                    {t.order_id && <div style={{ fontSize: 11, color: 'var(--szv2-text-muted)', marginTop: 2 }}>Pedido {t.order_id}</div>}
                   </td>
                   <td style={{ fontSize: 12, color: 'var(--szv2-text-muted)', whiteSpace: 'nowrap' }}>{fmtDate(t.created_at)}</td>
                   <td>
@@ -913,6 +886,7 @@ function TabTransacoes() {
           </tbody>
         </table>
       </div>
+      )}
 
       {/* Paginação */}
       {total > PER_PAGE && (
@@ -943,37 +917,23 @@ function TabConfiguracoes() {
   const [pixAutoCancel, setPixAutoCancel] = useState(true)
   const [enforceWallet, setEnforceWallet] = useState(true)
   const [blockDuplicate, setBlockDuplicate] = useState(true)
-  const [checkoutTemplateID, setCheckoutTemplateID] = useState(140)
-  const [owners, setOwners] = useState<WalletOwnerItem[]>([])
-  const [ownersOpen, setOwnersOpen] = useState(false)
-  const [showAddOwner, setShowAddOwner] = useState(false)
-  const [addClassID, setAddClassID] = useState('')
-  const [addUserID, setAddUserID] = useState('')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [err, setErr] = useState('')
-  const [toast, setToast] = useState<{ kind: 'ok' | 'err'; msg: string } | null>(null)
+  const showToast = useToast() // AUDIT-2026-06-18 Onda3
 
-  function showToast(kind: 'ok' | 'err', msg: string) {
-    setToast({ kind, msg }); setTimeout(() => setToast(null), 5000)
-  }
 
   async function loadAll() {
     setLoading(true); setErr('')
     try {
-      const [c, ow] = await Promise.all([
-        api<ConfigResp>('/tpc-config'),
-        api<{ items: WalletOwnerItem[] }>('/tpc-config/wallet-owners'),
-      ])
+      const c = await api<ConfigResp>('/tpc-config')
       setCfg(c)
       setSaldoMinimo(c.regras.saldo_minimo)
       setPixValidMinutes(c.motor.pix_valid_minutes)
       setPixAutoCancel(c.motor.pix_auto_cancel_expired)
       setEnforceWallet(c.motor.enforce_wallet_on_label)
       setBlockDuplicate(c.motor.block_duplicate_label)
-      setCheckoutTemplateID(c.motor.checkout_template_id)
       setMeTokenInput(''); setWhSecretInput('')
-      setOwners(ow.items || [])
     } catch (e: any) { setErr(e.message || 'Erro ao carregar configurações') }
     finally { setLoading(false) }
   }
@@ -990,7 +950,7 @@ function TabConfiguracoes() {
       const body: any = {
         saldo_minimo: saldoMinimo, pix_valid_minutes: pixValidMinutes,
         pix_auto_cancel_expired: pixAutoCancel, enforce_wallet_on_label: enforceWallet,
-        block_duplicate_label: blockDuplicate, checkout_template_id: checkoutTemplateID,
+        block_duplicate_label: blockDuplicate,
       }
       if (meTokenInput.trim() && !cfg.me.token_from_env) body.me_token = meTokenInput.trim()
       if (whSecretInput.trim() && !cfg.me.webhook_secret_from_env) body.webhook_secret = whSecretInput.trim()
@@ -1005,7 +965,7 @@ function TabConfiguracoes() {
     const label = which === 'webhook' ? 'Webhook' : 'JWT'
     const fromEnv = which === 'webhook' ? cfg.me.webhook_secret_from_env : cfg.me.jwt_secret_from_env
     if (fromEnv) { showToast('err', `Segredo ${label} está gerenciado por variável de ambiente.`); return }
-    if (!window.confirm(`Gerar novo segredo ${label}?\n\nO valor antigo será invalidado. Continuar?`)) return
+    if (!await confirmAsync({ message: `Gerar novo segredo ${label}? O valor antigo será invalidado.`, danger: true })) return
     try {
       const r = await api<{ ok: boolean; masked: string }>('/tpc-config/regenerate-secret', {
         method: 'POST', body: JSON.stringify({ which }),
@@ -1019,39 +979,11 @@ function TabConfiguracoes() {
     catch { showToast('err', 'Não foi possível copiar.') }
   }
 
-  function handleAddOwner() {
-    const cid = parseInt(addClassID.trim(), 10); const uid = parseInt(addUserID.trim(), 10)
-    if (!isFinite(cid) || cid < 0) { showToast('err', 'ID da classe inválido.'); return }
-    if (!isFinite(uid) || uid <= 0) { showToast('err', 'ID do usuário inválido.'); return }
-    setOwners(prev => [
-      ...prev.filter(p => p.class_id !== cid),
-      { class_id: cid, class_name: `Classe #${cid}`, user_id: uid, user_nome: '', user_email: '' },
-    ])
-    setAddClassID(''); setAddUserID(''); setShowAddOwner(false)
-  }
-
-  function handleRemoveOwner(class_id: number) {
-    if (!window.confirm(`Remover mapeamento da classe #${class_id}?`)) return
-    setOwners(prev => prev.filter(p => p.class_id !== class_id))
-  }
-
-  async function handleSaveOwners() {
-    setSaving(true)
-    try {
-      await api('/tpc-config/wallet-owners', {
-        method: 'POST',
-        body: JSON.stringify({ items: owners.map(o => ({ class_id: o.class_id, user_id: o.user_id })) }),
-      })
-      showToast('ok', 'Mapeamentos salvos.'); await loadAll()
-    } catch (e: any) { showToast('err', e.message || 'Falha ao salvar mapeamentos') }
-    finally { setSaving(false) }
-  }
-
-  if (loading) return <div style={{ padding: 48, textAlign: 'center', color: 'var(--szv2-text-muted)' }}>Carregando configurações…</div>
+  if (loading) return <TableSkeleton rows={6} cols={2} /> // AUDIT-2026-06-18 Onda3
   if (!cfg) return <div className="sz-alert-danger" style={{ marginBottom: 16 }}>{err || 'Não foi possível carregar.'}</div>
 
   const envBanner = (
-    <div style={{ background: 'rgba(234,88,12,.08)', border: '1px solid rgba(234,88,12,.25)', color: 'var(--szv2-brand)', padding: '8px 12px', borderRadius: 8, fontSize: 13, marginBottom: 12 }}>
+    <div style={{ background: 'rgba(30, 111, 242,.08)', border: '1px solid rgba(30, 111, 242,.25)', color: 'var(--szv2-brand)', padding: '8px 12px', borderRadius: 8, fontSize: 13, marginBottom: 12 }}>
       Esta configuração está sendo gerenciada por variável de ambiente.
     </div>
   )
@@ -1059,11 +991,6 @@ function TabConfiguracoes() {
   return (
     <div>
       {err && <div className="sz-alert-danger" style={{ marginBottom: 16 }}>{err}</div>}
-      {toast && (
-        <div className={toast.kind === 'ok' ? 'sz-alert-success' : 'sz-alert-danger'} style={{ marginBottom: 16 }}>
-          {toast.msg}
-        </div>
-      )}
 
       {/* Saldo ME */}
       <div className="szv2-card" style={{ marginBottom: 20 }}>
@@ -1130,7 +1057,7 @@ function TabConfiguracoes() {
           <div className="szv2-kpi">
             <span className="szv2-kpi-label">Saldo atual na conta ME</span>
             <span className="szv2-kpi-value" style={{ color: 'var(--szv2-brand)', fontSize: 32 }}>{fmtBRL(cfg.me.saldo_atual_me)}</span>
-            {cfg.me.saldo_at && <span className="szv2-kpi-meta">Atualizado em {cfg.me.saldo_at}</span>}
+            {cfg.me.saldo_at && <span className="szv2-kpi-meta">Atualizado em {brDate(cfg.me.saldo_at)}</span>}
           </div>
         </div>
       </div>
@@ -1148,7 +1075,7 @@ function TabConfiguracoes() {
 
       {/* Motor Senderzz */}
       <div className="szv2-card" style={{ marginBottom: 20 }}>
-        <div className="szv2-card-head"><div><h2>Motor Senderzz</h2><p className="szv2-card-sub">PIX, emissão de etiquetas e template de checkout.</p></div></div>
+        <div className="szv2-card-head"><div><h2>Motor FALK LOG</h2><p className="szv2-card-sub">PIX, emissão de etiquetas e template de checkout.</p></div></div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
           <div className="szv2-field">
             <label className="szv2-label">Validade visual do PIX (minutos) — atual: {pixValidMinutes}</label>
@@ -1172,74 +1099,7 @@ function TabConfiguracoes() {
               </div>
             </label>
           ))}
-          <div className="szv2-field">
-            <label className="szv2-label">Template de Checkout FunnelKit</label>
-            <input className="szv2-input" type="number" min={1} step={1}
-              value={isFinite(checkoutTemplateID) ? checkoutTemplateID : 140}
-              onChange={e => setCheckoutTemplateID(parseInt(e.target.value, 10) || 140)} style={{ maxWidth: 180 }} />
-          </div>
         </div>
-      </div>
-
-      {/* Dono financeiro por classe */}
-      <div className="szv2-card" style={{ marginBottom: 20 }}>
-        <div className="szv2-card-head" style={{ cursor: 'pointer' }} onClick={() => setOwnersOpen(o => !o)}>
-          <div>
-            <h2>Dono financeiro por classe de entrega</h2>
-            <p className="szv2-card-sub">{ownersOpen ? 'Clique para recolher' : 'Clique para expandir'} · {owners.length} mapeamento(s)</p>
-          </div>
-          <span style={{ fontSize: 18, color: 'var(--szv2-text-muted)', transform: ownersOpen ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform .15s' }}>▼</span>
-        </div>
-        {ownersOpen && (
-          <div>
-            {owners.length === 0 ? (
-              <div style={{ padding: 24, textAlign: 'center', color: 'var(--szv2-text-muted)', border: '1px dashed var(--szv2-border)', borderRadius: 8, marginBottom: 12 }}>Nenhum mapeamento configurado.</div>
-            ) : (
-              <div style={{ overflowX: 'auto', marginBottom: 12 }}>
-                <table className="szv2-table">
-                  <thead><tr><th>Class ID</th><th>Nome</th><th>User ID</th><th>Usuário</th><th>Ação</th></tr></thead>
-                  <tbody>
-                    {owners.map(o => (
-                      <tr key={o.class_id}>
-                        <td><code>#{o.class_id}</code></td>
-                        <td>{o.class_name}</td>
-                        <td>
-                          <input className="szv2-input" type="number" min={1} step={1} value={o.user_id || ''}
-                            onChange={e => {
-                              const uid = parseInt(e.target.value, 10)
-                              setOwners(prev => prev.map(p => p.class_id === o.class_id ? { ...p, user_id: isFinite(uid) && uid > 0 ? uid : 0 } : p))
-                            }} style={{ width: 110 }} />
-                        </td>
-                        <td>{o.user_nome || o.user_email ? <span><strong>{o.user_nome || '—'}</strong>{o.user_email && <span style={{ color: 'var(--szv2-text-muted)', marginLeft: 6 }}>({o.user_email})</span>}</span> : <span style={{ color: 'var(--szv2-text-muted)' }}>(não encontrado)</span>}</td>
-                        <td><button type="button" className="szv2-btn-secondary" onClick={() => handleRemoveOwner(o.class_id)}>Remover</button></td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-              <button type="button" className="szv2-btn-secondary" onClick={() => setShowAddOwner(true)}>Adicionar mapeamento</button>
-              <button type="button" className="szv2-btn-brand" onClick={handleSaveOwners} disabled={saving}>{saving ? 'Salvando…' : 'Salvar mapeamentos'}</button>
-            </div>
-            {showAddOwner && (
-              <div style={{ marginTop: 12, padding: 12, border: '1px solid var(--szv2-border)', borderRadius: 8, background: 'rgba(234,88,12,.04)' }}>
-                <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end' }}>
-                  <div style={{ flex: 1 }}>
-                    <label className="szv2-label">Class ID</label>
-                    <input className="szv2-input" type="number" min={0} step={1} value={addClassID} onChange={e => setAddClassID(e.target.value)} placeholder="0 = sem classe" />
-                  </div>
-                  <div style={{ flex: 1 }}>
-                    <label className="szv2-label">User ID</label>
-                    <input className="szv2-input" type="number" min={1} step={1} value={addUserID} onChange={e => setAddUserID(e.target.value)} placeholder="ex.: 5" />
-                  </div>
-                  <button type="button" className="szv2-btn-brand" onClick={handleAddOwner}>Adicionar</button>
-                  <button type="button" className="szv2-btn-secondary" onClick={() => { setShowAddOwner(false); setAddClassID(''); setAddUserID('') }}>Cancelar</button>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
       </div>
 
       {/* Footer salvar */}
@@ -1273,7 +1133,7 @@ function TabRestApi() {
     { method: 'POST', path: '/wp-json/tp-carteira/v1/estornar-reserva', desc: 'Libera reserva em caso de falha na emissão.' },
   ]
 
-  const jsFetch = `const url = '${webhookUrl || 'https://app.senderzz.com.br/wp-json/tp-carteira/v1/webhook/pix'}';
+  const jsFetch = `const url = '${webhookUrl || 'https://app.falklog.com.br/wp-json/tp-carteira/v1/webhook/pix'}';
 
 // Exemplo: notificação PIX confirmado
 const body = {
@@ -1358,7 +1218,7 @@ function TabPixReconciliacao() {
   const [crons, setCrons] = useState<CronItem[]>([])
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState('')
-  const [toast, setToast] = useState<{ kind: 'ok' | 'err'; msg: string } | null>(null)
+  const showToast = useToast() // AUDIT-2026-06-18 Onda3
   const [acting, setActing] = useState<number | null>(null)
   const [triggerBusy, setTriggerBusy] = useState(false)
 
@@ -1376,9 +1236,6 @@ function TabPixReconciliacao() {
     onRemove: () => setPixStatus(''),
   })
 
-  function showToast(kind: 'ok' | 'err', msg: string) {
-    setToast({ kind, msg }); setTimeout(() => setToast(null), 5000)
-  }
 
   async function loadAll() {
     setLoading(true); setErr('')
@@ -1406,7 +1263,7 @@ function TabPixReconciliacao() {
   }
 
   async function triggerReconcile() {
-    if (!window.confirm('Disparar reconciliação PIX agora (sz_pix_auto_reconcile_cron)?')) return
+    if (!await confirmAsync({ message: 'Disparar reconciliação PIX agora (sz_pix_auto_reconcile_cron)?' })) return
     setTriggerBusy(true)
     try {
       await api('/crons/sz_pix_auto_reconcile_cron/trigger', { method: 'POST' })
@@ -1445,26 +1302,22 @@ function TabPixReconciliacao() {
         title="Filtros — Recargas PIX"
       >
         <FilterField label="Status">
-          <select
-            style={filterInputStyle}
+          <FalkSelect
             value={draftPixStatus}
-            onChange={e => setDraftPixStatus(e.target.value)}
-          >
-            <option value="">Todos status</option>
-            <option value="pendente">Pendente</option>
-            <option value="confirmado">Confirmado</option>
-            <option value="expirado">Expirado</option>
-            <option value="cancelado">Cancelado</option>
-          </select>
+            onChange={v => setDraftPixStatus(v)}
+            aria-label="Status"
+            options={[
+              { value: '', label: 'Todos status' },
+              { value: 'pendente', label: 'Pendente' },
+              { value: 'confirmado', label: 'Confirmado' },
+              { value: 'expirado', label: 'Expirado' },
+              { value: 'cancelado', label: 'Cancelado' },
+            ]}
+          />
         </FilterField>
       </FilterTopPanel>
 
       {err && <div className="sz-alert-danger" style={{ marginBottom: 16 }}>{err}</div>}
-      {toast && (
-        <div className={toast.kind === 'ok' ? 'sz-alert-success' : 'sz-alert-danger'} style={{ marginBottom: 16 }}>
-          {toast.msg}
-        </div>
-      )}
 
       {/* KPIs de reconciliação */}
       <div className="szv2-kpi-grid" style={{ gridTemplateColumns: 'repeat(3, minmax(0,1fr))', marginBottom: 20 }}>
@@ -1500,7 +1353,7 @@ function TabPixReconciliacao() {
                 </tr>
               ))}
               {crons.length === 0 && (
-                <tr><td colSpan={5}><div className="szv2-empty"><h3>{loading ? 'Carregando…' : 'Sem dados de cron disponíveis'}</h3></div></td></tr>
+                <tr><td colSpan={5}>{loading ? <TableSkeleton rows={3} cols={5} /> : <div className="szv2-empty"><h3>Sem dados de cron disponíveis</h3></div>}</td></tr>
               )}
             </tbody>
           </table>
@@ -1522,7 +1375,7 @@ function TabPixReconciliacao() {
             </thead>
             <tbody>
               {loading ? (
-                <tr><td colSpan={9}><div className="szv2-empty"><h3>Carregando…</h3></div></td></tr>
+                <tr><td colSpan={9}><TableSkeleton rows={5} cols={9} /></td></tr> // AUDIT-2026-06-18 Onda3
               ) : pixItems.length === 0 ? (
                 <tr><td colSpan={9}><div className="szv2-empty"><h3>Nenhuma recarga encontrada</h3></div></td></tr>
               ) : pixItems.map(p => (

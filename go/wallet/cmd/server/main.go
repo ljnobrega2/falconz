@@ -11,9 +11,9 @@
 //   - ME_API_URL             — Melhor Envio API base (default: https://melhorenvio.com.br/api/v2)
 //   - ME_TOKEN               — token OAuth ME
 //   - WALLET_INTERNAL_SECRET — secret HMAC para rotas /internal/* (double-write PHP→Go).
-//                              Se ausente, rotas /internal/* ficam desativadas (fail-closed).
+//     Se ausente, rotas /internal/* ficam desativadas (fail-closed).
 //   - ASYNQ_REDIS_ADDR       — Redis para Asynq scheduler (default: localhost:6379).
-//                              Se ausente, o scheduler de reconciliação não é iniciado.
+//     Se ausente, o scheduler de reconciliação não é iniciado.
 package main
 
 import (
@@ -31,6 +31,7 @@ import (
 	"github.com/senderzz/wallet-service/internal/db"
 	"github.com/senderzz/wallet-service/internal/handlers"
 	"github.com/senderzz/wallet-service/internal/jobs"
+	"github.com/senderzz/wallet-service/internal/melhorenvio"
 	"github.com/senderzz/wallet-service/internal/middleware"
 )
 
@@ -53,6 +54,15 @@ func main() {
 	// Instancia os handlers com injeção de dependência.
 	walletH := handlers.NewWalletHandler(pool)
 	pixH := handlers.NewPixHandler(pool)
+	authH := handlers.NewAuthHandler(pool)
+
+	// Cliente Melhor Envio (M-01): emissão de PIX via POST /me/balance.
+	// Sem ME_TOKEN, GerarPix retorna erro claro (não panic) — ver melhorenvio.NewClient.
+	meClient := melhorenvio.NewClient()
+	if !meClient.HasToken() {
+		slog.Warn("[wallet] ME_TOKEN ausente — emissão de PIX (/recarregar) retornará 503 até configurar")
+	}
+	recargaH := handlers.NewRecargaHandler(pool, meClient)
 
 	// Instancia o handler de double-write (PHP → Go).
 	// Se WALLET_INTERNAL_SECRET não estiver configurado, internalH = nil
@@ -74,6 +84,7 @@ func main() {
 	}
 
 	reconcileTask := jobs.NewReconcileTask(pool)
+	estornoReconcileTask := jobs.NewEstornoReconcileTask(pool)
 	var asynqServer *asynq.Server
 	var asynqScheduler *asynq.Scheduler
 
@@ -97,6 +108,7 @@ func main() {
 	// Registra o handler de reconciliação no servidor Asynq.
 	mux := asynq.NewServeMux()
 	mux.HandleFunc(jobs.TypeReconcile, reconcileTask.ProcessReconcile)
+	mux.HandleFunc(jobs.TypeCreditarEstornosVencidos, estornoReconcileTask.ProcessCreditarEstornosVencidos)
 
 	// Configura o scheduler para disparar reconciliação diariamente às 06:00 UTC
 	// (03:00 BRT — janela de baixo tráfego na operação Senderzz).
@@ -111,6 +123,21 @@ func main() {
 	); err != nil {
 		slog.Error("[tpc_reconcile] falha ao registrar schedule", "err", err)
 		// Não fatal — o servidor HTTP continua operando sem o scheduler.
+	}
+
+	// Estornos pendentes de cancelamento de expedição: sem sinal em tempo real
+	// da ME (ver estorno_reconcile.go), credita automaticamente o que passar
+	// da janela de segurança de 24h. Roda a cada hora — folga curta o bastante
+	// pra não acumular muito atraso além da própria janela de 24h.
+	if _, err := asynqScheduler.Register(
+		"0 * * * *",
+		asynq.NewTask(jobs.TypeCreditarEstornosVencidos, nil,
+			asynq.TaskID("wallet:creditar-estornos-vencidos:hourly"),
+			asynq.MaxRetry(2),
+			asynq.Queue("critical"),
+		),
+	); err != nil {
+		slog.Error("[tpc_estorno_reconcile] falha ao registrar schedule", "err", err)
 	}
 
 	// Inicia o servidor Asynq em background.
@@ -138,11 +165,35 @@ func main() {
 	r := chi.NewRouter()
 	r.Use(chimw.RequestID)
 	r.Use(chimw.RealIP)
-	r.Use(chimw.Logger)
-	r.Use(chimw.Recoverer)
+	// RequestLogger substitui chimw.Logger (texto) por slog JSON estruturado e
+	// injeta no contexto um logger pré-anotado com request_id (middleware.LoggerFrom).
+	// DEVE ficar antes de Recoverer para registrar o acesso mesmo em panic→500.
+	r.Use(middleware.RequestLogger)
+	// Recoverer (slog, com request_id) substitui chimw.Recoverer: panic→500 JSON
+	// no mesmo contrato dos demais erros + log ERROR com stack. NÃO muda negócio.
+	r.Use(middleware.Recoverer)
 
+	// /health = liveness puro: o processo está de pé? Sempre 200 (não toca no banco).
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"ok":true,"service":"wallet","version":"2.0"}`))
+	})
+
+	// /readyz = readiness: o serviço está apto a receber tráfego? Faz pool.Ping
+	// com timeout curto — 200 se o banco responde, 503 caso contrário. Separado de
+	// /health para que orquestradores (k8s/compose) tirem a instância do balanceador
+	// quando o Postgres cai SEM matar o processo (que /health continua reportando vivo).
+	r.Get("/readyz", func(w http.ResponseWriter, r *http.Request) {
+		pingCtx, pingCancel := context.WithTimeout(r.Context(), 3*time.Second)
+		defer pingCancel()
+		w.Header().Set("Content-Type", "application/json")
+		if err := pool.Ping(pingCtx); err != nil {
+			slog.Error("[wallet] readiness check falhou — banco inacessível", "err", err)
+			w.WriteHeader(http.StatusServiceUnavailable)
+			w.Write([]byte(`{"ok":false,"service":"wallet","erro":"banco indisponível"}`))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"ok":true,"service":"wallet","version":"2.0"}`))
 	})
 
@@ -153,9 +204,9 @@ func main() {
 	}
 
 	r.Route("/wp-json/tp-carteira/v1", func(r chi.Router) {
-		// Auth
-		r.Post("/auth/token", stub("POST /auth/token"))
-		r.Post("/auth/token-from-portal-session", stub("POST /auth/token-from-portal-session"))
+		// Auth — públicas (sem JWT). M-02: port FIEL de rest-api.php:311-420.
+		r.Post("/auth/token", authH.PostAuthToken)
+		r.Post("/auth/token-from-portal-session", authH.PostAuthTokenFromPortalSession)
 
 		// Webhook PIX — sem JWT (autenticado por HMAC-SHA256).
 		r.Post("/pix/webhook", pixH.PostPixWebhook)
@@ -166,23 +217,34 @@ func main() {
 		r.Group(func(r chi.Router) {
 			r.Use(middleware.AuthJWT)
 
-			r.Get("/me", stub("GET /me"))
+			r.Get("/me", authH.GetMe)
 			r.Get("/saldo", walletH.GetSaldo)
 			r.Get("/extrato", walletH.GetExtrato)
-			r.Post("/recarregar", stub("POST /recarregar"))
-			r.Get("/recarga/{recarga_id}/pix", stub("GET /recarga/{id}/pix"))
+			// M-01: recarga PIX (port FIEL de tpc_endpoint_recarregar / tpc_endpoint_pix_status).
+			r.Post("/recarregar", recargaH.PostRecarregar)
+			r.Get("/recarga/{recarga_id}/pix", recargaH.GetRecargaPix)
+			// "Já paguei" — fail-closed: só registra a intenção e devolve prazo,
+			// NÃO confirma/credita (port FIEL de tpc_endpoint_pix_ja_paguei, pix.php:469).
+			r.Post("/pix/{recarga_id}/ja-paguei", recargaH.PostPixJaPaguei)
 
-			// Operações internas de reserva (usadas pelo serviço ME e por jobs).
-			r.Post("/carteira/reservar", walletH.PostReservar)
-			r.Post("/carteira/debitar-reserva", walletH.PostDebitarReserva)
-			r.Post("/carteira/creditar", walletH.PostCreditar)
-			r.Post("/carteira/liberar-reserva", walletH.PostLiberarReserva)
+			// SEC-GO-01: reservar/debitar-reserva/creditar/liberar-reserva NÃO podem
+			// viver sob JWT de usuário — creditam/debitam a carteira do PRÓPRIO caller
+			// com valor + referência (idempotência) do body → mint de dinheiro.
+			// São operações SERVIÇO-A-SERVIÇO. Quando o fluxo de reserva for ligado
+			// (orders payments.go, TODO Fase 7), expor SOMENTE via /internal/* (HMAC),
+			// lendo user_id do corpo HMAC-confiável — nunca do JWT do usuário.
+			// O crédito de serviço já existe em /internal/transacoes (InserirTransacao).
 		})
 
-		// Admin — requer permissão manage_woocommerce (stub — implementar em Fase 3).
+		// Admin — visão de QUALQUER usuário por user_id (port FIEL de
+		// tpc_endpoint_admin_saldo / tpc_endpoint_admin_extrato, rest-api.php:280-289).
+		// Auth: AuthAdminJWT — análogo fiel ao current_user_can('manage_woocommerce')
+		// do PHP (admin humano logado). Fail-closed: secret ausente → 503.
 		r.Group(func(r chi.Router) {
-			r.Get("/admin/usuario/{user_id}/saldo", stub("GET /admin/usuario/{id}/saldo"))
-			r.Get("/admin/usuario/{user_id}/extrato", stub("GET /admin/usuario/{id}/extrato"))
+			r.Use(middleware.AuthAdminJWT(pool))
+
+			r.Get("/admin/usuario/{user_id}/saldo", walletH.GetSaldoAdmin)
+			r.Get("/admin/usuario/{user_id}/extrato", walletH.GetExtratoAdmin)
 		})
 	})
 
@@ -215,13 +277,4 @@ func main() {
 		slog.Error("[wallet] erro no shutdown", "err", err)
 	}
 	slog.Info("[wallet] encerrado.")
-}
-
-func stub(route string) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		slog.Info("[wallet] stub hit — implementar na Fase 2", "route", route)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusNotImplemented)
-		w.Write([]byte(`{"ok":false,"erro":"Rota ` + route + ` ainda não implementada no serviço Go (Fase 2).","hint":"Verificar openapi-tp-carteira-v1.yaml"}`))
-	}
 }

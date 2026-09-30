@@ -19,8 +19,17 @@ admin-ui/tsconfig*.tsbuildinfo
 # Config local de ferramentas
 .claude/settings.local.json
 *.local.json
+.claude/worktrees/
+.tmpwork/
 
 # SO
 .DS_Store
 **/.DS_Store
 Thumbs.db
+
+# Dumps WP (dados reais, não commitar)
+/_import/
+*.sql
+# Exceção: migrações de schema versionadas (NÃO são dumps de dados)
+!infra/postgres/*.sql
+.wrangler/

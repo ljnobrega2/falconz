@@ -2517,11 +2517,11 @@
 .szv2-confirm-icon {
     width: 48px; height: 48px;
     border-radius: 50%;
-    background: rgba(234,88,12,.12);
+    background: rgba(30, 111, 242,.12);
     display: flex; align-items: center; justify-content: center;
     margin: 0 auto 16px;
 }
-.szv2-confirm-icon svg { width: 24px; height: 24px; fill: #ea580c; }
+.szv2-confirm-icon svg { width: 24px; height: 24px; fill: #1E6FF2; }
 .szv2-confirm-title {
     font-size: 17px; font-weight: 700;
     color: #111; margin-bottom: 8px;
@@ -2549,13 +2549,13 @@
 }
 .szv2-confirm-actions .szv2-btn-danger:hover { background: #b91c1c; }
 .szv2-confirm-actions .szv2-btn-brand {
-    background: #ea580c; color: #fff; border-color: transparent;
+    background: #1E6FF2; color: #fff; border-color: transparent;
 }
-.szv2-confirm-actions .szv2-btn-brand:hover { background: #c2410c; }
+.szv2-confirm-actions .szv2-btn-brand:hover { background: #1556CC; }
 .szv2-confirm-actions .szv2-btn-primary {
-    background: #ea580c; color: #fff; border-color: transparent;
+    background: #1E6FF2; color: #fff; border-color: transparent;
 }
-.szv2-confirm-actions .szv2-btn-primary:hover { background: #c2410c; }
+.szv2-confirm-actions .szv2-btn-primary:hover { background: #1556CC; }
 
 /* ── Classes utilitárias — substituem inline styles conflitantes ─────────── */
 /* Botão de ícone limpar (X) — sem aparência de botão */
@@ -2620,8 +2620,8 @@
   white-space: nowrap; transition: all .12s;
 }
 .sz-dashboard-v2 .szv2-filter-chip.szv2-chip-active {
-  border-color: var(--szv2-brand, #EA580C) !important;
-  background: var(--szv2-brand, #EA580C) !important;
+  border-color: var(--szv2-brand, #1E6FF2) !important;
+  background: var(--szv2-brand, #1E6FF2) !important;
   color: #fff !important;
 }
 .sz-dashboard-v2 .szv2-filter-chip .szv2-chip-count {

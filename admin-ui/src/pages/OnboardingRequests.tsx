@@ -1,4 +1,5 @@
 import { FormEvent, useEffect, useState } from 'react'
+import { useToast } from '../hooks/useToast'
 import { api } from '../api'
 import FilterButton from '../components/FilterButton'
 import FilterTopPanel, {
@@ -9,6 +10,10 @@ import FilterTopPanel, {
 } from '../components/FilterTopPanel'
 import TableSkeleton from '../components/TableSkeleton'
 import EmptyState from '../components/EmptyState'
+import ErrorState from '../components/ErrorState'
+import BulkBar, { useBulkSelection, runBulk } from '../components/BulkBar'
+import FalkSelect from '../components/FalkSelect'
+import FalkDatePicker from '../components/FalkDatePicker'
 
 type Request = {
   id: number
@@ -32,6 +37,24 @@ const STATUS_LABELS: Record<StatusFilter, string> = {
   approved:   'Aprovados',
   rejected:   'Rejeitados',
 }
+
+// FEAT-RBAC-2026-06-21 — níveis (papéis) canônicos atribuíveis na aprovação.
+// O admin escolhe o NÍVEL do usuário ao aprovar; o handler Signup já documenta
+// "O admin aprova e DEFINE O NÍVEL (RBAC) do usuário". Default 'produtor' para
+// preservar o comportamento atual (approveOne hardcoda role='produtor').
+// FEAT-RBAC-2026-06-21 — níveis aprováveis por este fluxo (portal_users + admin).
+// motoboy NÃO entra aqui: vive em sz_motoboys (cadastro próprio), não em portal_users.
+type Nivel = 'admin' | 'operator' | 'produtor' | 'afiliado' | 'cliente'
+
+const NIVEL_LABELS: Record<Nivel, string> = {
+  admin:    'Administrador',
+  operator: 'Operador logístico (OL)',
+  produtor: 'Produtor',
+  afiliado: 'Afiliado',
+  cliente:  'Cliente',
+}
+
+const NIVEL_DEFAULT: Nivel = 'produtor'
 
 // Formata CPF como XXX.XXX.XXX-XX (espelha sz_onboarding_format_cpf).
 function fmtCPF(raw: string | null): string {
@@ -68,7 +91,7 @@ export default function OnboardingRequests() {
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
-  const [toast, setToast] = useState<{ kind: 'ok' | 'err'; msg: string } | null>(null)
+  const showToast = useToast() // AUDIT-2026-06-18 Onda3
 
   // Filtros aplicados.
   const [q, setQ] = useState('')
@@ -96,6 +119,16 @@ export default function OnboardingRequests() {
 
   const [approveFor, setApproveFor] = useState<Request | null>(null)
   const [approveNotes, setApproveNotes] = useState('')
+  const [approveNivel, setApproveNivel] = useState<Nivel>(NIVEL_DEFAULT) // FEAT-RBAC-2026-06-21
+
+  // Ação em lote (aprovar/rejeitar a seleção com uma única nota/motivo).
+  const [bulkKind, setBulkKind] = useState<'approve' | 'reject' | null>(null)
+  const [bulkNotes, setBulkNotes] = useState('')
+  // FEAT-RBAC-2026-06-21 — nível (papel) aplicado a TODAS as solicitações
+  // aprovadas em lote. Sem isto, o lote enviaria só `notes` e cada conta cairia
+  // no default do backend (approveOne hardcoda 'produtor'); o select deixa a
+  // escolha explícita e consistente com a aprovação individual.
+  const [bulkNivel, setBulkNivel] = useState<Nivel>(NIVEL_DEFAULT)
 
   async function load() {
     setLoading(true)
@@ -118,10 +151,6 @@ export default function OnboardingRequests() {
 
   useEffect(() => { load() /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [q, statusFilter, dataIni, dataFim])
 
-  function showToast(kind: 'ok' | 'err', msg: string) {
-    setToast({ kind, msg })
-    setTimeout(() => setToast(null), 5000)
-  }
 
   // ── Criar ────────────────────────────────────────────────────────────────
   async function submitCreate(e: FormEvent) {
@@ -158,10 +187,13 @@ export default function OnboardingRequests() {
     try {
       const r = await api<{ ok: boolean; portal_user_id: number; class_id: number; email_pending?: boolean }>(
         `/onboarding/requests/${approveFor.id}/approve`,
-        { method: 'POST', body: JSON.stringify({ notes: approveNotes.trim() }) }
+        // FEAT-RBAC-2026-06-21 — envia o NÍVEL (papel) na chave `role` (lida por
+        // approveOne; whitelist produtor|afiliado|operator|cliente; admin exige senha do cadastro).
+        { method: 'POST', body: JSON.stringify({ notes: approveNotes.trim(), role: approveNivel }) }
       )
       setApproveFor(null)
       setApproveNotes('')
+      setApproveNivel(NIVEL_DEFAULT)
       const classInfo = r.class_id ? ` Classe de frete #${r.class_id} criada.` : ' (classe de frete não criada — tabela ausente).'
       const emailInfo = r.email_pending ? ' E-mail de boas-vindas pendente — enviar manualmente ou via WordPress.' : ''
       showToast('ok', `Solicitação aprovada. Portal user #${r.portal_user_id} criado.${classInfo}${emailInfo}`)
@@ -199,6 +231,42 @@ export default function OnboardingRequests() {
   }
 
   const pendingCount = items.filter(x => x.status === 'pending').length
+
+  // Seleção em lote — só solicitações pendentes são elegíveis.
+  const selectableIds = items.filter(x => x.status === 'pending').map(x => x.id)
+  const bulk = useBulkSelection(selectableIds)
+
+  // Executa aprovar/rejeitar em lote (loop sobre endpoints por-ID).
+  async function runBulkAction() {
+    if (!bulkKind || bulk.size === 0) return
+    if (bulkKind === 'reject' && !bulkNotes.trim()) {
+      showToast('err', 'Motivo é obrigatório para rejeitar.')
+      return
+    }
+    setBusy(true)
+    try {
+      const notes = bulkNotes.trim()
+      const { ok, fail, errors } = await runBulk(bulk.ids, async (id) => {
+        const path = bulkKind === 'approve'
+          ? `/onboarding/requests/${id}/approve`
+          : `/onboarding/requests/${id}/reject`
+        // FEAT-RBAC-2026-06-21 — aprovação em lote envia o `role` escolhido p/ todas.
+        const body = bulkKind === 'approve' ? { notes, role: bulkNivel } : { notes }
+        await api(path, { method: 'POST', body: JSON.stringify(body) })
+      })
+      if (ok > 0) showToast('ok', `${ok} solicitação(ões) ${bulkKind === 'approve' ? 'aprovada(s)' : 'rejeitada(s)'}.`)
+      if (fail > 0) showToast('err', `${fail} falha(s): ${errors.slice(0, 3).join(' · ')}`)
+      setBulkKind(null)
+      setBulkNotes('')
+      setBulkNivel(NIVEL_DEFAULT) // FEAT-RBAC-2026-06-21
+      bulk.clear()
+      await load()
+    } catch (e: any) {
+      showToast('err', e.message || 'Falha na operação em lote')
+    } finally {
+      setBusy(false)
+    }
+  }
 
   function openPanel() {
     setDraftQ(q); setDraftStatus(statusFilter); setDraftIni(dataIni); setDraftFim(dataFim)
@@ -242,19 +310,14 @@ export default function OnboardingRequests() {
 
       <ActiveFilterChips chips={chips} onClearAll={clearFilters} />
 
-      {err && <div className="sz-alert-danger" style={{ marginBottom: 16 }}>{err}</div>}
-
-      {toast && (
-        <div
-          className={toast.kind === 'ok' ? 'sz-alert-success' : 'sz-alert-danger'}
-          style={{ marginBottom: 16 }}
-        >
-          {toast.msg}
-        </div>
-      )}
+      {/* Banner só com dados na tela (erro de refresh/ação). Falha de
+          carregamento inicial vira ErrorState abaixo. */}
+      {err && items.length > 0 && <div className="sz-alert-danger" style={{ marginBottom: 16 }}>{err}</div>}
 
       {loading && items.length === 0 ? (
         <TableSkeleton rows={5} cols={9} />
+      ) : err && items.length === 0 ? (
+        <ErrorState message={err} onRetry={load} />
       ) : !loading && items.length === 0 ? (
         <EmptyState
           icon="📋"
@@ -266,6 +329,17 @@ export default function OnboardingRequests() {
         <table className="szv2-table">
           <thead>
             <tr>
+              <th style={{ width: 36 }}>
+                <input
+                  type="checkbox"
+                  checked={bulk.allSelected}
+                  ref={el => { if (el) el.indeterminate = bulk.someSelected }}
+                  onChange={bulk.toggleAll}
+                  disabled={selectableIds.length === 0}
+                  title="Selecionar todas as solicitações pendentes"
+                  aria-label="Selecionar todas as solicitações pendentes"
+                />
+              </th>
               <th>ID</th>
               <th>Nome</th>
               <th>E-mail</th>
@@ -280,6 +354,16 @@ export default function OnboardingRequests() {
           <tbody>
             {items.map(req => (
               <tr key={req.id}>
+                <td>
+                  {req.status === 'pending' ? (
+                    <input
+                      type="checkbox"
+                      checked={bulk.has(req.id)}
+                      onChange={() => bulk.toggle(req.id)}
+                      aria-label={`Selecionar solicitação #${req.id}`}
+                    />
+                  ) : null}
+                </td>
                 <td style={{ color: 'var(--szv2-text-muted)', fontSize: 12 }}>#{req.id}</td>
                 <td style={{ fontWeight: 600 }}>{req.nome}</td>
                 <td style={{ fontSize: 13 }}>{req.email}</td>
@@ -301,7 +385,7 @@ export default function OnboardingRequests() {
                         <button
                           className="szv2-btn szv2-btn-sm szv2-btn-brand"
                           disabled={busy}
-                          onClick={() => { setApproveFor(req); setApproveNotes('') }}
+                          onClick={() => { setApproveFor(req); setApproveNotes(''); setApproveNivel(NIVEL_DEFAULT) }}
                         >
                           Aprovar
                         </button>
@@ -431,7 +515,7 @@ export default function OnboardingRequests() {
             </div>
             <div className="szv2-field">
               <label className="szv2-label">Criado em</label>
-              <div style={{ padding: '8px 0', fontSize: 13 }}>{detail.created_at}</div>
+              <div style={{ padding: '8px 0', fontSize: 13 }}>{fmtDate(detail.created_at)}</div>
             </div>
             <div className="szv2-field">
               <label className="szv2-label">Aprovado em</label>
@@ -470,6 +554,22 @@ export default function OnboardingRequests() {
             <button className="szv2-modal-x" onClick={() => setApproveFor(null)}>✕</button>
           </div>
           <form onSubmit={submitApprove}>
+            {/* FEAT-RBAC-2026-06-21 — admin define o NÍVEL (papel) do usuário aprovado. */}
+            <div className="szv2-field" style={{ marginBottom: 16 }}>
+              <label className="szv2-label">Nível do usuário *</label>
+              <FalkSelect
+                aria-label="Nível do usuário"
+                value={approveNivel}
+                onChange={v => setApproveNivel(v as Nivel)}
+                options={(Object.keys(NIVEL_LABELS) as Nivel[]).map(k => ({ value: k, label: NIVEL_LABELS[k] }))}
+              />
+              <span
+                className="szv2-help"
+                style={{ display: 'block', marginTop: 4, fontSize: 12, color: 'var(--szv2-text-muted)' }}
+              >
+                Papel atribuído à conta criada. Padrão: <strong>Produtor</strong>.
+              </span>
+            </div>
             <div className="szv2-field" style={{ marginBottom: 16 }}>
               <label className="szv2-label">Notas (opcional)</label>
               <textarea
@@ -536,6 +636,83 @@ export default function OnboardingRequests() {
         </div>
       )}
 
+      {/* Modal: ação em lote (aprovar/rejeitar com nota/motivo único) */}
+      {bulkKind && (
+        <div className="szv2-card" style={{ marginTop: 24 }}>
+          <div className="szv2-card-head">
+            <div>
+              <h2>
+                {bulkKind === 'approve' ? 'Aprovar' : 'Rejeitar'} {bulk.size} solicitação(ões)
+              </h2>
+              <p className="szv2-card-sub">
+                {bulkKind === 'approve'
+                  ? 'Cria portal_user + classe de frete para cada solicitação selecionada.'
+                  : 'Marca como rejeitada — o motivo é aplicado a todas as selecionadas.'}
+              </p>
+            </div>
+            <button className="szv2-modal-x" onClick={() => { setBulkKind(null); setBulkNotes('') }}>✕</button>
+          </div>
+          {/* FEAT-RBAC-2026-06-21 — nível aplicado a todas as selecionadas (só na aprovação). */}
+          {bulkKind === 'approve' && (
+            <div className="szv2-field" style={{ marginBottom: 16 }}>
+              <label className="szv2-label">Nível do usuário *</label>
+              <FalkSelect
+                aria-label="Nível do usuário"
+                value={bulkNivel}
+                onChange={v => setBulkNivel(v as Nivel)}
+                options={(Object.keys(NIVEL_LABELS) as Nivel[]).map(k => ({ value: k, label: NIVEL_LABELS[k] }))}
+              />
+              <span
+                className="szv2-help"
+                style={{ display: 'block', marginTop: 4, fontSize: 12, color: 'var(--szv2-text-muted)' }}
+              >
+                Aplicado a todas as solicitações selecionadas. Padrão: <strong>Produtor</strong>.
+              </span>
+            </div>
+          )}
+          <div className="szv2-field" style={{ marginBottom: 16 }}>
+            <label className="szv2-label">{bulkKind === 'reject' ? 'Motivo *' : 'Notas (opcional)'}</label>
+            <textarea
+              className="szv2-input"
+              rows={3}
+              required={bulkKind === 'reject'}
+              value={bulkNotes}
+              onChange={e => setBulkNotes(e.target.value)}
+              placeholder={bulkKind === 'reject' ? 'Ex.: dados inválidos…' : 'Observações…'}
+            />
+          </div>
+          <div className="sz-form-actions">
+            <button
+              type="button"
+              className={`szv2-btn ${bulkKind === 'approve' ? 'szv2-btn-brand' : 'szv2-btn-danger'}`}
+              disabled={busy}
+              onClick={runBulkAction}
+            >
+              {busy ? 'Processando…' : (bulkKind === 'approve' ? 'Confirmar aprovação' : 'Confirmar rejeição')}
+            </button>
+            <button
+              type="button"
+              className="szv2-btn szv2-btn-secondary"
+              onClick={() => { setBulkKind(null); setBulkNotes('') }}
+            >
+              Cancelar
+            </button>
+          </div>
+        </div>
+      )}
+
+      <BulkBar
+        count={bulk.size}
+        onClear={bulk.clear}
+        busy={busy}
+        noun="solicitação selecionada"
+        nounPlural="solicitações selecionadas"
+        actions={[
+          { label: 'Aprovar selecionadas', variant: 'brand', onClick: () => { setBulkNotes(''); setBulkNivel(NIVEL_DEFAULT); setBulkKind('approve') } },
+          { label: 'Rejeitar selecionadas', variant: 'danger', onClick: () => { setBulkNotes(''); setBulkKind('reject') } },
+        ]}
+      />
+
       <FilterTopPanel
         open={filterOpen}
         onClose={() => setFilterOpen(false)}
@@ -544,33 +721,30 @@ export default function OnboardingRequests() {
         title="Filtros"
       >
         <FilterField label="Data inicial">
-          <input
-            type="date"
-            style={filterInputStyle}
+          <FalkDatePicker
             value={draftIni}
             max={draftFim || undefined}
-            onChange={e => setDraftIni(e.target.value)}
+            onChange={v => setDraftIni(v)}
+            placeholder="dd/mm/aaaa"
+            aria-label="Data inicial"
           />
         </FilterField>
         <FilterField label="Data final">
-          <input
-            type="date"
-            style={filterInputStyle}
+          <FalkDatePicker
             value={draftFim}
             min={draftIni || undefined}
-            onChange={e => setDraftFim(e.target.value)}
+            onChange={v => setDraftFim(v)}
+            placeholder="dd/mm/aaaa"
+            aria-label="Data final"
           />
         </FilterField>
         <FilterField label="Status">
-          <select
-            style={filterInputStyle}
+          <FalkSelect
+            aria-label="Status"
             value={draftStatus}
-            onChange={e => setDraftStatus(e.target.value as StatusFilter)}
-          >
-            {(Object.keys(STATUS_LABELS) as StatusFilter[]).map(k => (
-              <option key={k} value={k}>{STATUS_LABELS[k]}</option>
-            ))}
-          </select>
+            onChange={v => setDraftStatus(v as StatusFilter)}
+            options={(Object.keys(STATUS_LABELS) as StatusFilter[]).map(k => ({ value: k, label: STATUS_LABELS[k] }))}
+          />
         </FilterField>
         <FilterField label="Busca (nome / e-mail)">
           <input

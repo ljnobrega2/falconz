@@ -25,14 +25,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/senderzz/admin-service/internal/auth"
 	"github.com/senderzz/admin-service/internal/httpx"
 )
 
@@ -88,13 +92,7 @@ type expWebhookInput struct {
 // tableExists — mesma utilidade do padrão de affiliate_wallet.go: verifica
 // presença da tabela no schema public antes de rodar a query.
 func (h *ExpedicaoWebhooksHandler) tableExists(ctx context.Context, name string) bool {
-	var ok bool
-	_ = h.Pool.QueryRow(ctx,
-		`SELECT EXISTS (
-			SELECT FROM information_schema.tables
-			WHERE table_schema='public' AND table_name=$1
-		)`, name).Scan(&ok)
-	return ok
+	return tableExistsCached(ctx, h.Pool, name) // AUDIT-2026-06-18 Onda2 (go-infoschema-cache)
 }
 
 // genSecret — gera segredo de 32 caracteres hex (16 bytes random).
@@ -127,6 +125,134 @@ func validateURL(raw string) error {
 	return nil
 }
 
+// ---------------------------------------------------------------------------
+// P2-03 — defesa contra SSRF + DoS nos endpoints de TESTE/REPROCESS de webhook
+//         e push. Esses endpoints disparam HTTP a uma URL controlada pelo
+//         usuário; sem validação, um admin/produtor poderia apontar para
+//         serviços internos (localhost, 169.254.x metadata, 10./192.168./
+//         172.16-31./100.64-CGNAT) ou abusar do servidor como refletor.
+//         Compartilhado no pacote (usado também por push_tecnico.go).
+// ---------------------------------------------------------------------------
+
+// isBlockedIP — true quando o IP pertence a uma faixa que NUNCA deve ser
+// alvo de um webhook externo (loopback, privado, link-local, metadata,
+// CGNAT, não-especificado, multicast). Cobre IPv4 e IPv6.
+func isBlockedIP(ip net.IP) bool {
+	if ip == nil {
+		return true // não resolveu → trata como bloqueado (fail-closed)
+	}
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified() ||
+		ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
+		ip.IsMulticast() || ip.IsInterfaceLocalMulticast() {
+		return true
+	}
+	// 100.64.0.0/10 — CGNAT (RFC 6598), não coberto por IsPrivate().
+	if v4 := ip.To4(); v4 != nil {
+		if v4[0] == 100 && v4[1] >= 64 && v4[1] <= 127 {
+			return true
+		}
+	}
+	return false
+}
+
+// validatePublicURL — valida a URL e RESOLVE o host, rejeitando qualquer
+// destino interno/privado ANTES de qualquer request HTTP (P2-03 anti-SSRF).
+// Behavior-preserving: reaproveita validateURL() (scheme/host) e só adiciona
+// a checagem de IP. Em caso de host que resolve para múltiplos IPs, basta um
+// IP bloqueado para rejeitar (evita rebinding parcial).
+func validatePublicURL(raw string) error {
+	if err := validateURL(raw); err != nil {
+		return err
+	}
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return fmt.Errorf("url inválida: %v", err)
+	}
+	host := u.Hostname()
+	if host == "" {
+		return fmt.Errorf("url sem host")
+	}
+
+	// Host já é um IP literal? Valida direto, sem DNS.
+	if lit := net.ParseIP(host); lit != nil {
+		if isBlockedIP(lit) {
+			return fmt.Errorf("destino interno/privado bloqueado: %s", host)
+		}
+		return nil
+	}
+
+	// Hostname → resolve e valida TODOS os IPs (timeout curto para não travar).
+	resCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	ips, err := net.DefaultResolver.LookupIPAddr(resCtx, host)
+	if err != nil {
+		return fmt.Errorf("não foi possível resolver o host %q: %v", host, err)
+	}
+	if len(ips) == 0 {
+		return fmt.Errorf("host %q não resolveu para nenhum IP", host)
+	}
+	for _, ipa := range ips {
+		if isBlockedIP(ipa.IP) {
+			return fmt.Errorf("destino interno/privado bloqueado: %s (%s)", host, ipa.IP)
+		}
+	}
+	return nil
+}
+
+// webhookFireRateLimiter — rate-limit em memória (janela deslizante) para os
+// endpoints de teste/reprocess que disparam HTTP externo. Espelha o padrão de
+// auth.LoginRateLimit(): mapa+mutex, chave por usuário admin. Default 5/min.
+// P2-03: previne DoS por reflexão / varredura via disparos repetidos.
+type webhookFireRateLimiter struct {
+	mu     sync.Mutex
+	hits   map[string][]time.Time
+	max    int
+	window time.Duration
+}
+
+func newWebhookFireRateLimiter() *webhookFireRateLimiter {
+	return &webhookFireRateLimiter{
+		hits:   make(map[string][]time.Time),
+		max:    5,
+		window: time.Minute,
+	}
+}
+
+// allow registra uma tentativa para a chave e devolve false se o limite da
+// janela foi excedido (nesse caso a tentativa NÃO é contabilizada).
+func (l *webhookFireRateLimiter) allow(key string) bool {
+	now := time.Now()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	win := l.hits[key][:0]
+	for _, t := range l.hits[key] {
+		if now.Sub(t) < l.window {
+			win = append(win, t)
+		}
+	}
+	if len(win) >= l.max {
+		l.hits[key] = win
+		return false
+	}
+	l.hits[key] = append(win, now)
+	return true
+}
+
+// webhookFireLimiter — instância compartilhada do pacote (estado em memória,
+// criado uma vez). Usado por ExpedicaoWebhooksHandler.Test/Reprocess e por
+// PushTecnicoHandler.TestSend/ReprocessLog (push_tecnico.go).
+var webhookFireLimiter = newWebhookFireRateLimiter()
+
+// rateKeyFromAdmin — chave de rate-limit derivada do admin autenticado.
+// Fallback "anon" quando não há admin no ctx (não deve ocorrer atrás do
+// middleware JWT, mas mantém a função total).
+func rateKeyFromAdmin(ctx context.Context) string {
+	if a := auth.FromCtx(ctx); a != nil && a.ID > 0 {
+		return "admin:" + strconv.FormatInt(a.ID, 10)
+	}
+	return "anon"
+}
+
 // availableEvents — lista canônica de eventos que o produtor pode assinar.
 // Espelha senderzz_pw_status_event_name() e o hook sz_motoboy_status_changed
 // em senderzz-producer-webhooks.php. Formato real dos eventos:
@@ -141,6 +267,8 @@ var availableEvents = []string{
 	"order_status_cancelled",
 	"order_status_refunded",
 	"order_status_failed",
+	// AUDIT-2026-07-31 (dono): status 'coletado' (531-status-coletado.sql) faltava aqui.
+	"order_status_coletado",
 	"order_status_enviado",
 	"order_status_entregue",
 	"order_status_pendente",
@@ -210,7 +338,7 @@ func samplePayload() map[string]any {
 			"estado":      "SP",
 		},
 		"rastreamento":      []string{"BR123456789"},
-		"link_rastreamento": "https://app.senderzz.com.br/rastreio/BR123456789",
+		"link_rastreamento": "https://app.falklog.com.br/rastreio/BR123456789",
 		"itens": []map[string]any{
 			{"nome": "Produto", "quantidade": 1, "subtotal": 197.00},
 		},
@@ -351,6 +479,25 @@ func (h *ExpedicaoWebhooksHandler) Create(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// CRIT-3: producer_id e name são NOT NULL no schema (100-fixes-v460.sql:181-182).
+	// producer_id vem do admin autenticado (mesmo padrão de rateKeyFromAdmin).
+	a := auth.FromCtx(ctx)
+	if a == nil || a.ID <= 0 {
+		httpx.Err(w, 401, "unauthorized", "admin não autenticado")
+		return
+	}
+	producerID := a.ID
+
+	// name é derivado do host da URL (validateURL já garante host não-vazio),
+	// com fallback literal para nunca violar o NOT NULL. Cap em 120 chars.
+	name := "Webhook"
+	if u, perr := url.Parse(strings.TrimSpace(*in.URL)); perr == nil && u.Hostname() != "" {
+		name = "Webhook " + u.Hostname()
+	}
+	if len(name) > 120 {
+		name = name[:120]
+	}
+
 	// Active default = true.
 	active := true
 	if in.Active != nil {
@@ -368,10 +515,10 @@ func (h *ExpedicaoWebhooksHandler) Create(w http.ResponseWriter, r *http.Request
 	var id int64
 	err = h.Pool.QueryRow(ctx,
 		`INSERT INTO senderzz_producer_webhooks
-		   (class_id, url, secret, events, active, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4::jsonb, $5, NOW(), NOW())
+		   (producer_id, name, class_id, url, secret, events, active, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, NOW(), NOW())
 		 RETURNING id`,
-		*in.ClassID, *in.URL, secret, string(eventsJSON), active).Scan(&id)
+		producerID, name, *in.ClassID, *in.URL, secret, string(eventsJSON), active).Scan(&id)
 	if err != nil {
 		httpx.Err(w, 500, "db_error", err.Error())
 		return
@@ -506,6 +653,14 @@ func (h *ExpedicaoWebhooksHandler) Test(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// P2-03: rate-limit 5/min por usuário (disparo HTTP externo).
+	if !webhookFireLimiter.allow(rateKeyFromAdmin(ctx)) {
+		slog.Warn("[senderzz_webhook] P2-03 rate-limit de teste excedido", "key", rateKeyFromAdmin(ctx))
+		w.Header().Set("Retry-After", "60")
+		httpx.Err(w, 429, "rate_limited", "muitos testes de webhook — aguarde 1 minuto")
+		return
+	}
+
 	var (
 		whURL  string
 		secret string
@@ -519,6 +674,12 @@ func (h *ExpedicaoWebhooksHandler) Test(w http.ResponseWriter, r *http.Request) 
 	}
 	if whURL == "" {
 		httpx.Err(w, 400, "bad_request", "webhook sem url (soft-deleted?)")
+		return
+	}
+
+	// P2-03: rejeita destino interno/privado ANTES de qualquer request (anti-SSRF).
+	if err := validatePublicURL(whURL); err != nil {
+		httpx.Err(w, 400, "ssrf_blocked", "url de webhook recusada: "+err.Error())
 		return
 	}
 
@@ -731,6 +892,14 @@ func (h *ExpedicaoWebhooksHandler) Reprocess(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	// P2-03: rate-limit 5/min por usuário (disparo HTTP externo).
+	if !webhookFireLimiter.allow(rateKeyFromAdmin(ctx)) {
+		slog.Warn("[senderzz_webhook] P2-03 rate-limit de reprocess excedido", "key", rateKeyFromAdmin(ctx))
+		w.Header().Set("Retry-After", "60")
+		httpx.Err(w, 429, "rate_limited", "muitos reprocessamentos — aguarde 1 minuto")
+		return
+	}
+
 	// Lê o webhook (URL + secret).
 	var (
 		whURL  string
@@ -748,13 +917,20 @@ func (h *ExpedicaoWebhooksHandler) Reprocess(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	// P2-03: rejeita destino interno/privado ANTES de qualquer request (anti-SSRF).
+	if err := validatePublicURL(whURL); err != nil {
+		httpx.Err(w, 400, "ssrf_blocked", "url de webhook recusada: "+err.Error())
+		return
+	}
+
 	// Lê o log (payload + event).
 	var (
 		payloadJSON string
 		event       string
 	)
+	// ALTO-8/9: a coluna real é event_type (100-fixes-v460.sql:198), não event.
 	err = h.Pool.QueryRow(ctx,
-		`SELECT COALESCE(payload::text, '{}'), COALESCE(event, 'pedido_atualizado')
+		`SELECT COALESCE(payload::text, '{}'), COALESCE(event_type, 'pedido_atualizado')
 		 FROM senderzz_producer_webhook_logs
 		 WHERE id = $1 AND webhook_id = $2`, in.LogID, webhookID).Scan(&payloadJSON, &event)
 	if err != nil {

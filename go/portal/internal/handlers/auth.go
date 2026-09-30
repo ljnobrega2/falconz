@@ -18,13 +18,16 @@
 //     → retorna {token: jwt}
 //
 //  3. POST /portal/logout → invalida sessão no banco
+//
 //  4. POST /portal/refresh → renova JWT se sessão válida
+//
 //  5. GET  /portal/me → dados do usuário autenticado
 //
 // Namespace: /wp-json/senderzz/v1
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/rand"
@@ -32,15 +35,17 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"math/big"
 	"net/http"
 	"os"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"golang.org/x/crypto/bcrypt"
 
 	"github.com/senderzz/portal-service/internal/auth"
 	"github.com/senderzz/portal-service/internal/httpx"
@@ -50,6 +55,11 @@ import (
 type AuthHandler struct {
 	Pool *pgxpool.Pool
 }
+
+// loginRL é o rate limiter de login, compartilhado por todas as instâncias do
+// handler. Singleton para não exigir mudança no construtor (main.go monta o
+// AuthHandler só com Pool). // SEC-LOGIN-RATE-LIMIT-NONE
+var loginRL = sync.OnceValue(newLoginRateLimiter)
 
 // ── Requests/Responses ─────────────────────────────────────────────────────────
 
@@ -79,15 +89,29 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Rate-limit ANTES do bcrypt (custoso): trava força bruta por IP e por e-mail.
+	// 429 não revela se o e-mail existe (mesma resposta para qualquer e-mail).
+	// AUDIT SEC-LOGIN-RATE-LIMIT-NONE.
+	if !loginRL().allow(loginClientIP(r), req.Email) {
+		slog.Warn("[portal_login] rate-limit excedido", "ip", loginClientIP(r))
+		httpx.WriteErr(w, http.StatusTooManyRequests,
+			"muitas tentativas de login — aguarde alguns minutos e tente novamente")
+		return
+	}
+
 	// Busca usuário por e-mail.
 	var userID int64
 	var nome, role, passwordHash string
 	var ativo, twofaEnabled bool
 
+	// LOGIN-UNICO bugfix: comparação de e-mail case-insensitive. Antes `email = $1`
+	// fazia "Gabriel@x.com" logar e "gabriel@x.com" dar 401. A página única de login
+	// normaliza o e-mail (trim+lowercase) no front, mas o backend também é blindado
+	// para casar com o /admin/login (que já usa LOWER(email)=LOWER($1)).
 	err := h.Pool.QueryRow(r.Context(),
 		`SELECT id, nome, role, COALESCE(password_hash,''), ativo, twofa_enabled
 		   FROM senderzz_portal_users
-		  WHERE email = $1
+		  WHERE LOWER(email) = LOWER($1)
 		  LIMIT 1`,
 		req.Email,
 	).Scan(&userID, &nome, &role, &passwordHash, &ativo, &twofaEnabled)
@@ -109,13 +133,17 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verifica senha via bcrypt.
+	// Verifica senha. // CRIT-WP-HASH
+	// auth.VerifyPassword aceita o formato WP 6.8+ ("$wp$" = bcrypt sobre pré-hash
+	// HMAC-SHA384) — formato dos hashes reais importados no cutover — E bcrypt puro
+	// ($2y$) das contas criadas pelo próprio Go. bcrypt direto falhava em 100% dos
+	// usuários reais (hash "$wp$" nunca casava).
 	if passwordHash == "" {
 		// Usuário sem senha Go nativa — autenticação exclusiva via WP (não implementada aqui).
 		httpx.WriteErr(w, http.StatusUnauthorized, "credenciais inválidas")
 		return
 	}
-	if err := bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(req.Senha)); err != nil {
+	if !auth.VerifyPassword(passwordHash, req.Senha) {
 		slog.Info("[portal_login] senha incorreta", "user_id", userID)
 		httpx.WriteErr(w, http.StatusUnauthorized, "credenciais inválidas")
 		return
@@ -159,13 +187,19 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Salva código 2FA — upsert (apenas um código ativo por usuário).
+	// AUDIT-2026-06-21 #19: o contador de tentativas é DURÁVEL por janela. Antes,
+	// o re-login zerava `tentativas` (DO UPDATE SET tentativas = 0) → +5 palpites a
+	// cada ciclo de login. Agora só zera quando a janela anterior já expirou; dentro
+	// de uma janela ativa o contador é preservado, mantendo o teto fail-closed de 5.
 	_, err = h.Pool.Exec(r.Context(),
 		`INSERT INTO senderzz_portal_2fa (user_id, code, expires_at, tentativas)
 		 VALUES ($1, $2, NOW() + INTERVAL '10 minutes', 0)
 		 ON CONFLICT (user_id)
 		 DO UPDATE SET code = EXCLUDED.code,
 		               expires_at = EXCLUDED.expires_at,
-		               tentativas = 0`,
+		               tentativas = CASE WHEN senderzz_portal_2fa.expires_at < NOW()
+		                                 THEN 0
+		                                 ELSE senderzz_portal_2fa.tentativas END`,
 		userID, code,
 	)
 	if err != nil {
@@ -350,13 +384,15 @@ func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 		// Retorna ok mesmo assim — sessão expirará naturalmente.
 	}
 
-	// Limpa cookie.
+	// Limpa cookie. SEC-P1-COOKIE-SECURE: mesmos atributos do set (HttpOnly+Secure+
+	// SameSite=Lax) — o clear deve casar o set p/ o browser de fato remover o cookie.
 	http.SetCookie(w, &http.Cookie{
 		Name:     "sz_portal_token",
 		Value:    "",
 		MaxAge:   -1,
 		Path:     "/",
 		HttpOnly: true,
+		Secure:   secureCookies(),
 		SameSite: http.SameSiteLaxMode,
 	})
 
@@ -412,19 +448,51 @@ func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 	var nome, plano string
 	var twofaEnabled bool
 	var settingsRaw []byte
+	var shippingClassID *int64 // NULL → null no JSON (produtor sem classe de frete)
+	// document (CPF) e phone vêm do cadastro (migração 427). NULL → "" no JSON.
+	// O Portal V2 (Settings.tsx) usa me.document p/ auto-preencher a chave PIX
+	// quando tipo='cpf' e exibe me.phone na aba Conta.
+	var document, phone string
 
 	err := h.Pool.QueryRow(r.Context(),
-		`SELECT nome, plano, twofa_enabled, settings
+		`SELECT nome, plano, twofa_enabled, settings, shipping_class_id,
+		        COALESCE(document, ''), COALESCE(phone, '')
 		   FROM senderzz_portal_users
 		  WHERE id = $1`,
 		u.ID,
-	).Scan(&nome, &plano, &twofaEnabled, &settingsRaw)
+	).Scan(&nome, &plano, &twofaEnabled, &settingsRaw, &shippingClassID, &document, &phone)
 
 	if err != nil {
 		slog.Error("[portal_me] erro ao buscar usuário", "user_id", u.ID, "err", err)
 		httpx.WriteErr(w, http.StatusInternalServerError, "erro interno")
 		return
 	}
+
+	// vitrineHasProducts: EXISTS site-wide (qualquer produtor), não escopado a este
+	// usuário — pedido do dono 2026-07-11: se NENHUM produto está visível na vitrine
+	// (em toda a plataforma), o item de nav "Vitrine" some pra todo mundo no portal
+	// (produtor/afiliado/cliente). Só o admin (admin-ui, gerencia produtos direto)
+	// continua enxergando/mexendo — sem gate aqui, é outro app.
+	// ESPELHA EXATAMENTE os filtros de vitrine.go List() (senão o gate mente): produtor
+	// tem que ser role='produtor' ATIVO, status fora do ciclo de aprovação pendente/
+	// reprovado, vitrine_visible, e nome fora das exclusões (recarga/carteira de frete/
+	// kit/combo/pacote/pack/bundle/conjunto — produtos "utilitários" que não são
+	// catálogo de venda real).
+	var vitrineHasProducts bool
+	_ = h.Pool.QueryRow(r.Context(),
+		`SELECT EXISTS(
+		   SELECT 1 FROM sz_products sp
+		   JOIN senderzz_portal_users pu ON pu.id = sp.produtor_id
+		    AND pu.role = 'produtor' AND pu.ativo
+		    WHERE sp.status IS DISTINCT FROM 'deleted'
+		      AND sp.status NOT IN ('a_aprovar', 'reprovado')
+		      AND COALESCE(sp.vitrine_visible, true) = true
+		      AND sp.nome NOT ILIKE '%recarga%'
+		      AND sp.nome NOT ILIKE '%carteira de frete%'
+		      AND sp.nome NOT ILIKE '%frete interno%'
+		      AND sp.nome !~* '\m(kit|combo|pacote|pack|bundle|conjunto)\M'
+		 )`,
+	).Scan(&vitrineHasProducts)
 
 	httpx.WriteOK(w, map[string]any{
 		"id":            u.ID,
@@ -434,7 +502,16 @@ func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 		"role":          u.Role,
 		"plano":         plano,
 		"twofa_enabled": twofaEnabled,
-		"settings":      json.RawMessage(settingsRaw),
+		// shipping_class_id desbloqueia a sub-aba "Carteira de Expedição" e o item
+		// de nav "expedicao" no frontend (hasExp / hasShippingClass). null quando
+		// o produtor não tem classe de frete definida.
+		"shipping_class_id":    shippingClassID,
+		"vitrine_has_products": vitrineHasProducts,
+		// document (CPF) + phone do cadastro — o front PIX (Settings.tsx) lê estes
+		// campos. String vazia quando o usuário ainda não tem o dado preenchido.
+		"document": document,
+		"phone":    phone,
+		"settings": json.RawMessage(settingsRaw),
 	})
 }
 
@@ -474,7 +551,18 @@ func (h *AuthHandler) createSession(ctx context.Context, userID int64, r *http.R
 	return tokenRaw, nil
 }
 
-// setPortalCookie seta o cookie HttpOnly sz_portal_token com o JWT.
+// secureCookies decide a flag Secure do cookie de sessão. SEC-P1-COOKIE-SECURE:
+// o app é servido por HTTPS (cloudflare tunnel / prod atrás de proxy TLS), então
+// Secure DEVE estar ligado. DEFAULT SEGURO (Secure ON): só desliga explicitamente
+// com SECURE_COOKIES='0' (escape hatch p/ dev em http://localhost, onde um cookie
+// Secure não é enviado pelo browser). Qualquer outro valor (ou ausência) ⇒ true.
+func secureCookies() bool {
+	return os.Getenv("SECURE_COOKIES") != "0"
+}
+
+// setPortalCookie seta o cookie HttpOnly+Secure sz_portal_token com o JWT.
+// SEC-P1-COOKIE-SECURE: HttpOnly (sem acesso por JS) + SameSite=Lax (mitiga CSRF) +
+// Secure (só trafega sob HTTPS) — Secure controlado por secureCookies() (default ON).
 func setPortalCookie(w http.ResponseWriter, jwtToken string) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     "sz_portal_token",
@@ -482,10 +570,8 @@ func setPortalCookie(w http.ResponseWriter, jwtToken string) {
 		Path:     "/",
 		MaxAge:   86400, // 24h
 		HttpOnly: true,
+		Secure:   secureCookies(),
 		SameSite: http.SameSiteLaxMode,
-		// Secure: true em produção (nginx termina TLS antes do Go).
-		// Descomentar quando o serviço estiver atrás de proxy HTTPS.
-		// Secure: true,
 	})
 }
 
@@ -498,15 +584,72 @@ func gerarCodigo2FA() (string, error) {
 	return fmt.Sprintf("%06d", n.Int64()), nil
 }
 
-// enviarCodigo2FA envia o código por e-mail.
-// Em dev: loga. Em produção: integrar com SMTP/SES externo.
-func enviarCodigo2FA(email, code string) {
-	// TODO: integrar com serviço de e-mail em produção (SendGrid, SES, etc.)
-	slog.Info("[portal_2fa] código de verificação",
-		"email", email,
-		"code", code, // ATENÇÃO: remover em produção — não logar código em prod
-		"instrucao", "integrar com SMTP externo para envio real em produção",
-	)
+// enviarCodigo2FA envia o código de verificação por e-mail via Resend.
+// Em dev (APP_ENV=development/dev/test/local/staging): loga o código — não envia.
+// Em produção: chama a API Resend (RESEND_API_KEY + MAIL_FROM obrigatórios).
+//
+// SEC-OTP-LOG-GATE: código NUNCA logado em produção.
+func enviarCodigo2FA(to, code string) {
+	if appEnvIsDev() {
+		slog.Info("[portal_2fa] código de verificação (dev)",
+			"email", to,
+			"code", code,
+		)
+		return
+	}
+
+	apiKey := os.Getenv("RESEND_API_KEY")
+	from := os.Getenv("MAIL_FROM")
+	if apiKey == "" || from == "" {
+		slog.Error("[portal_2fa] RESEND_API_KEY ou MAIL_FROM não configurados — e-mail não enviado", "email", to)
+		return
+	}
+
+	body, _ := json.Marshal(map[string]any{
+		"from":    from,
+		"to":      []string{to},
+		"subject": "Seu código de acesso Falklog",
+		"html": fmt.Sprintf(`<div style="font-family:sans-serif;max-width:480px;margin:auto">
+<h2 style="color:#f97316">Falklog</h2>
+<p>Seu código de verificação é:</p>
+<div style="font-size:36px;font-weight:700;letter-spacing:8px;color:#111;padding:16px 0">%s</div>
+<p style="color:#666;font-size:13px">Válido por 10 minutos. Não compartilhe este código.</p>
+</div>`, code),
+	})
+
+	req, err := http.NewRequest("POST", "https://api.resend.com/emails", bytes.NewReader(body))
+	if err != nil {
+		slog.Error("[portal_2fa] erro ao criar request Resend", "err", err)
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		slog.Error("[portal_2fa] erro ao chamar Resend", "email", to, "err", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 300 {
+		b, _ := io.ReadAll(resp.Body)
+		slog.Error("[portal_2fa] Resend retornou erro", "email", to, "status", resp.StatusCode, "body", string(b))
+		return
+	}
+	slog.Info("[portal_2fa] código enviado via Resend", "email", to)
+}
+
+// appEnvIsDev retorna true somente para ambientes de desenvolvimento/teste
+// conhecidos. Qualquer outro valor (inclusive APP_ENV ausente ou "production")
+// é tratado como NÃO-dev — fail-closed para o log do código 2FA.
+func appEnvIsDev() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("APP_ENV"))) {
+	case "development", "dev", "test", "local", "staging":
+		return true
+	default:
+		return false
+	}
 }
 
 // compareSafe compara duas strings com tempo constante para evitar timing attacks.
@@ -519,4 +662,203 @@ func compareSafe(a, b string) bool {
 		diff |= a[i] ^ b[i]
 	}
 	return diff == 0
+}
+
+// ── POST /portal/forgot-password ───────────────────────────────────────────────
+// Gera token de reset e envia e-mail com link. Resposta genérica (não revela se
+// o e-mail existe). Token válido por 30 minutos.
+func (h *AuthHandler) ForgotPassword(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Email string `json:"email"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Email == "" {
+		httpx.WriteErr(w, http.StatusBadRequest, "e-mail é obrigatório")
+		return
+	}
+	// AUDIT-2026-07-31 MEDIUM: rate-limit por IP+e-mail (era irrestrito).
+	if !forgotPasswordAllow(loginClientIP(r), strings.ToLower(strings.TrimSpace(req.Email))) {
+		httpx.WriteErr(w, http.StatusTooManyRequests, "muitas tentativas — aguarde e tente novamente")
+		return
+	}
+	ctx := r.Context()
+
+	// Cria tabela se não existir (auto-migrate graciosa).
+	_, _ = h.Pool.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS senderzz_portal_password_resets (
+			id         BIGSERIAL PRIMARY KEY,
+			email      TEXT NOT NULL,
+			token      TEXT NOT NULL UNIQUE,
+			expires_at TIMESTAMPTZ NOT NULL,
+			used       BOOLEAN NOT NULL DEFAULT FALSE,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`)
+
+	// Verifica se e-mail existe (silencioso — resposta idêntica se não existir).
+	var userID int64
+	var nome string
+	err := h.Pool.QueryRow(ctx,
+		`SELECT id, COALESCE(nome,'') FROM senderzz_portal_users WHERE LOWER(email)=LOWER($1) AND ativo=true LIMIT 1`,
+		req.Email,
+	).Scan(&userID, &nome)
+	if err != nil {
+		// Não revela se e-mail existe.
+		httpx.WriteOK(w, map[string]any{"ok": true, "msg": "Se o e-mail estiver cadastrado, você receberá as instruções."})
+		return
+	}
+
+	// Gera token seguro (32 bytes hex).
+	tokenBytes := make([]byte, 32)
+	if _, err := rand.Read(tokenBytes); err != nil {
+		httpx.WriteErr(w, http.StatusInternalServerError, "erro interno")
+		return
+	}
+	token := hex.EncodeToString(tokenBytes)
+
+	_, err = h.Pool.Exec(ctx,
+		`INSERT INTO senderzz_portal_password_resets (email, token, expires_at)
+		 VALUES ($1, $2, NOW() + INTERVAL '30 minutes')
+		 ON CONFLICT (token) DO NOTHING`,
+		strings.ToLower(req.Email), token,
+	)
+	if err != nil {
+		slog.Error("[portal_forgot] erro ao salvar token", "err", err)
+		httpx.WriteErr(w, http.StatusInternalServerError, "erro interno")
+		return
+	}
+
+	go enviarEmailReset(req.Email, nome, token)
+
+	httpx.WriteOK(w, map[string]any{"ok": true, "msg": "Se o e-mail estiver cadastrado, você receberá as instruções."})
+}
+
+// ── POST /portal/reset-password ────────────────────────────────────────────────
+// Valida token e redefine a senha.
+func (h *AuthHandler) ResetPassword(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Token string `json:"token"`
+		Senha string `json:"senha"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Token == "" || req.Senha == "" {
+		httpx.WriteErr(w, http.StatusBadRequest, "token e senha são obrigatórios")
+		return
+	}
+	if len(req.Senha) < 6 {
+		httpx.WriteErr(w, http.StatusBadRequest, "a senha deve ter ao menos 6 caracteres")
+		return
+	}
+	ctx := r.Context()
+
+	var email string
+	err := h.Pool.QueryRow(ctx,
+		`SELECT email FROM senderzz_portal_password_resets
+		 WHERE token=$1 AND used=FALSE AND expires_at > NOW() LIMIT 1`,
+		req.Token,
+	).Scan(&email)
+	if err != nil {
+		httpx.WriteErr(w, http.StatusBadRequest, "link inválido ou expirado")
+		return
+	}
+
+	hash, err := auth.HashPassword(req.Senha)
+	if err != nil {
+		httpx.WriteErr(w, http.StatusInternalServerError, "erro interno")
+		return
+	}
+
+	tx, err := h.Pool.Begin(ctx)
+	if err != nil {
+		httpx.WriteErr(w, http.StatusInternalServerError, "erro interno")
+		return
+	}
+	defer tx.Rollback(ctx)
+
+	_, err = tx.Exec(ctx,
+		`UPDATE senderzz_portal_users SET password_hash=$1 WHERE LOWER(email)=LOWER($2)`,
+		hash, email,
+	)
+	if err != nil {
+		slog.Error("[portal_reset] erro ao atualizar senha", "err", err)
+		httpx.WriteErr(w, http.StatusInternalServerError, "erro interno")
+		return
+	}
+	_, _ = tx.Exec(ctx,
+		`UPDATE senderzz_portal_password_resets SET used=TRUE WHERE token=$1`,
+		req.Token,
+	)
+	if err := tx.Commit(ctx); err != nil {
+		httpx.WriteErr(w, http.StatusInternalServerError, "erro interno")
+		return
+	}
+
+	slog.Info("[portal_reset] senha redefinida", "email", email)
+	httpx.WriteOK(w, map[string]any{"ok": true})
+}
+
+// enviarEmailReset envia o link de redefinição de senha via Resend.
+func enviarEmailReset(to, nome, token string) {
+	appURL := os.Getenv("APP_URL")
+	if appURL == "" {
+		appURL = "https://app.falklog.com.br"
+	}
+	// AUDIT-2026-07-31 (dono): portal-ui roda sob basename "/portal" (main.tsx) —
+	// faltava o prefixo, o link caía em "/reset-password" (fora de qualquer rota
+	// do domínio raiz, 404/redirect) em vez de "/portal/reset-password" (a rota
+	// real, ver App.tsx).
+	link := appURL + "/portal/reset-password?token=" + token
+
+	if appEnvIsDev() {
+		slog.Info("[portal_reset] link de redefinição (dev)", "email", to, "link", link)
+		return
+	}
+
+	apiKey := os.Getenv("RESEND_API_KEY")
+	from := os.Getenv("MAIL_FROM")
+	if apiKey == "" || from == "" {
+		slog.Error("[portal_reset] RESEND_API_KEY ou MAIL_FROM não configurados", "email", to)
+		return
+	}
+
+	saudacao := "Olá"
+	if nome != "" {
+		saudacao = "Olá, " + nome
+	}
+
+	body, _ := json.Marshal(map[string]any{
+		"from":    from,
+		"to":      []string{to},
+		"subject": "Redefinição de senha — Falklog",
+		"html": fmt.Sprintf(`<div style="font-family:sans-serif;max-width:480px;margin:auto">
+<h2 style="color:#f97316">Falklog</h2>
+<p>%s!</p>
+<p>Recebemos uma solicitação para redefinir a senha da sua conta.</p>
+<p style="margin:24px 0">
+  <a href="%s" style="display:inline-block;padding:14px 28px;background:#1E6FF2;color:#fff;border-radius:10px;text-decoration:none;font-weight:700;font-size:15px">
+    Redefinir minha senha
+  </a>
+</p>
+<p style="color:#666;font-size:13px">Este link expira em 30 minutos. Se você não solicitou a redefinição, ignore este e-mail.</p>
+<p style="color:#aaa;font-size:12px">Ou copie e cole no navegador:<br>%s</p>
+</div>`, saudacao, link, link),
+	})
+
+	req, err := http.NewRequest("POST", "https://api.resend.com/emails", bytes.NewReader(body))
+	if err != nil {
+		slog.Error("[portal_reset] erro ao criar request Resend", "err", err)
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		slog.Error("[portal_reset] erro ao chamar Resend", "email", to, "err", err)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		b, _ := io.ReadAll(resp.Body)
+		slog.Error("[portal_reset] Resend erro", "email", to, "status", resp.StatusCode, "body", string(b))
+		return
+	}
+	slog.Info("[portal_reset] e-mail de redefinição enviado", "email", to)
 }

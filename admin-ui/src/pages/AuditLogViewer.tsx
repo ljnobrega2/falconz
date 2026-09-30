@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '../api'
+import { safeUrl } from '../utils/safeUrl' // AUDIT-2026-06-21 #13
 import FilterButton from '../components/FilterButton'
 import FilterTopPanel, {
   FilterField,
@@ -7,8 +8,13 @@ import FilterTopPanel, {
   ActiveFilterChips,
   type ActiveChip,
 } from '../components/FilterTopPanel'
+import FalkSelect from '../components/FalkSelect'
+import FalkDatePicker from '../components/FalkDatePicker'
 import TableSkeleton from '../components/TableSkeleton'
 import EmptyState from '../components/EmptyState'
+import ErrorState from '../components/ErrorState'
+import FilterDrawer from '../components/FilterDrawer'
+import { drawerTabsStyle, drawerTabBtnStyle } from '../components/drawerTabs'
 
 // ----- Tipos do handler Go ---------------------------------------------------
 
@@ -98,11 +104,15 @@ function prettyJSON(s: string | null): string {
   }
 }
 
-// Data default = hoje-7d / hoje (formato YYYY-MM-DD).
+// Data default = hoje-90d / hoje (formato YYYY-MM-DD).
+// Janela larga (90 dias) para que o log apareça mesmo quando o evento mais
+// recente é antigo: a base de demo envelhece entre sessões e uma janela curta
+// (7d) fazia a tela nascer vazia mesmo havendo dezenas de registros. O filtro
+// de datas continua disponível para estreitar o range quando necessário.
 function defaultDateRange(): { from: string; to: string } {
   const today = new Date()
   const from = new Date(today)
-  from.setDate(from.getDate() - 7)
+  from.setDate(from.getDate() - 90)
   const toISO = (d: Date) => d.toISOString().slice(0, 10)
   return { from: toISO(from), to: toISO(today) }
 }
@@ -229,7 +239,7 @@ export default function AuditLogViewer() {
   if (dateFrom !== defaults.from) chips.push({ key: 'from', label: `De: ${dateFrom}`, onRemove: () => { setDateFrom(defaults.from); setPage(1) } })
   if (dateTo !== defaults.to) chips.push({ key: 'to', label: `Até: ${dateTo}`, onRemove: () => { setDateTo(defaults.to); setPage(1) } })
   if (action) chips.push({ key: 'action', label: `Ação: ${actionLabel(action)}`, onRemove: () => { setAction(''); setPage(1) } })
-  if (orderID) chips.push({ key: 'order', label: `Order: #${orderID}`, onRemove: () => { setOrderID(''); setPage(1) } })
+  if (orderID) chips.push({ key: 'order', label: `Order: ${orderID}`, onRemove: () => { setOrderID(''); setPage(1) } })
   if (portalUserID) chips.push({ key: 'user', label: `User: #${portalUserID}`, onRemove: () => { setPortalUserID(''); setPage(1) } })
 
   const totalPages = Math.max(1, Math.ceil(total / perPage))
@@ -253,7 +263,9 @@ export default function AuditLogViewer() {
 
       <ActiveFilterChips chips={chips} onClearAll={clearFilters} />
 
-      {err && <div className="sz-alert-danger" style={{ marginBottom: 16 }}>{err}</div>}
+      {/* Banner só com dados na tela (erro de refresh/ação). Falha de
+          carregamento inicial vira ErrorState na área da tabela. */}
+      {err && items.length > 0 && <div className="sz-alert-danger" style={{ marginBottom: 16 }}>{err}</div>}
 
       <FilterTopPanel
         open={filterOpen}
@@ -263,32 +275,29 @@ export default function AuditLogViewer() {
         title="Filtros"
       >
         <FilterField label="Data inicial">
-          <input
-            type="date"
-            style={filterInputStyle}
+          <FalkDatePicker
             value={draftFrom}
-            onChange={e => setDraftFrom(e.target.value)}
+            onChange={v => setDraftFrom(v)}
+            placeholder="dd/mm/aaaa"
           />
         </FilterField>
         <FilterField label="Data final">
-          <input
-            type="date"
-            style={filterInputStyle}
+          <FalkDatePicker
             value={draftTo}
-            onChange={e => setDraftTo(e.target.value)}
+            onChange={v => setDraftTo(v)}
+            placeholder="dd/mm/aaaa"
           />
         </FilterField>
         <FilterField label="Ação">
-          <select
-            style={filterInputStyle}
+          <FalkSelect
+            aria-label="Ação"
             value={draftAction}
-            onChange={e => setDraftAction(e.target.value)}
-          >
-            <option value="">Todas</option>
-            {actionOpts.map(a => (
-              <option key={a} value={a}>{actionLabel(a)}</option>
-            ))}
-          </select>
+            onChange={v => setDraftAction(v)}
+            options={[
+              { value: '', label: 'Todas' },
+              ...actionOpts.map(a => ({ value: a, label: actionLabel(a) })),
+            ]}
+          />
         </FilterField>
         <FilterField label="Order ID">
           <input
@@ -353,6 +362,8 @@ export default function AuditLogViewer() {
       {/* ── Tabela ──────────────────────────────────────────────────── */}
       {loading && items.length === 0 ? (
         <TableSkeleton rows={6} cols={8} />
+      ) : err && items.length === 0 ? (
+        <ErrorState message={err} onRetry={() => { loadStats(); loadList() }} />
       ) : !loading && items.length === 0 ? (
         <EmptyState
           icon="📜"
@@ -367,8 +378,8 @@ export default function AuditLogViewer() {
               <th>ID</th>
               <th>Data</th>
               <th>Usuário</th>
-              <th>Action</th>
-              <th>Order</th>
+              <th>Ação</th>
+              <th>Pedido</th>
               <th>IP</th>
               <th>Meta</th>
               <th style={{ width: 120 }}>Detalhes</th>
@@ -407,7 +418,7 @@ export default function AuditLogViewer() {
                 </td>
                 <td style={{ fontSize: 13 }}>
                   {row.order_id ? (
-                    <strong>#{row.order_id}</strong>
+                    <strong>{row.order_id}</strong>
                   ) : (
                     <span style={{ color: 'var(--szv2-text-faint)' }}>—</span>
                   )}
@@ -497,135 +508,127 @@ export default function AuditLogViewer() {
 
 function DetailModal({ row, onClose }: { row: AuditRow; onClose: () => void }) {
   const meta = prettyJSON(row.meta)
+  const [tab, setTab] = useState<'resumo' | 'meta'>('resumo')
 
   return (
-    <div className="szv2-modal-overlay szv2-open" onClick={onClose}>
-      <div
-        className="szv2-modal szv2-modal-lg"
-        onClick={e => e.stopPropagation()}
-      >
-        <div className="szv2-modal-head">
-          <h3>
-            Registro #{row.id}
+    <FilterDrawer
+      open
+      onClose={onClose}
+      onApply={onClose}
+      applyLabel="Fechar"
+      width={560}
+      title={`Registro #${row.id} · ${fmtDate(row.created_at)}`}
+    >
+      {/* Abas */}
+      <div style={drawerTabsStyle}>
+        {([
+          ['resumo', 'Resumo'],
+          ['meta', 'Meta (JSON)'],
+        ] as const).map(([key, label]) => (
+          <button
+            key={key}
+            type="button"
+            onClick={() => setTab(key)}
+            style={drawerTabBtnStyle(tab === key)}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {/* ── Aba: Resumo ────────────────────────────────────── */}
+      {tab === 'resumo' && (
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(2, 1fr)',
+            gap: 12,
+          }}
+        >
+          <Field label="Ação">
+            <span className={`sz-badge ${actionBadge(row.action)}`}>
+              {actionLabel(row.action)}
+            </span>
             <span
               style={{
-                fontWeight: 400,
-                fontSize: 13,
-                color: 'var(--szv2-text-muted)',
                 marginLeft: 8,
+                fontFamily: 'var(--szv2-font-mono)',
+                fontSize: 11,
+                color: 'var(--szv2-text-muted)',
               }}
             >
-              {fmtDate(row.created_at)}
+              {row.action}
             </span>
-          </h3>
-          <button className="szv2-modal-x" onClick={onClose}>✕</button>
+          </Field>
+          <Field label="Portal user">
+            {row.user_nome || row.user_email ? (
+              <span>
+                {row.user_nome || '—'}
+                {!!row.user_email && (
+                  <span style={{ color: 'var(--szv2-text-muted)', fontSize: 12 }}>
+                    {' '}({row.user_email})
+                  </span>
+                )}
+                <span style={{ color: 'var(--szv2-text-faint)', fontSize: 11 }}>
+                  {' '}· #{row.portal_user_id}
+                </span>
+              </span>
+            ) : (
+              <span>#{row.portal_user_id}</span>
+            )}
+          </Field>
+          <Field label="Order ID">
+            {row.order_id ? (
+              <a
+                href={safeUrl(`/orders/${row.order_id}`)}
+                style={{
+                  color: 'var(--szv2-brand)',
+                  textDecoration: 'none',
+                  fontWeight: 600,
+                }}
+              >
+                {row.order_id} →
+              </a>
+            ) : (
+              <span style={{ color: 'var(--szv2-text-faint)' }}>—</span>
+            )}
+          </Field>
+          <Field label="IP">
+            <span
+              style={{
+                fontFamily: 'var(--szv2-font-mono)',
+                fontSize: 12,
+              }}
+            >
+              {row.ip || '—'}
+            </span>
+          </Field>
         </div>
+      )}
 
-        <div className="szv2-modal-body">
-          {/* Resumo do row */}
-          <div
+      {/* ── Aba: Meta (JSON pretty-printed) ────────────────── */}
+      {tab === 'meta' && (
+        <div className="szv2-field">
+          <pre
             style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(2, 1fr)',
-              gap: 12,
-              marginBottom: 16,
+              background: 'var(--szv2-neutral-bg)',
+              border: '1px solid var(--szv2-divider)',
+              borderRadius: 6,
+              padding: 12,
+              fontSize: 12,
+              fontFamily: 'var(--szv2-font-mono)',
+              color: 'var(--szv2-text-soft)',
+              overflow: 'auto',
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-word',
+              margin: 0,
             }}
           >
-            <Field label="Action">
-              <span className={`sz-badge ${actionBadge(row.action)}`}>
-                {actionLabel(row.action)}
-              </span>
-              <span
-                style={{
-                  marginLeft: 8,
-                  fontFamily: 'var(--szv2-font-mono)',
-                  fontSize: 11,
-                  color: 'var(--szv2-text-muted)',
-                }}
-              >
-                {row.action}
-              </span>
-            </Field>
-            <Field label="Portal user">
-              {row.user_nome || row.user_email ? (
-                <span>
-                  {row.user_nome || '—'}
-                  {row.user_email && (
-                    <span style={{ color: 'var(--szv2-text-muted)', fontSize: 12 }}>
-                      {' '}({row.user_email})
-                    </span>
-                  )}
-                  <span style={{ color: 'var(--szv2-text-faint)', fontSize: 11 }}>
-                    {' '}· #{row.portal_user_id}
-                  </span>
-                </span>
-              ) : (
-                <span>#{row.portal_user_id}</span>
-              )}
-            </Field>
-            <Field label="Order ID">
-              {row.order_id ? (
-                <a
-                  href={`/admin/orders?id=${row.order_id}`}
-                  style={{
-                    color: 'var(--szv2-brand)',
-                    textDecoration: 'none',
-                    fontWeight: 600,
-                  }}
-                >
-                  #{row.order_id} →
-                </a>
-              ) : (
-                <span style={{ color: 'var(--szv2-text-faint)' }}>—</span>
-              )}
-            </Field>
-            <Field label="IP">
-              <span
-                style={{
-                  fontFamily: 'var(--szv2-font-mono)',
-                  fontSize: 12,
-                }}
-              >
-                {row.ip || '—'}
-              </span>
-            </Field>
-          </div>
-
-          {/* Meta JSON pretty-printed */}
-          <div className="szv2-field">
-            <label className="szv2-label">Meta (JSON)</label>
-            <pre
-              style={{
-                background: 'var(--szv2-neutral-bg)',
-                border: '1px solid var(--szv2-divider)',
-                borderRadius: 6,
-                padding: 12,
-                fontSize: 12,
-                fontFamily: 'var(--szv2-font-mono)',
-                color: 'var(--szv2-text-soft)',
-                maxHeight: 360,
-                overflow: 'auto',
-                whiteSpace: 'pre-wrap',
-                wordBreak: 'break-word',
-                margin: 0,
-              }}
-            >
-              {meta}
-            </pre>
-          </div>
+            {meta}
+          </pre>
         </div>
-
-        <div className="szv2-modal-foot">
-          <button
-            type="button"
-            className="szv2-btn szv2-btn-secondary"
-            onClick={onClose}
-          >
-            Fechar
-          </button>
-        </div>
-      </div>
-    </div>
+      )}
+    </FilterDrawer>
   )
 }
 

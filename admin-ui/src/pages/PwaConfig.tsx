@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
+import { useToast } from '../hooks/useToast'
 import { api } from '../api'
+import FalkSelect from '../components/FalkSelect'
 
 type PwaConfig = {
   app_name: string
@@ -30,7 +32,7 @@ const DISPLAY_OPTIONS = [
 ]
 
 const DEFAULTS: PwaConfig = {
-  app_name:         'Senderzz',
+  app_name:         'FALK LOG',
   short_name:       'SZ',
   start_url:        '/app/',
   display:          'standalone',
@@ -49,17 +51,13 @@ export default function PwaConfig() {
   const [form, setForm] = useState<PwaConfig>(DEFAULTS)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
-  const [toast, setToast] = useState<{ kind: 'ok' | 'err'; msg: string } | null>(null)
+  const showToast = useToast() // AUDIT-2026-06-18 Onda3
   const [err, setErr] = useState('')
 
   // Estado de verificação de manifest.
   const [manifBusy, setManifBusy] = useState(false)
   const [manifResult, setManifResult] = useState<ManifestResult | null>(null)
 
-  function showToast(kind: 'ok' | 'err', msg: string) {
-    setToast({ kind, msg })
-    setTimeout(() => setToast(null), 6000)
-  }
 
   function field(key: keyof PwaConfig) {
     return (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
@@ -134,15 +132,6 @@ export default function PwaConfig() {
   return (
     <div>
       {err && <div className="sz-alert-danger" style={{ marginBottom: 16 }}>{err}</div>}
-
-      {toast && (
-        <div
-          className={toast.kind === 'ok' ? 'sz-alert-success' : 'sz-alert-danger'}
-          style={{ marginBottom: 16 }}
-        >
-          {toast.msg}
-        </div>
-      )}
 
       {/* Card: URLs do PWA */}
       <div className="szv2-card">
@@ -233,7 +222,7 @@ export default function PwaConfig() {
                 value={form.app_name}
                 onChange={field('app_name')}
                 disabled={busy}
-                placeholder="Senderzz"
+                placeholder="FALK LOG"
               />
             </label>
 
@@ -254,16 +243,13 @@ export default function PwaConfig() {
             {/* Display mode */}
             <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 13 }}>
               Modo de exibição
-              <select
-                className="szv2-select"
+              <FalkSelect
                 value={form.display}
-                onChange={field('display')}
+                onChange={v => setForm(f => ({ ...f, display: v }))}
+                options={DISPLAY_OPTIONS}
                 disabled={busy}
-              >
-                {DISPLAY_OPTIONS.map(o => (
-                  <option key={o.value} value={o.value}>{o.label}</option>
-                ))}
-              </select>
+                aria-label="Modo de exibição"
+              />
             </label>
 
             {/* SW cache version */}
@@ -404,7 +390,7 @@ export default function PwaConfig() {
             {/* Texto */}
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontWeight: 700, fontSize: 15, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                {form.app_name || 'Senderzz'}
+                {form.app_name || 'FALK LOG'}
               </div>
               <div style={{ fontSize: 12, color: 'var(--szv2-text-muted)', marginTop: 2 }}>
                 {form.short_name || 'SZ'}

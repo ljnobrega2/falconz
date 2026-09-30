@@ -10,6 +10,8 @@ import FilterTopPanel, {
 import TableSkeleton from '../components/TableSkeleton'
 import EmptyState from '../components/EmptyState'
 import CardKpiSkeleton from '../components/CardKpiSkeleton'
+import FalkSelect from '../components/FalkSelect'
+import FalkDatePicker from '../components/FalkDatePicker'
 
 type MB = {
   id: number
@@ -149,7 +151,7 @@ export default function MotoboysDay() {
       {!loading && semMotoboy > 0 && (
         <div style={{
           background: '#fff7ed',
-          border: '1px solid #fed7aa',
+          border: '1px solid #D6E4FD',
           borderRadius: '10px',
           padding: '12px 16px',
           marginBottom: '16px',
@@ -158,7 +160,7 @@ export default function MotoboysDay() {
           gap: '10px',
           fontSize: '13px',
         }}>
-          <svg viewBox="0 0 20 20" style={{ width: '16px', height: '16px', fill: '#ea580c', flexShrink: 0 }}>
+          <svg viewBox="0 0 20 20" style={{ width: '16px', height: '16px', fill: '#1E6FF2', flexShrink: 0 }}>
             <path d="M10 2a8 8 0 1 0 0 16A8 8 0 0 0 10 2zm0 3v5l3 2-1 1.7L9 11V5h1z" />
           </svg>
           <span>
@@ -194,17 +196,33 @@ export default function MotoboysDay() {
       {!loading && mbs.length === 0 && !err && (
         <EmptyState
           icon="🛵"
-          title="Nenhum motoboy com pedidos hoje."
-          description="Pedidos atribuídos aos motoboys aparecem aqui ao longo do dia."
+          title={
+            date === today
+              ? 'Nenhum motoboy com pedidos hoje.'
+              : `Nenhum motoboy com pedidos em ${date.split('-').reverse().join('/')}.`
+          }
+          description={
+            date === today
+              ? 'Pedidos atribuídos aos motoboys aparecem aqui ao longo do dia. Use o filtro para consultar outra data.'
+              : 'Não há pedidos atribuídos nessa data. Ajuste o filtro de data para consultar outro dia.'
+          }
         />
       )}
 
       {/* Grid de cards por motoboy */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: '16px' }}>
         {mbs.map(m => {
-          const total_m = m.entregues + m.frustrados + m.em_rota + m.pendentes
-          const pct = total_m > 0 ? Math.round((m.entregues / total_m) * 100) : 0
-          const barColor = pct >= 80 ? '#16a34a' : pct >= 50 ? '#ea580c' : '#dc2626'
+          // Guarda contra null/undefined vindos do backend — sem isso um campo
+          // ausente vira NaN na soma ou quebra o .toFixed() e zera o grid inteiro.
+          const entregues = m.entregues ?? 0
+          const frustrados = m.frustrados ?? 0
+          const emRota = m.em_rota ?? 0
+          const pendentes = m.pendentes ?? 0
+          const totalR = Number(m.total_r ?? 0)
+          const taxaSucesso = Number(m.taxa_sucesso ?? 0)
+          const total_m = entregues + frustrados + emRota + pendentes
+          const pct = total_m > 0 ? Math.round((entregues / total_m) * 100) : 0
+          const barColor = pct >= 80 ? '#16a34a' : pct >= 50 ? '#1E6FF2' : '#dc2626'
 
           return (
             <div key={m.id} className="szv2-card" style={{ padding: 0, overflow: 'hidden' }}>
@@ -238,7 +256,7 @@ export default function MotoboysDay() {
                 </div>
                 <div style={{ marginLeft: 'auto', textAlign: 'right', flexShrink: 0 }}>
                   <div style={{ fontSize: '18px', fontWeight: 800, color: 'var(--szv2-brand)' }}>
-                    R$ {m.total_r.toFixed(2)}
+                    R$ {totalR.toFixed(2)}
                   </div>
                   <div style={{ fontSize: '11px', color: 'var(--szv2-text-muted)' }}>total do dia</div>
                 </div>
@@ -247,10 +265,10 @@ export default function MotoboysDay() {
               {/* KPIs mini */}
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', borderBottom: '1px solid var(--szv2-divider)' }}>
                 {[
-                  { label: 'Entregues',  value: m.entregues,  color: '#16a34a' },
-                  { label: 'Frustrados', value: m.frustrados, color: '#dc2626' },
-                  { label: 'Em rota',    value: m.em_rota,    color: 'var(--szv2-brand)' },
-                  { label: 'Pendentes',  value: m.pendentes,  color: 'var(--szv2-text-muted)' },
+                  { label: 'Entregues',  value: entregues,  color: '#16a34a' },
+                  { label: 'Frustrados', value: frustrados, color: '#dc2626' },
+                  { label: 'Em rota',    value: emRota,     color: 'var(--szv2-brand)' },
+                  { label: 'Pendentes',  value: pendentes,  color: 'var(--szv2-text-muted)' },
                 ].map((k, i) => (
                   <div key={k.label} style={{
                     padding: '8px',
@@ -270,7 +288,7 @@ export default function MotoboysDay() {
                 <div style={{ padding: '8px 14px', borderBottom: '1px solid var(--szv2-divider)' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: 'var(--szv2-text-muted)', marginBottom: '4px' }}>
                     <span>Taxa de entrega</span>
-                    <span>{m.taxa_sucesso.toFixed(1)}%</span>
+                    <span>{taxaSucesso.toFixed(1)}%</span>
                   </div>
                   <div style={{ height: '6px', background: 'var(--szv2-divider)', borderRadius: '99px', overflow: 'hidden' }}>
                     <div style={{
@@ -296,11 +314,10 @@ export default function MotoboysDay() {
         title="Filtros"
       >
         <FilterField label="Data">
-          <input
-            type="date"
-            style={filterInputStyle}
+          <FalkDatePicker
             value={draftDate}
-            onChange={e => setDraftDate(e.target.value)}
+            onChange={v => setDraftDate(v)}
+            placeholder="dd/mm/aaaa"
           />
         </FilterField>
         <FilterField label="Motoboy ID">
@@ -313,18 +330,18 @@ export default function MotoboysDay() {
           />
         </FilterField>
         <FilterField label="Status">
-          <select
-            style={filterInputStyle}
+          <FalkSelect
             value={draftStatus}
-            onChange={e => setDraftStatus(e.target.value)}
-          >
-            <option value="">Todos</option>
-            <option value="agendado">Agendado</option>
-            <option value="embalado">Embalado</option>
-            <option value="em_rota">Em rota</option>
-            <option value="entregue">Entregue</option>
-            <option value="frustrado">Frustrado</option>
-          </select>
+            onChange={v => setDraftStatus(v)}
+            options={[
+              { value: '', label: 'Todos' },
+              { value: 'agendado', label: 'Agendado' },
+              { value: 'embalado', label: 'Embalado' },
+              { value: 'em_rota', label: 'Em rota' },
+              { value: 'entregue', label: 'Entregue' },
+              { value: 'frustrado', label: 'Frustrado' },
+            ]}
+          />
         </FilterField>
       </FilterTopPanel>
     </div>

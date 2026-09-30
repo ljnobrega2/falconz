@@ -1,8 +1,17 @@
-import { useState, useEffect } from 'react'
+// AUDIT-2026-06-18 Onda3 — ToastHost + ConfirmHost + mobile drawer + registerApi401Handlers
+import { useState, useEffect, useCallback } from 'react'
 import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom'
-import { api, clearToken, getToken } from '../api'
+import { api, clearToken, getToken, registerApi401Handlers } from '../api'
+import ToastHost from './ToastHost'
+import { ConfirmHost } from './ConfirmDialog'
+import CommandPalette from './CommandPalette'
+import FalkLogo from './FalkLogo'
+import { useToast } from '../hooks/useToast'
 
-type NavGroup = { kicker: string; items: { to: string; label: string; icon: JSX.Element }[] }
+// Item de menu (folha): sempre tem `to`. Sidebar enxuta — submenus viraram
+// hubs com abas horizontais (ver pages/*Hub.tsx).
+type NavItem = { to: string; label: string; icon: JSX.Element }
+type NavGroup = { kicker: string; items: NavItem[] }
 
 const ICONS = {
   dashboard:   <svg viewBox="0 0 20 20"><path d="M3 3h6v8H3zM11 3h6v5h-6zM11 10h6v7h-6zM3 13h6v4H3z"/></svg>,
@@ -27,111 +36,85 @@ const ICONS = {
   cron:        <svg viewBox="0 0 20 20"><path d="M10 2a8 8 0 1 1 0 16 8 8 0 0 1 0-16zm.6 4H9v5.4l4.3 2.6.7-1.2-3.4-2V6z"/></svg>,
   onboarding:  <svg viewBox="0 0 20 20"><path d="M10 2 3 6v4c0 4 3 7 7 8 4-1 7-4 7-8V6l-7-4zm0 5a2 2 0 1 1 0 4 2 2 0 0 1 0-4zm-4 8c0-1.6 1.7-3 4-3s4 1.4 4 3v.5H6V15z"/></svg>,
   rules:       <svg viewBox="0 0 20 20"><path d="M5 2h10v3H5zM5 7h10v3H5zM5 12h10v3H5zM5 17h10v1H5z"/></svg>,
+  faturamento: <svg viewBox="0 0 20 20"><path d="M3 16h2v-5H3v5zm5 0h2V6H8v10zm5 0h2V9h-2v7zM2 18h16v1.5H2zM3.6 7.5l4.4-4.4 3 3 4.7-4.7 1.1 1.1L16 5.9V3.3h-1.5v.2l-3.5 3.5-3-3L2.5 6.4l1.1 1.1z"/></svg>,
 }
 
 const NAV_GROUPS: NavGroup[] = [
   {
     kicker: '',
-    items: [{ to: '/', label: 'Dashboard', icon: ICONS.dashboard }],
-  },
-  {
-    kicker: 'Usuários',
     items: [
-      { to: '/users',           label: 'Usuários',        icon: ICONS.users },
-      { to: '/affiliates',      label: 'Afiliados',       icon: ICONS.affiliate },
-      { to: '/commissions',     label: 'Comissões',       icon: ICONS.commissions },
-      { to: '/products',        label: 'Produtos',        icon: ICONS.tools },
-      { to: '/checkout-links',  label: 'Links Checkout',  icon: ICONS.webhooks },
+      { to: '/', label: 'Dashboard', icon: ICONS.dashboard },
     ],
   },
   {
-    kicker: 'Cash on Delivery',
+    kicker: 'Vendas',
     items: [
-      { to: '/motoboy-dashboard',       label: 'Dashboard Motoboy',  icon: ICONS.dashboard },
-      { to: '/motoboys',                label: 'Motoboys',           icon: ICONS.motoboy },
-      { to: '/motoboys-dia',            label: 'Motoboys do Dia',    icon: ICONS.mbday },
-      { to: '/orders',                  label: 'Pedidos',            icon: ICONS.orders },
-      { to: '/motoboy-etiquetas',       label: 'Etiquetas/QR',       icon: ICONS.labels },
-      { to: '/bulk-actions',            label: 'Ações em Lote',      icon: ICONS.labels },
-      { to: '/motoboy-comprovantes',    label: 'Comprovantes',       icon: ICONS.labels },
-      { to: '/motoboy-carteira',        label: 'Carteira Motoboy',   icon: ICONS.wallet },
-      { to: '/motoboy-saques',          label: 'Saques Motoboy',     icon: ICONS.wallet },
-      { to: '/motoboy-custodia',        label: 'Custódia',           icon: ICONS.cds },
-      { to: '/motoboy-conciliacao',     label: 'Conciliação',        icon: ICONS.commissions },
-      { to: '/motoboy-fechamento',      label: 'Fechamento',         icon: ICONS.fechamento },
-      { to: '/motoboy-mapa',            label: 'Mapa Ao Vivo',       icon: ICONS.zonas },
-      { to: '/motoboy-config',          label: 'Config COD',         icon: ICONS.settings },
-      { to: '/cod-livro',               label: 'Livro COD',          icon: ICONS.commissions },
-      { to: '/cod-saques',              label: 'Saques COD',         icon: ICONS.wallet },
-      { to: '/cod-taxas',               label: 'Taxas COD',          icon: ICONS.settings },
-      { to: '/cod-wallet-producer',     label: 'Wallet Produtor',    icon: ICONS.wallet },
-      { to: '/cod-wallet-transactions', label: 'Transações COD',     icon: ICONS.commissions },
+      { to: '/usuarios',        label: 'Usuários',        icon: ICONS.users },
+      { to: '/products',        label: 'Produtos',        icon: ICONS.tools },
+      // Relatório Checkouts movido p/ submenu da aba Produtores (UsuariosHub).
+    ],
+  },
+  {
+    kicker: 'Operação',
+    items: [
+      { to: '/orders',          label: 'Pedidos',        icon: ICONS.orders },
+      { to: '/administracao',   label: 'Administração',  icon: ICONS.settings },
+      { to: '/carteiras',       label: 'Carteiras',      icon: ICONS.wallet },
+      { to: '/saques',          label: 'Saques',         icon: ICONS.wallet },
+      { to: '/taxas-config',    label: 'Taxas & Config', icon: ICONS.settings },
     ],
   },
   {
     kicker: 'Logística',
     items: [
-      { to: '/cds',   label: 'CDs',          icon: ICONS.cds },
-      { to: '/zonas', label: 'Zonas / CEPs', icon: ICONS.zonas },
+      { to: '/cds',   label: 'CDs / Zonas',  icon: ICONS.cds },
     ],
   },
   {
     kicker: 'Expedição (Melhor Envio)',
     items: [
-      { to: '/labels',                label: 'Etiquetas ME',       icon: ICONS.labels },
-      { to: '/expedicao-integracoes', label: 'Markup / Integ.',    icon: ICONS.settings },
-      { to: '/expedicao-webhooks',    label: 'Webhooks Expedição', icon: ICONS.webhooks },
-      { to: '/tracking-brand',        label: 'Tracking Brand',     icon: ICONS.webhooks },
+      { to: '/labels', label: 'Expedição ME', icon: ICONS.labels },
     ],
   },
+  // AUDIT-2026-07-14 — Suporte MOVIDO pra ÚLTIMA opção do menu (pedido do dono),
+  // saiu do grupo Operação, vira grupo próprio no fim da sidebar.
   {
-    kicker: 'Financeiro',
+    kicker: 'Suporte',
     items: [
-      { to: '/wallet',            label: 'Carteiras',          icon: ICONS.wallet },
-      { to: '/pix',               label: 'PIX',                icon: ICONS.pix },
-      { to: '/tpc-clientes',      label: 'Carteira Expedição', icon: ICONS.wallet },
-      { to: '/tpc-transacoes',    label: 'Transações Expedição', icon: ICONS.commissions },
-      { to: '/tpc-config',        label: 'Config Expedição',   icon: ICONS.settings },
-      { to: '/affiliates-wallet', label: 'Carteira Afiliados', icon: ICONS.affiliate },
-      { to: '/affiliate-rules',   label: 'Regras Afiliados',   icon: ICONS.rules },
-      { to: '/audit',             label: 'Auditoria',          icon: ICONS.audit },
-      { to: '/audit-log',         label: 'Log Auditoria',      icon: ICONS.logs },
+      { to: '/support', label: 'Suporte', icon: ICONS.commissions },
     ],
   },
-  {
-    kicker: 'Notificações',
-    items: [
-      { to: '/notificacoes-pwa', label: 'Templates PWA', icon: ICONS.webhooks },
-      { to: '/push-tecnico',     label: 'Push Técnico',  icon: ICONS.cron },
-    ],
-  },
-  {
-    kicker: 'Sistema',
-    items: [
-      { to: '/settings',                 label: 'Configurações', icon: ICONS.settings },
-      { to: '/maintenance',              label: 'Manutenção',    icon: ICONS.maintenance },
-      { to: '/crons',                    label: 'Crons',         icon: ICONS.cron },
-      { to: '/pwa-config',               label: 'PWA Config',    icon: ICONS.tools },
-      { to: '/capabilities',             label: 'Capabilities',  icon: ICONS.tools },
-      { to: '/order-meta-normalization', label: 'Order Meta',    icon: ICONS.tools },
-      { to: '/api-docs',                 label: 'API Docs',      icon: ICONS.logs },
-      { to: '/logs',                     label: 'Logs',          icon: ICONS.logs },
-      { to: '/tools',                    label: 'Ferramentas',   icon: ICONS.tools },
-    ],
-  },
+  // AUDIT-2026-06-23 — grupo "Afiliados $" REMOVIDO. Todo o programa de afiliados
+  // (lista + carteira + regras) vive na aba Afiliados de Usuários
+  // (/usuarios?tab=afiliados, sub-abas Lista/Carteira/Regras).
+  // Notificações (Templates PWA + Push Técnico) viraram abas dentro do hub Sistema.
+  // Sistema saiu do menu esquerdo — acessível só pelo ícone de engrenagem no topbar.
 ]
 
 const PAGE_TITLES: Record<string, string> = {
   '/':             'Dashboard',
+  '/faturamento':  'Faturamento FALK',
+  '/lucro-operacional': 'Lucro operacional',
+  '/usuarios':           'Usuários',
+  '/administracao':      'Administração',
+  '/carteiras':          'Carteiras',
+  '/saques':             'Saques',
+  '/carteira-expedicao': 'PIX Expedição',
+  '/taxas-config':       'Taxas & Config',
+  '/sistema':            'Sistema',
   '/users':        'Usuários',
+  '/producers':       'Produtores',
+  '/operators-users': 'Operadores Logísticos',
+  '/admins':          'Admin',
   '/affiliates':   'Afiliados',
-  '/commissions':  'Comissões',
   '/motoboys':     'Motoboys',
   '/orders':       'Pedidos',
+  '/products-approval': 'Aprovação de Produtos',
+  '/support':           'Suporte',
   '/motoboys-dia': 'Motoboys do Dia',
   '/cds':          'Centros de Distribuição',
   '/zonas':        'Zonas / CEPs',
-  '/wallet':       'Carteiras',
+  '/wallet':       'Carteira COD',
   '/pix':          'PIX / Recargas',
   '/labels':       'Etiquetas ME',
   '/settings':     'Configurações',
@@ -141,8 +124,8 @@ const PAGE_TITLES: Record<string, string> = {
   '/cod-livro':            'Livro COD',
   '/cod-saques':           'Saques',
   '/cod-taxas':            'Taxas de Entrega',
+  '/config-taxas':         'Taxas & Cálculo',
   '/tpc-clientes':         'Carteira Expedição',
-  '/affiliates-wallet':    'Carteira de Afiliados',
   '/motoboy-dashboard':    'Dashboard Motoboy',
   '/motoboy-carteira':     'Carteira Motoboy',
   '/motoboy-fechamento':   'Fechamento Diário Motoboy',
@@ -152,10 +135,12 @@ const PAGE_TITLES: Record<string, string> = {
   '/maintenance':          'Modo Manutenção',
   '/crons':                'Status dos Crons',
   '/audit-log':            'Log de Auditoria',
-  '/affiliate-rules':         'Regras de Afiliados',
+  '/expedicao-pedidos':       'Pedidos de Expedição',
   '/expedicao-integracoes':   'Markup / Integrações',
   '/expedicao-webhooks':      'Webhooks de Expedição',
+  '/expedicao-transportadoras': 'Transportadoras (Melhor Envio)',
   '/notificacoes-pwa':        'Templates de Notificação PWA',
+  '/etiquetas-lote':          'Etiquetas / Ações em lote',
   '/motoboy-etiquetas':       'Etiquetas / QR Code',
   '/motoboy-comprovantes':    'Comprovantes de Entrega',
   '/motoboy-saques':          'Saques Motoboy',
@@ -167,27 +152,42 @@ const PAGE_TITLES: Record<string, string> = {
   '/api-docs':                 'Documentação da API',
   '/push-tecnico':             'Push Técnico (VAPID)',
   '/capabilities':             'Capabilities / Permissões',
-  '/order-meta-normalization': 'Normalização de Order Meta',
   '/pwa-config':               'Configurações PWA',
   '/bulk-actions':             'Ações em Lote (Etiquetas)',
   '/motoboy-mapa':             'Mapa Ao Vivo — Motoboys',
   '/products':                 'Produtos',
-  '/checkout-links':            'Gestão de Links de Checkout',
+  '/stock':                    'Estoque',
+  '/checkout-links':            'Relatório de Checkouts',
 }
 
-const LOGO_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 36" fill="none" height="28">
-  <rect x="0" y="4" width="28" height="28" rx="7" fill="#E8650A"/>
-  <text x="14" y="23" text-anchor="middle" font-family="system-ui" font-size="15" font-weight="800" fill="#fff">SZ</text>
-  <text x="42" y="26" font-family="system-ui" font-size="18" font-weight="700" fill="currentColor">Senderzz</text>
-  <text x="138" y="20" font-family="system-ui" font-size="8" font-weight="700" fill="#E8650A">ADMIN</text>
-</svg>`
+// pageTitleFor resolve o título da ABA por pathname, reusando o PAGE_TITLES já
+// existente acima (usado também no header). Prefixos p/ detalhes (ex.: /orders/:id).
+function pageTitleFor(pathname: string): string {
+  if (PAGE_TITLES[pathname]) return PAGE_TITLES[pathname]
+  if (pathname.startsWith('/orders/')) return 'Pedido'
+  return 'Painel'
+}
 
 export default function Layout() {
   const navigate = useNavigate()
   const location = useLocation()
+  const showToast = useToast()
+
+  // Título da aba por página (browser tab). Roda a cada navegação SPA.
+  useEffect(() => {
+    document.title = `${pageTitleFor(location.pathname)} · FALK Admin`
+  }, [location.pathname])
+
   const [sidebar, setSidebar] = useState<'open' | 'collapsed'>('open')
-  const [theme, setTheme] = useState<'light' | 'dark'>('light')
-  const [adminName, setAdminName] = useState('Admin')
+  // AUDIT-2026-06-18 Onda3 — mobileDrawer controla off-canvas em <768px
+  const [mobileDrawer, setMobileDrawer] = useState(false)
+  // Lê tema/nome do localStorage já no valor inicial do state — evita o flash
+  // de "Admin"/logo errada no 1º paint enquanto localStorage/`/me` resolvem.
+  const [theme, setTheme] = useState<'light' | 'dark'>(() => {
+    const saved = localStorage.getItem('szAdminTheme') as 'light' | 'dark' | null
+    return saved || 'light'
+  })
+  const [adminName, setAdminName] = useState(() => localStorage.getItem('szAdminName') || 'Admin')
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>(() => {
     const defaults: Record<string, boolean> = {}
     NAV_GROUPS.forEach(g => { if (g.kicker) defaults[g.kicker] = true })
@@ -197,8 +197,7 @@ export default function Layout() {
   useEffect(() => {
     const saved = localStorage.getItem('szAdminSidebar') as 'open' | 'collapsed' | null
     if (saved) setSidebar(saved)
-    const savedTheme = localStorage.getItem('szAdminTheme') as 'light' | 'dark' | null
-    if (savedTheme) setTheme(savedTheme)
+    // Tema já foi lido no useState inicial — aqui só cobre mudança em outra aba.
     const savedOpen = localStorage.getItem('szAdminMenuOpen')
     if (savedOpen) {
       try {
@@ -207,9 +206,24 @@ export default function Layout() {
       } catch { /* ignore */ }
     }
     if (getToken()) {
-      api<{ nome: string }>('/me').then(r => setAdminName(r.nome?.split(' ')[0] || 'Admin')).catch(() => {})
+      api<{ nome: string }>('/me').then(r => {
+        const first = r.nome?.split(' ')[0] || 'Admin'
+        setAdminName(first)
+        localStorage.setItem('szAdminName', first)
+      }).catch(() => {})
     }
   }, [])
+
+  // AUDIT-2026-06-18 Onda3 — registra handlers para api.ts usar SPA navigate + toast
+  const stableNavigate = useCallback((path: string) => navigate(path), [navigate])
+  useEffect(() => {
+    registerApi401Handlers(stableNavigate, showToast)
+  }, [stableNavigate, showToast])
+
+  // Fecha drawer ao navegar em mobile
+  useEffect(() => {
+    setMobileDrawer(false)
+  }, [location.pathname])
 
   function toggleGroup(kicker: string) {
     setOpenGroups(prev => {
@@ -237,12 +251,27 @@ export default function Layout() {
 
   return (
     <div className="sz-root sz-dashboard-v2" data-theme={theme} data-sidebar={sidebar}>
+      {/* ── Backdrop mobile (AUDIT-2026-06-18 Onda3) ────────────── */}
+      {mobileDrawer && (
+        <div
+          className="szv2-mobile-backdrop"
+          onClick={() => setMobileDrawer(false)}
+          aria-hidden="true"
+        />
+      )}
+
       {/* ── Sidebar ─────────────────────────────────────────── */}
-      <aside className="szv2-sidebar" aria-label="Navegação principal">
+      <aside
+        className="szv2-sidebar"
+        aria-label="Navegação principal"
+        data-mobile-open={mobileDrawer ? '1' : '0'}
+      >
         <div className="szv2-sidebar-head">
-          <span className="szv2-logo-full" dangerouslySetInnerHTML={{ __html: LOGO_SVG }} />
+          <span className="szv2-logo-full">
+            <FalkLogo variant="full" size={44} />
+          </span>
           <span className="szv2-logo-mark" aria-hidden="true">
-            <svg viewBox="0 0 36 36" fill="none"><rect width="36" height="36" rx="9" fill="#E8650A"/><text x="18" y="24" textAnchor="middle" fontFamily="system-ui" fontSize="14" fontWeight="800" fill="#fff">SZ</text></svg>
+            <FalkLogo variant="icon" size={32} />
           </span>
         </div>
 
@@ -252,49 +281,25 @@ export default function Layout() {
         </div>
 
         <nav className="szv2-nav">
-          {NAV_GROUPS.map((g, gi) => {
-            const isOpen = g.kicker ? (openGroups[g.kicker] ?? true) : true
-            return (
-              <div key={gi} className="szv2-nav-group" data-open={isOpen ? '1' : '0'}>
-                {g.kicker && (
-                  <button
-                    type="button"
-                    className="szv2-nav-kicker szv2-nav-kicker-btn"
-                    onClick={() => toggleGroup(g.kicker)}
-                    aria-expanded={isOpen}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
-                      width: '100%',
-                      background: 'transparent',
-                      border: 0,
-                      padding: '6px 12px',
-                      cursor: 'pointer',
-                      font: 'inherit',
-                      color: 'inherit',
-                      textAlign: 'left',
-                    }}
-                  >
-                    <span>{g.kicker}</span>
-                    <span aria-hidden="true" style={{ fontSize: '10px', opacity: 0.7 }}>{isOpen ? '▾' : '▸'}</span>
-                  </button>
-                )}
-                {isOpen && g.items.map(item => (
-                  <NavLink
-                    key={item.to}
-                    to={item.to}
-                    end={item.to === '/'}
-                    title={item.label}
-                    className={({ isActive }) => 'sz-ni' + (isActive ? ' sz-ni-on' : '')}
-                  >
-                    <span className="szv2-ni-icon" aria-hidden="true">{item.icon}</span>
-                    <span className="szv2-ni-label">{item.label}</span>
-                  </NavLink>
-                ))}
-              </div>
-            )
-          })}
+          {/* Grupos SEMPRE expandidos (pedido do dono) — sem toggle/chevron. O kicker
+              é só um rótulo; todos os itens renderizam sempre. */}
+          {NAV_GROUPS.map((g, gi) => (
+            <div key={gi} className="szv2-nav-group" data-open="1">
+              {g.kicker && <div className="szv2-nav-kicker">{g.kicker}</div>}
+              {g.items.map(item => (
+                <NavLink
+                  key={item.to}
+                  to={item.to}
+                  end={item.to === '/'}
+                  title={item.label}
+                  className={({ isActive }) => 'sz-ni' + (isActive ? ' sz-ni-on' : '')}
+                >
+                  <span className="szv2-ni-icon" aria-hidden="true">{item.icon}</span>
+                  <span className="szv2-ni-label">{item.label}</span>
+                </NavLink>
+              ))}
+            </div>
+          ))}
         </nav>
 
         <div className="szv2-sidebar-foot">
@@ -312,12 +317,35 @@ export default function Layout() {
       {/* ── Main ────────────────────────────────────────────── */}
       <div className="szv2-main">
         <header className="szv2-topbar">
-          <button type="button" className="szv2-topbar-toggle" onClick={toggleSidebar} aria-label="Recolher menu">
+          {/* Em mobile abre o drawer; em desktop alterna collapsed/open */}
+          <button
+            type="button"
+            className="szv2-topbar-toggle"
+            onClick={() => {
+              if (window.innerWidth < 768) setMobileDrawer(d => !d)
+              else toggleSidebar()
+            }}
+            aria-label="Recolher menu"
+          >
             <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 5h14v2H3zM3 9h14v2H3zM3 13h14v2H3z"/></svg>
           </button>
           <h1 className="szv2-topbar-title">{title}</h1>
           <div className="szv2-topbar-spacer" />
           <div className="szv2-topbar-actions">
+            {/* Busca global (Cmd/Ctrl+K) — dispara o atalho que a paleta escuta */}
+            <button
+              type="button"
+              className="szv2-topbar-toggle"
+              onClick={() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true, ctrlKey: true }))}
+              title="Buscar (Cmd/Ctrl+K)"
+              aria-label="Buscar telas e abas (Cmd/Ctrl+K)"
+            >
+              <svg viewBox="0 0 20 20" aria-hidden="true" fill="currentColor"><path d="M8.5 3a5.5 5.5 0 1 0 3.4 9.83l3.64 3.63 1.06-1.06-3.63-3.64A5.5 5.5 0 0 0 8.5 3zm0 1.6a3.9 3.9 0 1 1 0 7.8 3.9 3.9 0 0 1 0-7.8z"/></svg>
+            </button>
+            {/* Sistema acessível só por este ícone (saiu do menu esquerdo) */}
+            <NavLink to="/sistema" className="szv2-topbar-toggle" title="Sistema" aria-label="Sistema">
+              {ICONS.settings}
+            </NavLink>
             <span className="szv2-beta-pill">ADMIN</span>
             <div className="szv2-avatar" title={adminName}>{adminName.charAt(0).toUpperCase()}</div>
           </div>
@@ -327,6 +355,12 @@ export default function Layout() {
           <Outlet />
         </main>
       </div>
+
+      {/* AUDIT-2026-06-18 Onda3 — hosts globais */}
+      <ToastHost />
+      <ConfirmHost />
+      {/* AUDIT-2026-06-19 — busca global Cmd-K */}
+      <CommandPalette />
     </div>
   )
 }

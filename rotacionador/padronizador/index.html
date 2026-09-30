@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Padronizador · Rotacionador</title>
+  <style>
+    :root {
+      font-family: Inter, system-ui, sans-serif;
+      color: #172033;
+      background: linear-gradient(180deg, #f4f7fb 0%, #eef3ff 100%);
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; padding: 28px; }
+    main {
+      max-width: 940px;
+      margin: auto;
+      background: rgba(255,255,255,.86);
+      border: 1px solid #e1e7f0;
+      border-radius: 20px;
+      box-shadow: 0 20px 60px #243b5a12;
+      backdrop-filter: blur(8px);
+      padding: 28px;
+    }
+    .brand {
+      width: 250px;
+      height: 72px;
+      background: url('/assets/rotacionador-tech.png') center/400px 267px no-repeat;
+      margin-bottom: 18px;
+    }
+    h1 { margin: 0 0 10px; font-size: 30px; }
+    p { margin: 0; line-height: 1.5; color: #65738a; }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+      margin-top: 24px;
+    }
+    a {
+      display: block;
+      padding: 20px;
+      border-radius: 16px;
+      border: 1px solid #dbe4f1;
+      text-decoration: none;
+      background: #fff;
+      color: inherit;
+      box-shadow: 0 5px 18px #243b5a0a;
+    }
+    a strong { display: block; font-size: 18px; margin-bottom: 8px; }
+    a span { display: block; color: #65738a; line-height: 1.5; }
+    .primary { border-color: #3157d5; }
+    .primary strong { color: #3157d5; }
+    .hint { margin-top: 18px; font-size: 13px; color: #76849b; }
+    @media (max-width: 760px) {
+      body { padding: 14px; }
+      main { padding: 22px; }
+      .grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="brand" role="img" aria-label="Rotacionador Tech"></div>
+    <h1>Padronizador</h1>
+    <p>Escolha o fluxo que você quer abrir. Um trata a base e o outro monta o ZIP final.</p>
+    <div class="grid">
+      <a class="primary" href="/padronizador/tratamento/">
+        <strong>Tratamento da base</strong>
+        <span>Importa a planilha, normaliza os dados e exporta a planilha tratada com o nome que você escolher + data atual.</span>
+      </a>
+      <a href="/padronizador/numero-padrao/">
+        <strong>Número padrão</strong>
+        <span>Inclui o número padrão 11963486603 em toda planilha, adiciona o número do cliente como teste e libera a prévia editável antes do download.</span>
+      </a>
+      <a href="/padronizador/zip/">
+        <strong>Gerar ZIP</strong>
+        <span>Inclui base tratada, copy, link do botão e criativo opcional em um pacote pronto para envio.</span>
+      </a>
+    </div>
+    <p class="hint">Se quiser voltar ao painel principal, use o botão “Abrir painel” dentro das páginas de tratamento ou ZIP.</p>
+  </main>
+</body>
+</html>

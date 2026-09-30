@@ -5,7 +5,7 @@
  * a dashboard clássica e nada do legado é editado.
  *
  * Decisões aprovadas:
- *  - Laranja oficial #E8650A, sólido. Sem gradiente. Sem sombra
+ *  - Laranja oficial #1E6FF2, sólido. Sem gradiente. Sem sombra
  *    decorativa (apenas focus ring e flutuantes discretos).
  *  - Fontes SEM dependência externa (Fase 1 = fallback de sistema).
  *    Se um dia houver fonte própria, será self-host woff2 aqui,
@@ -18,11 +18,11 @@
 
 .sz-dashboard-v2 {
   /* ── Marca ─────────────────────────────────────────────────── */
-  --szv2-brand:        #E8650A;
-  --szv2-brand-hover:  #C94F06;
+  --szv2-brand:        #1E6FF2;
+  --szv2-brand-hover:  #1556CC;
   --szv2-brand-ember:  #C24E06;  /* tom secundário do falcão        */
-  --szv2-brand-light:  #FFF4EC;
-  --szv2-brand-muted:  rgba(232, 101, 10, 0.12);
+  --szv2-brand-light:  #EAF1FE;
+  --szv2-brand-muted:  rgba(30, 111, 242, 0.12);
   --szv2-on-brand:     #FFFFFF;
 
   /* ── Superfícies e texto (claro) ───────────────────────────── */
@@ -78,7 +78,7 @@
   --szv2-space-8: 32px;
 
   /* ── Sombra (regra: quase nenhuma) ─────────────────────────── */
-  --szv2-shadow-focus: 0 0 0 3px rgba(232, 101, 10, 0.16);
+  --szv2-shadow-focus: 0 0 0 3px rgba(30, 111, 242, 0.16);
   --szv2-shadow-float: 0 12px 30px rgba(15, 23, 42, 0.10);
 
   /* ── Layout ────────────────────────────────────────────────── */
@@ -113,8 +113,8 @@
   --szv2-text-muted:   #94A3B8;
   --szv2-text-faint:   #64748B;
 
-  --szv2-brand-light:  rgba(232, 101, 10, 0.16);
-  --szv2-brand-muted:  rgba(232, 101, 10, 0.10);
+  --szv2-brand-light:  rgba(30, 111, 242, 0.16);
+  --szv2-brand-muted:  rgba(30, 111, 242, 0.10);
 
   --szv2-success-bg:   rgba(22, 163, 74, 0.16);
   --szv2-danger-bg:    rgba(220, 38, 38, 0.16);

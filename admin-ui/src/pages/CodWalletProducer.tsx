@@ -7,60 +7,35 @@ import FilterTopPanel, {
   ActiveFilterChips,
   type ActiveChip,
 } from '../components/FilterTopPanel'
+import FalkDatePicker from '../components/FalkDatePicker'
 import TableSkeleton from '../components/TableSkeleton'
 import EmptyState from '../components/EmptyState'
+import FilterDrawer from '../components/FilterDrawer'
+import { drawerTabsStyle, drawerTabBtnStyle } from '../components/drawerTabs'
+import { confirmAsync } from '../components/ConfirmDialog'
+import { emitToast } from '../hooks/useToast'
 
 // ---------------------------------------------------------------------------
-// Tipos espelhados de internal/handlers/cod_wallet_producer.go
+// Tela "Carteira COD — Produtores"
+//
+// As abas "Carteira / Saldos" e "Financeiro / P&L" foram UNIFICADAS numa única
+// visão ("Carteira & Financeiro"): os KPIs e a tabela por produtor das duas
+// abas viram um conjunto só, sem dados duplicados. "Regras de repasse"
+// permanece como aba separada.
+//
+// Merge de id-space (crítico): os dois back-ends usam chaves diferentes para o
+// mesmo produtor —
+//   - cod-livro/producers-summary: producer_id = sz_orders.produtor_id = portal id (Gabriel = 15)
+//   - cod-wallet-producer:        user_id     = sz_cod_wallet_transactions.user_id = wp_user_id (Gabriel = 21)
+// O wallet handler passou a expor `portal_id` (senderzz_portal_users.id). A
+// fusão das linhas é feita por portal id, evitando o mesmo produtor aparecer
+// em duas linhas (dados duplicados).
 // ---------------------------------------------------------------------------
 
-type Summary = {
-  total_pending: number
-  total_available: number
-  total_paid_30d: number
-  producers_count: number
-}
-
-type PixDefault = {
-  holder: string
-  key: string
-  type: string // cpf | cnpj | email | telefone | aleatoria
-}
-
-type Row = {
-  user_id: number
-  nome: string
-  email: string
-  saldo_pending: number
-  saldo_available: number
-  saldo_paid_30d: number
-  pix_default: PixDefault | null
-  ultima_movimentacao: string | null
-}
-
-type Account = {
-  id: number
-  holder_name: string
-  holder_cpf: string
-  pix_type: string
-  pix_key: string
-  is_default: boolean
-}
-
-// ---------------------------------------------------------------------------
-// Tipos do P&L financeiro (cod_livro.go)
-// ---------------------------------------------------------------------------
-
-type FinSummary = {
-  bruto_cod: number
-  afiliados: number
-  taxas_senderzz: number
-  liquido_produtor: number
-  previsto_produtor: number
-}
-
+// Linha do P&L financeiro (cod_livro.go::ProducersSummary).
 type FinProducerRow = {
   producer_id: number
+  producer_name: string
   producer_email: string
   pedidos: number
   recebidos: number
@@ -74,6 +49,61 @@ type FinProducerRow = {
   frustrado_produtor: number
   frustrado_afiliados: number
   frustrado_valor: number
+}
+
+type FinSummary = {
+  bruto_cod: number
+  afiliados: number
+  taxas_senderzz: number
+  liquido_produtor: number
+  previsto_produtor: number
+}
+
+type PixDefault = {
+  holder: string
+  key: string
+  type: string // cpf | cnpj | email | telefone | aleatoria
+}
+
+// Linha da carteira COD (cod_wallet_producer.go::List).
+type WalletRow = {
+  user_id: number   // wp_user_id-space (chave para /accounts e /release-pending)
+  portal_id: number // senderzz_portal_users.id — chave canônica do merge
+  nome: string
+  email: string
+  saldo_pending: number
+  saldo_available: number
+  saldo_paid_30d: number
+  pix_default: PixDefault | null
+  ultima_movimentacao: string | null
+}
+
+type WalletSummary = {
+  total_pending: number
+  total_available: number
+  total_paid_30d: number
+  producers_count: number
+}
+
+type Account = {
+  id: number
+  holder_name: string
+  holder_cpf: string
+  pix_type: string
+  pix_key: string
+  is_default: boolean
+}
+
+// Linha unificada exibida na tabela. Reúne P&L (período) + carteira (saldos
+// atuais/cumulativos). `portalId` é a chave de fusão.
+type MergedRow = {
+  portalId: number
+  nome: string
+  email: string
+  // P&L (governado pelo filtro de data)
+  fin: FinProducerRow | null
+  // Carteira (saldos atuais — não dependem do período)
+  wallet: WalletRow | null
 }
 
 // ---------------------------------------------------------------------------
@@ -110,8 +140,6 @@ const fmt = (v: number) =>
 const money = (v: number) => 'R$ ' + fmt(v)
 
 // Máscara da key PIX para a coluna "PIX padrão".
-// CPF/CNPJ: pega últimos 4 dígitos e prefixa com '•••'.
-// Email/telefone/aleatoria: trunca em 22 chars com reticências.
 function maskPixKey(type: string, key: string): string {
   if (!key) return '—'
   const t = (type || '').toLowerCase()
@@ -124,7 +152,6 @@ function maskPixKey(type: string, key: string): string {
   return key
 }
 
-// Badge color por tipo de chave PIX.
 const PIX_TYPE_BADGE: Record<string, string> = {
   cpf:        'szv2-badge-info',
   cnpj:       'szv2-badge-info',
@@ -135,7 +162,6 @@ const PIX_TYPE_BADGE: Record<string, string> = {
 
 function fmtDateBR(iso: string | null | undefined): string {
   if (!iso) return '—'
-  // O backend devolve algo como "2026-06-16 14:32:11" ou "2026-06-16T14:32:11Z".
   const safe = iso.replace('T', ' ').slice(0, 16)
   return safe
 }
@@ -145,8 +171,8 @@ function defaultDateRange(): { from: string; to: string } {
   const to = new Date()
   const from = new Date()
   from.setDate(from.getDate() - 7)
-  const fmt = (d: Date) => d.toISOString().slice(0, 10)
-  return { from: fmt(from), to: fmt(to) }
+  const fmtD = (d: Date) => d.toISOString().slice(0, 10)
+  return { from: fmtD(from), to: fmtD(to) }
 }
 
 // ---------------------------------------------------------------------------
@@ -187,12 +213,13 @@ function KpiCard({
 function AccountsDrawer({
   row, onClose,
 }: {
-  row: Row
+  row: WalletRow
   onClose: () => void
 }) {
   const [items, setItems] = useState<Account[]>([])
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState('')
+  const [tab, setTab] = useState<'resumo' | 'contas'>('resumo')
 
   useEffect(() => {
     let active = true
@@ -205,322 +232,230 @@ function AccountsDrawer({
   }, [row.user_id])
 
   return (
-    <div
-      className="szv2-modal-overlay szv2-open"
-      onClick={(e) => { if (e.target === e.currentTarget) onClose() }}
+    <FilterDrawer
+      open
+      onClose={onClose}
+      onApply={onClose}
+      applyLabel="Fechar"
+      width={600}
+      title={`Carteira COD — ${row.nome || row.email || `#${row.user_id}`}`}
     >
-      <div className="szv2-modal szv2-modal-lg" style={{ maxWidth: 760 }}>
-        <div className="szv2-modal-head">
-          <h3>Carteira COD — {row.nome || row.email || `#${row.user_id}`}</h3>
-          <button className="szv2-modal-x" onClick={onClose} aria-label="Fechar">✕</button>
-        </div>
-
-        <div className="szv2-modal-body">
-          {/* Mini-resumo do produtor */}
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(3, minmax(0,1fr))',
-              gap: 12,
-              marginBottom: 16,
-            }}
+      {/* Abas */}
+      <div style={drawerTabsStyle}>
+        {([
+          ['resumo', 'Resumo'],
+          ['contas', 'Contas PIX'],
+        ] as const).map(([key, label]) => (
+          <button
+            key={key}
+            type="button"
+            onClick={() => setTab(key)}
+            style={drawerTabBtnStyle(tab === key)}
           >
-            <div style={{ padding: 12, background: 'var(--szv2-warning-bg)', borderRadius: 8 }}>
-              <div style={{ fontSize: 11, color: 'var(--szv2-text-muted)' }}>Pendente</div>
-              <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--szv2-warning)' }}>
-                {money(row.saldo_pending)}
-              </div>
-            </div>
-            <div style={{ padding: 12, background: 'var(--szv2-success-bg)', borderRadius: 8 }}>
-              <div style={{ fontSize: 11, color: 'var(--szv2-text-muted)' }}>Disponível</div>
-              <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--szv2-success)' }}>
-                {money(row.saldo_available)}
-              </div>
-            </div>
-            <div style={{ padding: 12, background: 'var(--szv2-info-bg)', borderRadius: 8 }}>
-              <div style={{ fontSize: 11, color: 'var(--szv2-text-muted)' }}>Pago (30d)</div>
-              <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--szv2-info)' }}>
-                {money(row.saldo_paid_30d)}
-              </div>
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {err && <div className="sz-alert-danger">{err}</div>}
+
+      {/* ── Aba: Resumo (KPIs) ─────────────────────────────── */}
+      {tab === 'resumo' && (
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(3, minmax(0,1fr))',
+            gap: 12,
+          }}
+        >
+          <div style={{ padding: 12, background: 'var(--szv2-warning-bg)', borderRadius: 8 }}>
+            <div style={{ fontSize: 11, color: 'var(--szv2-text-muted)' }}>Pendente</div>
+            <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--szv2-warning)' }}>
+              {money(row.saldo_pending)}
             </div>
           </div>
-
-          <h4 style={{ margin: '8px 0 12px' }}>Contas PIX cadastradas</h4>
-
-          {err && <div className="sz-alert-danger" style={{ marginBottom: 12 }}>{err}</div>}
-
-          {loading ? (
-            <div style={{ padding: 40, textAlign: 'center', color: 'var(--szv2-text-muted)' }}>
-              Carregando…
+          <div style={{ padding: 12, background: 'var(--szv2-success-bg)', borderRadius: 8 }}>
+            <div style={{ fontSize: 11, color: 'var(--szv2-text-muted)' }}>Disponível</div>
+            <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--szv2-success)' }}>
+              {money(row.saldo_available)}
             </div>
-          ) : items.length === 0 ? (
-            <div className="szv2-empty">
-              <h3>Nenhuma conta PIX</h3>
-              <p>O produtor ainda não cadastrou contas para receber saques COD.</p>
+          </div>
+          <div style={{ padding: 12, background: 'var(--szv2-info-bg)', borderRadius: 8 }}>
+            <div style={{ fontSize: 11, color: 'var(--szv2-text-muted)' }}>Pago (30d)</div>
+            <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--szv2-info)' }}>
+              {money(row.saldo_paid_30d)}
             </div>
-          ) : (
-            <div style={{ overflowX: 'auto' }}>
-              <table className="szv2-table">
-                <thead>
-                  <tr>
-                    <th>Titular</th>
-                    <th>CPF</th>
-                    <th>Tipo</th>
-                    <th>Chave</th>
-                    <th>Padrão</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {items.map(a => (
-                    <tr key={a.id}>
-                      <td style={{ fontWeight: 600 }}>{a.holder_name || '—'}</td>
-                      <td style={{ fontFamily: 'var(--szv2-font-mono)', fontSize: 12 }}>
-                        {a.holder_cpf || '—'}
-                      </td>
-                      <td>
-                        <span
-                          className={`sz-badge ${PIX_TYPE_BADGE[a.pix_type] || 'szv2-badge-neutral'}`}
-                        >
-                          {a.pix_type || '—'}
-                        </span>
-                      </td>
-                      <td
-                        style={{
-                          fontFamily: 'var(--szv2-font-mono)',
-                          fontSize: 12,
-                          maxWidth: 220,
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                          whiteSpace: 'nowrap',
-                        }}
-                        title={a.pix_key}
+          </div>
+        </div>
+      )}
+
+      {/* ── Aba: Contas PIX cadastradas ────────────────────── */}
+      {tab === 'contas' && (
+        loading ? (
+          <div style={{ padding: 40, textAlign: 'center', color: 'var(--szv2-text-muted)' }}>
+            Carregando…
+          </div>
+        ) : items.length === 0 ? (
+          <div className="szv2-empty">
+            <h3>Nenhuma conta PIX</h3>
+            <p>O produtor ainda não cadastrou contas para receber saques COD.</p>
+          </div>
+        ) : (
+          <div style={{ overflowX: 'auto' }}>
+            <table className="szv2-table">
+              <thead>
+                <tr>
+                  <th>Titular</th>
+                  <th>CPF</th>
+                  <th>Tipo</th>
+                  <th>Chave</th>
+                  <th>Padrão</th>
+                </tr>
+              </thead>
+              <tbody>
+                {items.map(a => (
+                  <tr key={a.id}>
+                    <td style={{ fontWeight: 600 }}>{a.holder_name || '—'}</td>
+                    <td style={{ fontFamily: 'var(--szv2-font-mono)', fontSize: 12 }}>
+                      {a.holder_cpf || '—'}
+                    </td>
+                    <td>
+                      <span
+                        className={`sz-badge ${PIX_TYPE_BADGE[a.pix_type] || 'szv2-badge-neutral'}`}
                       >
-                        {a.pix_key || '—'}
-                      </td>
-                      <td>
-                        {a.is_default
-                          ? <span className="sz-badge szv2-badge-success">padrão</span>
-                          : <span style={{ color: 'var(--szv2-text-faint)' }}>—</span>}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
+                        {a.pix_type || '—'}
+                      </span>
+                    </td>
+                    <td
+                      style={{
+                        fontFamily: 'var(--szv2-font-mono)',
+                        fontSize: 12,
+                        maxWidth: 220,
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}
+                      title={a.pix_key}
+                    >
+                      {a.pix_key || '—'}
+                    </td>
+                    <td>
+                      {a.is_default
+                        ? <span className="sz-badge szv2-badge-success">padrão</span>
+                        : <span style={{ color: 'var(--szv2-text-faint)' }}>—</span>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )
+      )}
 
-        <div className="szv2-modal-foot">
-          <a
-            className="szv2-btn szv2-btn-secondary"
-            href={`/cod-wallet-transactions?user_id=${row.user_id}`}
-          >
-            Ver todas as transações
-          </a>
-          <button className="szv2-btn szv2-btn-secondary" onClick={onClose}>Fechar</button>
-        </div>
-      </div>
-    </div>
+    </FilterDrawer>
   )
 }
 
 // ---------------------------------------------------------------------------
-// Seção Financeiro / P&L (espelha tab_fin_produtores do WP)
+// Modal: Antecipar (sem taxa) — o admin DIGITA o valor exato a antecipar
 // ---------------------------------------------------------------------------
 
-function FinancialSection() {
-  const def = defaultDateRange()
-  const [from, setFrom] = useState(def.from)
-  const [to, setTo] = useState(def.to)
-  const [draftFrom, setDraftFrom] = useState(def.from)
-  const [draftTo, setDraftTo] = useState(def.to)
-  const [filterOpen, setFilterOpen] = useState(false)
-  const [finSummary, setFinSummary] = useState<FinSummary | null>(null)
-  const [finRows, setFinRows] = useState<FinProducerRow[]>([])
-  const [loading, setLoading] = useState(false)
-  const [err, setErr] = useState('')
+function AnticipateModal({
+  row, busy, onClose, onConfirm,
+}: {
+  row: WalletRow
+  busy: boolean
+  onClose: () => void
+  onConfirm: (amount: number) => void
+}) {
+  const pendente = row.saldo_pending ?? 0
+  // Pré-sugere o pendente inteiro como valor (máximo permitido). O input é
+  // type="number" → formato com PONTO decimal (ex.: "252.21"); vírgula seria
+  // rejeitada pelo navegador e o campo apareceria vazio.
+  const [raw, setRaw] = useState<string>(pendente > 0 ? pendente.toFixed(2) : '')
 
-  async function load() {
-    setLoading(true); setErr('')
-    try {
-      const [s, r] = await Promise.all([
-        api<FinSummary>(`/cod-livro/summary?from=${from}&to=${to}`),
-        api<{ items: FinProducerRow[] }>(`/cod-livro/producers-summary?from=${from}&to=${to}`),
-      ])
-      setFinSummary(s)
-      setFinRows(r.items || [])
-    } catch (e: any) {
-      setErr(e.message || 'Erro ao carregar financeiro')
-    } finally {
-      setLoading(false)
-    }
+  // Parse direto do formato do input number (ponto decimal). Centavos p/ comparar sem drift.
+  const amount = parseFloat(raw)
+  const amountCents = Number.isFinite(amount) ? Math.round(amount * 100) : NaN
+  const pendCents = Math.round(pendente * 100)
+
+  const tooHigh = Number.isFinite(amountCents) && amountCents > pendCents
+  const invalid = !Number.isFinite(amountCents) || amountCents <= 0 || tooHigh
+
+  function submit(e: React.FormEvent) {
+    e.preventDefault()
+    if (invalid || busy) return
+    onConfirm(amountCents / 100)
   }
-
-  useEffect(() => { load() }, [from, to]) // eslint-disable-line react-hooks/exhaustive-deps
-
-  function openPanel()    { setDraftFrom(from); setDraftTo(to); setFilterOpen(true) }
-  function applyFilters() { setFrom(draftFrom); setTo(draftTo); setFilterOpen(false) }
-  function clearFilters() {
-    setDraftFrom(def.from); setDraftTo(def.to)
-    setFrom(def.from); setTo(def.to); setFilterOpen(false)
-  }
-
-  const chips: ActiveChip[] = []
-  if (from !== def.from) chips.push({ key: 'from', label: `De: ${from}`, onRemove: () => setFrom(def.from) })
-  if (to   !== def.to)   chips.push({ key: 'to',   label: `Até: ${to}`,   onRemove: () => setTo(def.to) })
 
   return (
-    <div className="szv2-card" style={{ marginBottom: 24 }}>
-      <div className="szv2-card-head">
-        <div>
-          <h2>Financeiro / P&amp;L por Produtor</h2>
-          <p className="szv2-card-sub">
-            Agrega pedidos do período por produtor (bruto, afiliados, taxas, líquido).
-            Espelha tab_fin_produtores do WP.
-          </p>
-        </div>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <FilterButton active={chips.length > 0} count={chips.length} onClick={openPanel} />
+    <div
+      role="dialog"
+      aria-modal="true"
+      onClick={onClose}
+      style={{
+        position: 'fixed', inset: 0, zIndex: 1000,
+        background: 'rgba(0,0,0,.45)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        padding: 16,
+      }}
+    >
+      <form
+        onClick={e => e.stopPropagation()}
+        onSubmit={submit}
+        className="szv2-card"
+        style={{ width: 420, maxWidth: '100%', padding: 20 }}
+      >
+        <h2 style={{ marginTop: 0, marginBottom: 4 }}>Antecipar (sem taxa)</h2>
+        <p style={{ fontSize: 13, color: 'var(--szv2-text-muted)', marginTop: 0 }}>
+          {row.nome || row.email || `#${row.user_id}`} · pendente atual{' '}
+          <strong>{money(pendente)}</strong>
+        </p>
+
+        <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 13, marginTop: 12 }}>
+          Valor a antecipar (R$)
+          <input
+            type="number"
+            min="0.01"
+            step="0.01"
+            max={pendente}
+            className="szv2-input"
+            autoFocus
+            value={raw}
+            onChange={e => setRaw(e.target.value)}
+            disabled={busy}
+          />
+        </label>
+
+        {tooHigh && (
+          <div style={{ fontSize: 12, color: 'var(--szv2-danger)', marginTop: 6 }}>
+            Valor maior que o pendente ({money(pendente)}).
+          </div>
+        )}
+
+        <p style={{ fontSize: 12, color: 'var(--szv2-text-muted)', marginTop: 10 }}>
+          O valor digitado sai do pendente e entra no disponível para saque,{' '}
+          <strong>sem cobrar taxa de antecipação</strong>.
+        </p>
+
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16 }}>
           <button
+            type="button"
             className="szv2-btn szv2-btn-secondary"
-            onClick={load}
-            disabled={loading}
+            onClick={onClose}
+            disabled={busy}
           >
-            {loading ? 'Buscando…' : 'Atualizar'}
+            Cancelar
+          </button>
+          <button
+            type="submit"
+            className="szv2-btn szv2-btn-danger"
+            disabled={invalid || busy}
+          >
+            {busy ? 'Antecipando…' : 'Antecipar (sem taxa)'}
           </button>
         </div>
-      </div>
-
-      <div style={{ padding: '0 16px' }}>
-        <ActiveFilterChips chips={chips} onClearAll={clearFilters} />
-      </div>
-
-      <FilterTopPanel
-        open={filterOpen}
-        onClose={() => setFilterOpen(false)}
-        onApply={applyFilters}
-        onClear={clearFilters}
-        title="Filtros — Financeiro"
-      >
-        <FilterField label="Data inicial">
-          <input
-            type="date"
-            style={filterInputStyle}
-            value={draftFrom}
-            onChange={e => setDraftFrom(e.target.value)}
-          />
-        </FilterField>
-        <FilterField label="Data final">
-          <input
-            type="date"
-            style={filterInputStyle}
-            value={draftTo}
-            onChange={e => setDraftTo(e.target.value)}
-          />
-        </FilterField>
-      </FilterTopPanel>
-
-      {err && <div className="sz-alert-danger" style={{ margin: '12px 0' }}>{err}</div>}
-
-      {/* 5 KPIs do WP (linhas 792–796 Unified_Menu.php) */}
-      {finSummary && (
-        <div
-          className="szv2-kpi-grid"
-          style={{ gridTemplateColumns: 'repeat(5, minmax(0,1fr))', margin: '16px 0' }}
-        >
-          <KpiCard
-            label="Bruto COD"
-            value={money(finSummary.bruto_cod)}
-            sub="sem frustrados"
-          />
-          <KpiCard
-            label="Afiliados"
-            value={money(finSummary.afiliados)}
-            sub="repasse"
-            tone="warning"
-          />
-          <KpiCard
-            label="Taxas Senderzz"
-            value={money(finSummary.taxas_senderzz)}
-            sub="operação"
-          />
-          <KpiCard
-            label="Líquido produtor"
-            value={money(finSummary.liquido_produtor)}
-            sub="líquido"
-            tone="success"
-          />
-          <KpiCard
-            label="Previsto produtor"
-            value={money(finSummary.previsto_produtor)}
-            sub="agendados/em aberto"
-            tone="warning"
-          />
-        </div>
-      )}
-
-      {/* Tabela de produtores — 11 colunas do WP (linha 798) */}
-      {loading && finRows.length === 0 ? (
-        <TableSkeleton rows={5} cols={11} />
-      ) : !loading && finRows.length === 0 ? (
-        <EmptyState
-          icon="📊"
-          title="Nenhum produtor no período."
-          description="Tente ajustar o intervalo de datas."
-        />
-      ) : (
-      <div className="szv2-table-wrap">
-        <table className="szv2-table">
-          <thead>
-            <tr>
-              <th>Produtor</th>
-              <th style={{ textAlign: 'right' }}>Bruto COD</th>
-              <th style={{ textAlign: 'right' }}>Afiliados</th>
-              <th style={{ textAlign: 'right' }}>Taxas Senderzz</th>
-              <th style={{ textAlign: 'right' }}>Líquido produtor</th>
-              <th style={{ textAlign: 'right' }}>Previsto</th>
-              <th style={{ textAlign: 'right' }}>Potencial frustrado</th>
-              <th style={{ textAlign: 'right' }}>Pedidos</th>
-              <th style={{ textAlign: 'right' }}>Entregues</th>
-              <th style={{ textAlign: 'right' }}>Previstos</th>
-              <th style={{ textAlign: 'right' }}>Frustrados</th>
-            </tr>
-          </thead>
-          <tbody>
-            {finRows.map(r => (
-              <tr key={r.producer_id}>
-                <td>
-                  <div style={{ fontWeight: 600 }}>
-                    {r.producer_email || `#${r.producer_id}`}
-                  </div>
-                  <div style={{ fontSize: 11, color: 'var(--szv2-text-muted)' }}>
-                    ID {r.producer_id}
-                  </div>
-                </td>
-                <td style={{ textAlign: 'right' }}>{money(r.bruto)}</td>
-                <td style={{ textAlign: 'right', color: 'var(--szv2-warning)' }}>
-                  {money(r.afiliado)}
-                </td>
-                <td style={{ textAlign: 'right' }}>{money(r.taxas_senderzz)}</td>
-                <td style={{ textAlign: 'right', color: 'var(--szv2-success)', fontWeight: 700 }}>
-                  {money(r.liquido_produtor)}
-                </td>
-                <td style={{ textAlign: 'right', color: 'var(--szv2-warning)' }}>
-                  {money(r.bruto_previsto)}
-                </td>
-                <td style={{ textAlign: 'right', color: 'var(--szv2-danger)' }}>
-                  {money(r.frustrado_valor)}
-                </td>
-                <td style={{ textAlign: 'right' }}>{r.pedidos}</td>
-                <td style={{ textAlign: 'right', color: 'var(--szv2-success)' }}>{r.recebidos}</td>
-                <td style={{ textAlign: 'right', color: 'var(--szv2-warning)' }}>{r.previstos}</td>
-                <td style={{ textAlign: 'right', color: 'var(--szv2-danger)' }}>{r.frustrados}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      )}
+      </form>
     </div>
   )
 }
@@ -543,11 +478,9 @@ function RulesSection() {
   const [savingRules, setSavingRules] = useState(false)
   const [savingOverrides, setSavingOverrides] = useState(false)
   const [err, setErr] = useState('')
-  const [toast, setToast] = useState<{ kind: 'ok' | 'err'; msg: string } | null>(null)
 
   function showToast(kind: 'ok' | 'err', msg: string) {
-    setToast({ kind, msg })
-    setTimeout(() => setToast(null), 5000)
+    emitToast(kind, msg)
   }
 
   async function loadAll() {
@@ -584,7 +517,6 @@ function RulesSection() {
   async function handleSaveOverrides(e: React.FormEvent) {
     e.preventDefault()
     setSavingOverrides(true)
-    // Monta apenas os produtores que tiveram campos editados
     const items = overrides.map(o => {
       const edit = overrideEdits[o.user_id] || {}
       return {
@@ -638,14 +570,6 @@ function RulesSection() {
   return (
     <div style={{ marginBottom: 24 }}>
       {err && <div className="sz-alert-danger" style={{ marginBottom: 12 }}>{err}</div>}
-      {toast && (
-        <div
-          className={toast.kind === 'ok' ? 'sz-alert-success' : 'sz-alert-danger'}
-          style={{ marginBottom: 12 }}
-        >
-          {toast.msg}
-        </div>
-      )}
 
       {/* Formulário de regras globais + taxas motoboy */}
       <form onSubmit={handleSaveRules}>
@@ -883,107 +807,105 @@ function RulesSection() {
 // ---------------------------------------------------------------------------
 
 export default function CodWalletProducer() {
-  const [summary, setSummary] = useState<Summary | null>(null)
-  const [rows, setRows] = useState<Row[]>([])
+  // Aba ativa: 'carteira' (unificada) | 'regras'
+  const [tab, setTab] = useState<'carteira' | 'regras'>('carteira')
+
+  // ── Filtro de período (governa SÓ as colunas de P&L) ──
+  const def = defaultDateRange()
+  const [from, setFrom] = useState(def.from)
+  const [to, setTo] = useState(def.to)
+  const [draftFrom, setDraftFrom] = useState(def.from)
+  const [draftTo, setDraftTo] = useState(def.to)
+  const [q, setQ] = useState('')
+  const [draftQ, setDraftQ] = useState('')
+  const [filterOpen, setFilterOpen] = useState(false)
+
+  // ── Dados das duas fontes (fundidos por portal id) ──
+  const [finSummary, setFinSummary] = useState<FinSummary | null>(null)
+  const [finRows, setFinRows] = useState<FinProducerRow[]>([])
+  const [walletSummary, setWalletSummary] = useState<WalletSummary | null>(null)
+  const [walletRows, setWalletRows] = useState<WalletRow[]>([])
+
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState<number | null>(null)
-  const [drawer, setDrawer] = useState<Row | null>(null)
-  const [toast, setToast] = useState<{ kind: 'ok' | 'err'; msg: string } | null>(null)
-  // Aba ativa: 'wallet' | 'financeiro' | 'regras'
-  const [tab, setTab] = useState<'wallet' | 'financeiro' | 'regras'>('wallet')
-
-  // Filtros aplicados (aba Wallet).
-  const [q, setQ] = useState('')
-  const [userIDFilter, setUserIDFilter] = useState('')
-  const [statusFilter, setStatusFilter] = useState('')
-  const [dataIni, setDataIni] = useState('')
-  const [dataFim, setDataFim] = useState('')
-
-  // Drafts no painel.
-  const [draftQ, setDraftQ] = useState('')
-  const [draftUserID, setDraftUserID] = useState('')
-  const [draftStatus, setDraftStatus] = useState('')
-  const [draftIni, setDraftIni] = useState('')
-  const [draftFim, setDraftFim] = useState('')
-  const [filterOpen, setFilterOpen] = useState(false)
-
-  function openPanel() {
-    setDraftQ(q); setDraftUserID(userIDFilter); setDraftStatus(statusFilter); setDraftIni(dataIni); setDraftFim(dataFim)
-    setFilterOpen(true)
-  }
-  function applyFilters() {
-    setQ(draftQ); setUserIDFilter(draftUserID); setStatusFilter(draftStatus); setDataIni(draftIni); setDataFim(draftFim)
-    setFilterOpen(false)
-  }
-  function clearFilters() {
-    setQ(''); setUserIDFilter(''); setStatusFilter(''); setDataIni(''); setDataFim('')
-    setDraftQ(''); setDraftUserID(''); setDraftStatus(''); setDraftIni(''); setDraftFim('')
-    setFilterOpen(false)
-  }
-
-  // Chips ativos.
-  const chips: ActiveChip[] = []
-  if (q) chips.push({ key: 'q', label: `Busca: ${q}`, onRemove: () => setQ('') })
-  if (userIDFilter) chips.push({ key: 'uid', label: `User #${userIDFilter}`, onRemove: () => setUserIDFilter('') })
-  if (statusFilter) chips.push({ key: 'status', label: `Status: ${statusFilter}`, onRemove: () => setStatusFilter('') })
-  if (dataIni) chips.push({ key: 'ini', label: `De: ${dataIni}`, onRemove: () => setDataIni('') })
-  if (dataFim) chips.push({ key: 'fim', label: `Até: ${dataFim}`, onRemove: () => setDataFim('') })
-  const activeCount = chips.length
+  const [drawer, setDrawer] = useState<WalletRow | null>(null)
+  // Modal "Antecipar (sem taxa)": o admin digita um VALOR exato a antecipar.
+  const [anticipateRow, setAnticipateRow] = useState<WalletRow | null>(null)
 
   function showToast(kind: 'ok' | 'err', msg: string) {
-    setToast({ kind, msg })
-    setTimeout(() => setToast(null), 5000)
+    emitToast(kind, msg)
   }
 
-  async function loadSummary() {
-    try {
-      const s = await api<Summary>('/cod-wallet-producer/summary')
-      setSummary(s)
-    } catch (e: any) {
-      setErr(e.message || 'Erro ao carregar resumo')
-    }
+  function openPanel() { setDraftFrom(from); setDraftTo(to); setDraftQ(q); setFilterOpen(true) }
+  function applyFilters() { setFrom(draftFrom); setTo(draftTo); setQ(draftQ); setFilterOpen(false) }
+  function clearFilters() {
+    setDraftFrom(def.from); setDraftTo(def.to); setDraftQ('')
+    setFrom(def.from); setTo(def.to); setQ('')
+    setFilterOpen(false)
   }
 
-  async function loadList() {
+  const chips: ActiveChip[] = []
+  if (from !== def.from) chips.push({ key: 'from', label: `De: ${from}`, onRemove: () => setFrom(def.from) })
+  if (to   !== def.to)   chips.push({ key: 'to',   label: `Até: ${to}`,   onRemove: () => setTo(def.to) })
+  if (q)                 chips.push({ key: 'q',    label: `Busca: ${q}`,  onRemove: () => setQ('') })
+  const activeCount = chips.length
+
+  // P&L (financeiro) é recarregado quando o período muda; carteira (saldos
+  // atuais) e seu summary não dependem de data.
+  async function loadFinancial() {
+    const [s, r] = await Promise.all([
+      api<FinSummary>(`/cod-livro/summary?from=${from}&to=${to}`),
+      api<{ items: FinProducerRow[] }>(`/cod-livro/producers-summary?from=${from}&to=${to}`),
+    ])
+    setFinSummary(s)
+    setFinRows(r.items || [])
+  }
+
+  async function loadWallet() {
+    const [s, r] = await Promise.all([
+      api<WalletSummary>('/cod-wallet-producer/summary'),
+      api<{ items: WalletRow[] }>('/cod-wallet-producer?limit=300'),
+    ])
+    setWalletSummary(s)
+    setWalletRows(r.items || [])
+  }
+
+  async function loadAll() {
     setLoading(true); setErr('')
     try {
-      const p = new URLSearchParams()
-      p.set('limit', '300')
-      if (q) p.set('q', q)
-      if (userIDFilter) p.set('user_id', userIDFilter)
-      if (statusFilter) p.set('status', statusFilter)
-      if (dataIni) p.set('data_ini', dataIni)
-      if (dataFim) p.set('data_fim', dataFim)
-      const r = await api<{ items: Row[] }>(`/cod-wallet-producer?${p.toString()}`)
-      setRows(r.items || [])
+      await Promise.all([loadFinancial(), loadWallet()])
     } catch (e: any) {
-      setErr(e.message || 'Erro ao carregar lista')
+      setErr(e.message || 'Erro ao carregar dados')
     } finally {
       setLoading(false)
     }
   }
 
-  useEffect(() => {
-    loadSummary()
-    loadList()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [q, userIDFilter, statusFilter, dataIni, dataFim])
+  // Carrega tudo no mount e a cada mudança de período. Recarregar a carteira
+  // junto com o financeiro é barato (query pequena) e evita a classe de bugs de
+  // "skip" por estado de loading em voo — não vale otimizar.
+  useEffect(() => { loadAll() }, [from, to]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  async function handleRelease(r: Row) {
-    if (!window.confirm(
-      `Liberar transações pendentes vencidas do produtor #${r.user_id}?\n\n` +
-      'Promove status pending → available para registros cujo release_at já venceu.',
-    )) return
-    setBusy(r.user_id)
+  async function handleRelease(row: WalletRow) {
+    const ok = await confirmAsync({
+      variant: 'warning',
+      title: 'Liberar saldo pendente',
+      message:
+        `Tem certeza que deseja liberar as transações pendentes vencidas de ${row.nome || row.email || `#${row.user_id}`}?\n\n` +
+        'Os registros cujo prazo de retenção já venceu passarão de pendente para disponível para saque.',
+      confirmLabel: 'Liberar',
+    })
+    if (!ok) return
+    setBusy(row.user_id)
     try {
       const resp = await api<{ ok: boolean; released_count: number }>(
-        `/cod-wallet-producer/${r.user_id}/release-pending`,
+        `/cod-wallet-producer/${row.user_id}/release-pending`,
         { method: 'POST' },
       )
       showToast('ok',
-        `${resp.released_count ?? 0} transação(ões) liberada(s) para o produtor #${r.user_id}.`)
-      await Promise.all([loadSummary(), loadList()])
+        `${resp.released_count ?? 0} transação(ões) liberada(s) para o produtor #${row.user_id}.`)
+      await loadWallet()
     } catch (e: any) {
       showToast('err', e.message || 'Falha ao liberar')
     } finally {
@@ -991,15 +913,82 @@ export default function CodWalletProducer() {
     }
   }
 
-  // Lista filtrada client-side por nome/email enquanto digita (server já
-  // suporta o mesmo filtro via ?q=, usado apenas no Enter / botão).
-  const filteredRows = useMemo(() => {
+  // Antecipação administrativa SEM taxa: o admin DIGITA um VALOR e antecipa
+  // exatamente esse valor (pendente → disponível), SEM cobrar taxa. O back-end
+  // insere um par de lançamentos type='adjustment' (+valor available / -valor
+  // pending). amount precisa ser > 0 e <= pendente atual.
+  async function submitAnticipate(row: WalletRow, amount: number) {
+    setBusy(row.user_id)
+    try {
+      const resp = await api<{
+        ok: boolean
+        anticipated: number
+        novo_disponivel: number
+        novo_pendente: number
+      }>(
+        `/cod-wallet-producer/${row.user_id}/anticipate`,
+        { method: 'POST', body: JSON.stringify({ amount }) },
+      )
+      showToast('ok',
+        `Antecipado ${money(resp.anticipated ?? amount)} sem taxa · ` +
+        `disponível ${money(resp.novo_disponivel)} · pendente ${money(resp.novo_pendente)}.`)
+      setAnticipateRow(null)
+      await loadWallet()
+    } catch (e: any) {
+      showToast('err', e.message || 'Falha ao antecipar')
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  // ── Fusão das duas fontes por portal id (sem duplicar produtores) ──
+  const mergedRows = useMemo<MergedRow[]>(() => {
+    const byPortal = new Map<number, MergedRow>()
+
+    const ensure = (portalId: number, nome: string, email: string): MergedRow => {
+      let m = byPortal.get(portalId)
+      if (!m) {
+        m = { portalId, nome, email, fin: null, wallet: null }
+        byPortal.set(portalId, m)
+      }
+      // Mantém o melhor nome/email disponível.
+      if (!m.nome && nome) m.nome = nome
+      if (!m.email && email) m.email = email
+      return m
+    }
+
+    // P&L (chave = producer_id = portal id).
+    for (const f of finRows) {
+      const m = ensure(f.producer_id, f.producer_name, f.producer_email)
+      m.fin = f
+    }
+    // Carteira (chave = portal_id, exposto pelo back-end).
+    for (const wlt of walletRows) {
+      const m = ensure(wlt.portal_id, wlt.nome, wlt.email)
+      m.wallet = wlt
+    }
+
+    let arr = Array.from(byPortal.values())
+
+    // Filtro client-side por nome/email.
     const term = q.trim().toLowerCase()
-    if (!term) return rows
-    return rows.filter(r =>
-      (r.nome || '').toLowerCase().includes(term) ||
-      (r.email || '').toLowerCase().includes(term))
-  }, [rows, q])
+    if (term) {
+      arr = arr.filter(m =>
+        (m.nome || '').toLowerCase().includes(term) ||
+        (m.email || '').toLowerCase().includes(term))
+    }
+
+    // Ordena por bruto do período DESC, depois por saldo disponível DESC.
+    arr.sort((a, b) => {
+      const ab = a.fin?.bruto ?? 0
+      const bb = b.fin?.bruto ?? 0
+      if (bb !== ab) return bb - ab
+      const aw = a.wallet?.saldo_available ?? 0
+      const bw = b.wallet?.saldo_available ?? 0
+      return bw - aw
+    })
+    return arr
+  }, [finRows, walletRows, q])
 
   return (
     <div>
@@ -1008,21 +997,27 @@ export default function CodWalletProducer() {
           <h1>Carteira COD — Produtores</h1>
           <p>Saldos, P&amp;L financeiro e regras de repasse por produtor</p>
         </div>
-        {tab === 'wallet' && (
+        {tab === 'carteira' && (
           <div style={{ display: 'flex', gap: 8 }}>
             <FilterButton active={activeCount > 0} count={activeCount} onClick={openPanel} />
+            <button
+              className="szv2-btn szv2-btn-secondary"
+              onClick={loadAll}
+              disabled={loading}
+            >
+              {loading ? 'Buscando…' : 'Atualizar'}
+            </button>
           </div>
         )}
       </div>
 
-      {tab === 'wallet' && <ActiveFilterChips chips={chips} onClearAll={clearFilters} />}
+      {tab === 'carteira' && <ActiveFilterChips chips={chips} onClearAll={clearFilters} />}
 
-      {/* Tabs de navegação */}
+      {/* Tabs de navegação — abas Carteira e Financeiro foram unificadas */}
       <div style={{ display: 'flex', gap: 4, marginBottom: 20, borderBottom: '1px solid var(--szv2-border)' }}>
         {([
-          { key: 'wallet',     label: 'Carteira / Saldos' },
-          { key: 'financeiro', label: 'Financeiro / P&L' },
-          { key: 'regras',     label: 'Regras de repasse' },
+          { key: 'carteira', label: 'Carteira & Financeiro' },
+          { key: 'regras',   label: 'Regras de repasse' },
         ] as const).map(t => (
           <button
             key={t.key}
@@ -1044,74 +1039,68 @@ export default function CodWalletProducer() {
         ))}
       </div>
 
-      {/* ── Aba: Carteira / Saldos ── */}
-      {tab === 'wallet' && (
+      {/* ── Aba unificada: Carteira & Financeiro ── */}
+      {tab === 'carteira' && (
         <>
           {err && <div className="sz-alert-danger" style={{ marginBottom: 16 }}>{err}</div>}
 
-          {toast && (
-            <div
-              className={toast.kind === 'ok' ? 'sz-alert-success' : 'sz-alert-danger'}
-              style={{ marginBottom: 16 }}
-            >
-              {toast.msg}
-            </div>
+          {/* KPIs financeiros do período (P&L) */}
+          {finSummary && (
+            <>
+              <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--szv2-text-muted)', margin: '4px 0 8px', textTransform: 'uppercase', letterSpacing: '.04em' }}>
+                Financeiro do período ({from} → {to})
+              </div>
+              <div
+                className="szv2-kpi-grid"
+                style={{ gridTemplateColumns: 'repeat(5, minmax(0,1fr))', marginBottom: 16 }}
+              >
+                <KpiCard label="Bruto COD"          value={money(finSummary.bruto_cod)}         sub="sem frustrados" />
+                <KpiCard label="Afiliados"          value={money(finSummary.afiliados)}         sub="repasse"            tone="warning" />
+                <KpiCard label="Taxas FALK"     value={money(finSummary.taxas_senderzz)}    sub="entrega + transação" tone="info" />
+                <KpiCard label="Líquido produtor"   value={money(finSummary.liquido_produtor)}  sub="líquido"            tone="success" />
+                <KpiCard label="Previsto produtor"  value={money(finSummary.previsto_produtor)} sub="agendados/em aberto" tone="warning" />
+              </div>
+            </>
           )}
 
-          {/* KPIs carteira */}
-          {summary && (
-            <div
-              className="szv2-kpi-grid"
-              style={{ gridTemplateColumns: 'repeat(4, minmax(0,1fr))', marginBottom: 16 }}
-            >
-              <KpiCard
-                label="Pendente"
-                value={money(summary.total_pending)}
-                sub="aguardando release_at"
-                tone="warning"
-              />
-              <KpiCard
-                label="Disponível"
-                value={money(summary.total_available)}
-                sub="pronto para saque"
-                tone="success"
-              />
-              <KpiCard
-                label="Pago (30d)"
-                value={money(summary.total_paid_30d)}
-                sub="saques concluídos"
-                tone="info"
-              />
-              <KpiCard
-                label="Produtores"
-                value={summary.producers_count.toLocaleString('pt-BR')}
-                sub="com movimentação COD"
-                tone="brand"
-              />
-            </div>
+          {/* KPIs de carteira (saldos atuais — não dependem do período) */}
+          {walletSummary && (
+            <>
+              <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--szv2-text-muted)', margin: '4px 0 8px', textTransform: 'uppercase', letterSpacing: '.04em' }}>
+                Carteira (saldos atuais)
+              </div>
+              <div
+                className="szv2-kpi-grid"
+                style={{ gridTemplateColumns: 'repeat(4, minmax(0,1fr))', marginBottom: 16 }}
+              >
+                <KpiCard label="Pendente"    value={money(walletSummary.total_pending)}                     sub="aguardando release_at" tone="warning" />
+                <KpiCard label="Disponível"  value={money(walletSummary.total_available)}                   sub="pronto para saque"     tone="success" />
+                <KpiCard label="Pago (30d)"  value={money(walletSummary.total_paid_30d)}                    sub="saques concluídos"     tone="info" />
+                <KpiCard label="Produtores"  value={walletSummary.producers_count.toLocaleString('pt-BR')} sub="com movimentação COD"  tone="brand" />
+              </div>
+            </>
           )}
 
-          {/* Resumo da lista */}
+          {/* Tabela unificada por produtor */}
           <div className="szv2-card" style={{ marginBottom: 16 }}>
             <div className="szv2-card-head">
               <div>
                 <h2>Produtores</h2>
                 <p className="szv2-card-sub">
-                  {filteredRows.length} produtor(es)
-                  {summary ? ` de ${summary.producers_count}` : ''}
+                  {mergedRows.length} produtor(es) · colunas financeiras referentes ao período;
+                  saldos de carteira são atuais
                 </p>
               </div>
             </div>
           </div>
 
-          {/* Tabela de carteira */}
-          {loading && rows.length === 0 ? (
-            <TableSkeleton rows={6} cols={7} />
-          ) : !loading && filteredRows.length === 0 ? (
+          {loading && mergedRows.length === 0 ? (
+            <TableSkeleton rows={6} cols={11} />
+          ) : !loading && mergedRows.length === 0 ? (
             <EmptyState
               icon="💼"
-              title="Nenhum produtor com carteira COD encontrado."
-              description="Ajuste o filtro de busca ou aguarde a primeira movimentação."
+              title="Nenhum produtor encontrado."
+              description="Ajuste o período/busca ou aguarde a primeira movimentação COD."
             />
           ) : (
           <div className="szv2-table-wrap">
@@ -1119,90 +1108,124 @@ export default function CodWalletProducer() {
               <thead>
                 <tr>
                   <th>Produtor</th>
-                  <th style={{ textAlign: 'right' }}>Pending</th>
-                  <th style={{ textAlign: 'right' }}>Available</th>
+                  {/* P&L do período */}
+                  <th style={{ textAlign: 'right' }}>Bruto COD</th>
+                  <th style={{ textAlign: 'right' }}>Afiliados</th>
+                  <th style={{ textAlign: 'right' }}>Taxas FALK</th>
+                  <th style={{ textAlign: 'right' }}>Líquido produtor</th>
+                  <th style={{ textAlign: 'right' }}>Pedidos</th>
+                  {/* Carteira (saldos atuais) */}
+                  <th style={{ textAlign: 'right' }}>Pendente</th>
+                  <th style={{ textAlign: 'right' }}>Disponível</th>
                   <th style={{ textAlign: 'right' }}>Pago (30d)</th>
                   <th>PIX padrão</th>
-                  <th>Última mov.</th>
-                  <th style={{ width: 260 }}>Ações</th>
+                  <th style={{ width: 220 }}>Ações</th>
                 </tr>
               </thead>
               <tbody>
-                {filteredRows.map(r => (
-                  <tr key={r.user_id}>
-                    <td>
-                      <div style={{ fontWeight: 600 }}>{r.nome || '—'}</div>
-                      <div style={{ fontSize: 12, color: 'var(--szv2-text-muted)' }}>
-                        {r.email || `wp_user #${r.user_id}`}
-                      </div>
-                    </td>
-                    <td style={{ textAlign: 'right', color: 'var(--szv2-warning)', fontWeight: 700 }}>
-                      {money(r.saldo_pending)}
-                    </td>
-                    <td style={{ textAlign: 'right', color: 'var(--szv2-success)', fontWeight: 700 }}>
-                      {money(r.saldo_available)}
-                    </td>
-                    <td style={{ textAlign: 'right', color: 'var(--szv2-info)' }}>
-                      {money(r.saldo_paid_30d)}
-                    </td>
-                    <td>
-                      {r.pix_default ? (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <span
-                            className={`sz-badge ${PIX_TYPE_BADGE[r.pix_default.type] || 'szv2-badge-neutral'}`}
-                          >
-                            {r.pix_default.type || '—'}
-                          </span>
-                          <span
-                            style={{
-                              fontFamily: 'var(--szv2-font-mono)',
-                              fontSize: 12,
-                              color: 'var(--szv2-text-soft)',
-                            }}
-                            title={r.pix_default.key}
-                          >
-                            {maskPixKey(r.pix_default.type, r.pix_default.key)}
-                          </span>
+                {mergedRows.map(m => {
+                  const fin = m.fin
+                  const wlt = m.wallet
+                  return (
+                    <tr key={m.portalId}>
+                      <td>
+                        <div style={{ fontWeight: 600 }}>{m.nome || '—'}</div>
+                        <div style={{ fontSize: 12, color: 'var(--szv2-text-muted)' }}>
+                          {m.email || `portal #${m.portalId}`}
                         </div>
-                      ) : (
-                        <span style={{ color: 'var(--szv2-text-faint)' }}>sem conta</span>
-                      )}
-                    </td>
-                    <td style={{ fontSize: 12, color: 'var(--szv2-text-muted)' }}>
-                      {fmtDateBR(r.ultima_movimentacao)}
-                    </td>
-                    <td>
-                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                        <button
-                          type="button"
-                          className="szv2-btn szv2-btn-sm szv2-btn-brand"
-                          onClick={() => handleRelease(r)}
-                          disabled={busy !== null}
-                          title="Promove pending → available para tx cujo release_at já venceu"
-                        >
-                          {busy === r.user_id ? '…' : 'Liberar vencidos'}
-                        </button>
-                        <button
-                          type="button"
-                          className="szv2-btn szv2-btn-sm szv2-btn-secondary"
-                          onClick={() => setDrawer(r)}
-                          disabled={busy !== null}
-                        >
-                          Ver tx
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                      </td>
+                      {/* P&L */}
+                      <td style={{ textAlign: 'right' }}>
+                        {fin ? money(fin.bruto) : <span style={{ color: 'var(--szv2-text-faint)' }}>—</span>}
+                      </td>
+                      <td style={{ textAlign: 'right', color: 'var(--szv2-warning)' }}>
+                        {fin ? money(fin.afiliado) : <span style={{ color: 'var(--szv2-text-faint)' }}>—</span>}
+                      </td>
+                      <td style={{ textAlign: 'right' }}>
+                        {fin ? money(fin.taxas_senderzz) : <span style={{ color: 'var(--szv2-text-faint)' }}>—</span>}
+                      </td>
+                      <td style={{ textAlign: 'right', color: 'var(--szv2-success)', fontWeight: 700 }}>
+                        {fin ? money(fin.liquido_produtor) : <span style={{ color: 'var(--szv2-text-faint)' }}>—</span>}
+                      </td>
+                      <td style={{ textAlign: 'right' }}>
+                        {fin ? fin.pedidos : <span style={{ color: 'var(--szv2-text-faint)' }}>—</span>}
+                      </td>
+                      {/* Carteira */}
+                      <td style={{ textAlign: 'right', color: 'var(--szv2-warning)', fontWeight: 700 }}>
+                        {wlt ? money(wlt.saldo_pending) : <span style={{ color: 'var(--szv2-text-faint)' }}>—</span>}
+                      </td>
+                      <td style={{ textAlign: 'right', color: 'var(--szv2-success)', fontWeight: 700 }}>
+                        {wlt ? money(wlt.saldo_available) : <span style={{ color: 'var(--szv2-text-faint)' }}>—</span>}
+                      </td>
+                      <td style={{ textAlign: 'right', color: 'var(--szv2-info)' }}>
+                        {wlt ? money(wlt.saldo_paid_30d) : <span style={{ color: 'var(--szv2-text-faint)' }}>—</span>}
+                      </td>
+                      <td>
+                        {wlt && wlt.pix_default ? (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <span
+                              className={`sz-badge ${PIX_TYPE_BADGE[wlt.pix_default.type] || 'szv2-badge-neutral'}`}
+                            >
+                              {wlt.pix_default.type || '—'}
+                            </span>
+                            <span
+                              style={{
+                                fontFamily: 'var(--szv2-font-mono)',
+                                fontSize: 12,
+                                color: 'var(--szv2-text-soft)',
+                              }}
+                              title={wlt.pix_default.key}
+                            >
+                              {maskPixKey(wlt.pix_default.type, wlt.pix_default.key)}
+                            </span>
+                          </div>
+                        ) : (
+                          <span style={{ color: 'var(--szv2-text-faint)' }}>sem conta</span>
+                        )}
+                      </td>
+                      <td>
+                        {wlt ? (
+                          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                            <button
+                              type="button"
+                              className="szv2-btn szv2-btn-sm szv2-btn-brand"
+                              onClick={() => handleRelease(wlt)}
+                              disabled={busy !== null}
+                              title="Promove pending → available para tx cujo release_at já venceu"
+                            >
+                              {busy === wlt.user_id ? '…' : 'Liberar vencidos'}
+                            </button>
+                            <button
+                              type="button"
+                              className="szv2-btn szv2-btn-sm szv2-btn-danger"
+                              onClick={() => setAnticipateRow(wlt)}
+                              disabled={busy !== null || (wlt.saldo_pending ?? 0) <= 0}
+                              title="Antecipa um VALOR digitado do pendente → available, SEM cobrar taxa (override admin)"
+                            >
+                              {busy === wlt.user_id ? '…' : 'Antecipar (sem taxa)'}
+                            </button>
+                            <button
+                              type="button"
+                              className="szv2-btn szv2-btn-sm szv2-btn-secondary"
+                              onClick={() => setDrawer(wlt)}
+                              disabled={busy !== null}
+                            >
+                              Ver tx
+                            </button>
+                          </div>
+                        ) : (
+                          <span style={{ fontSize: 12, color: 'var(--szv2-text-faint)' }}>sem carteira</span>
+                        )}
+                      </td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           </div>
           )}
         </>
       )}
-
-      {/* ── Aba: Financeiro / P&L ── */}
-      {tab === 'financeiro' && <FinancialSection />}
 
       {/* ── Aba: Regras de repasse ── */}
       {tab === 'regras' && <RulesSection />}
@@ -1211,57 +1234,43 @@ export default function CodWalletProducer() {
         <AccountsDrawer row={drawer} onClose={() => setDrawer(null)} />
       )}
 
+      {anticipateRow && (
+        <AnticipateModal
+          row={anticipateRow}
+          busy={busy === anticipateRow.user_id}
+          onClose={() => { if (busy === null) setAnticipateRow(null) }}
+          onConfirm={(amount) => submitAnticipate(anticipateRow, amount)}
+        />
+      )}
+
       <FilterTopPanel
         open={filterOpen}
         onClose={() => setFilterOpen(false)}
         onApply={applyFilters}
         onClear={clearFilters}
-        title="Filtros"
+        title="Filtros — período (financeiro)"
       >
         <FilterField label="Data inicial">
-          <input
-            type="date"
-            style={filterInputStyle}
-            value={draftIni}
-            max={draftFim || undefined}
-            onChange={e => setDraftIni(e.target.value)}
+          <FalkDatePicker
+            value={draftFrom}
+            max={draftTo || undefined}
+            onChange={v => setDraftFrom(v)}
+            placeholder="dd/mm/aaaa"
           />
         </FilterField>
         <FilterField label="Data final">
-          <input
-            type="date"
-            style={filterInputStyle}
-            value={draftFim}
-            min={draftIni || undefined}
-            onChange={e => setDraftFim(e.target.value)}
+          <FalkDatePicker
+            value={draftTo}
+            min={draftFrom || undefined}
+            onChange={v => setDraftTo(v)}
+            placeholder="dd/mm/aaaa"
           />
         </FilterField>
-        <FilterField label="User ID">
-          <input
-            type="number"
-            style={filterInputStyle}
-            placeholder="ex.: 42"
-            value={draftUserID}
-            onChange={e => setDraftUserID(e.target.value)}
-          />
-        </FilterField>
-        <FilterField label="Status">
-          <select
-            style={filterInputStyle}
-            value={draftStatus}
-            onChange={e => setDraftStatus(e.target.value)}
-          >
-            <option value="">Todos</option>
-            <option value="pending">Pendente</option>
-            <option value="available">Disponível</option>
-            <option value="paid">Pago</option>
-          </select>
-        </FilterField>
-        <FilterField label="Busca (email / nome)">
+        <FilterField label="Busca (nome / email)">
           <input
             type="search"
             style={filterInputStyle}
-            placeholder="ex.: joao@…"
+            placeholder="ex.: gabriel…"
             value={draftQ}
             onChange={e => setDraftQ(e.target.value)}
           />

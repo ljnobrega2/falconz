@@ -225,3 +225,89 @@ fi
 has src/Portal/Portal_Page.php "return senderzz_portal_logo_url(" "logo_url() é wrapper da função livre"
 has src/Portal/Portal_Page.php "return senderzz_portal_status_label(" "status_label() é wrapper da função livre"
 has senderzz-logistics.php "portal-helpers.php" "portal-helpers.php registrado no loader"
+
+echo
+echo "── Testes AUDIT-2026-06-18 CRIT-1: crédito duplo do produtor (COD) ─────────"
+# O split de afiliado NÃO pode mais creditar o repasse do produtor via tpc_creditar:
+# a carteira COD é a fonte única de verdade. Reintroduzir isso = crédito em dobro.
+not_has includes/senderzz-affiliates.php "sz_cod_produtor_" "split NÃO credita repasse produtor na carteira TPC (ref sz_cod_produtor_)"
+not_has includes/senderzz-affiliates.php "'Venda COD Senderzz #'" "split NÃO chama tpc_creditar('Venda COD ...') (crédito duplo removido)"
+has includes/senderzz-affiliates.php "AUDIT-2026-06-18 CRIT-1" "marcador da correção presente"
+# A perna sobrevivente (carteira COD) continua pagando o produtor:
+has includes/senderzz-cod-wallet.php "sz_cod_wallet_get_producer_credit_amount" "carteira COD credita o líquido do produtor"
+has includes/senderzz-cod-wallet.php "_sz_prod_commission" "carteira COD lê _sz_prod_commission (mesmo líquido)"
+has includes/senderzz-affiliates.php "_sz_prod_commission" "split ainda persiste _sz_prod_commission p/ a carteira COD consumir"
+
+echo
+echo "── Testes AUDIT-2026-06-18 CRIT-2: IDOR endpoints OL motoboy ──────────────"
+# Auth não pode mais retornar true para qualquer sessão de portal nem usar branch morto.
+not_has includes/motoboy/rest-api.php "\\Senderzz\\Portal\\Portal_Auth::get_current_user" "removida allowlist morta (namespace \\Senderzz errado)"
+has includes/motoboy/rest-api.php "function sz_mb_ol_portal_user" "helper de papel OL/produtor existe"
+has includes/motoboy/rest-api.php "function sz_mb_ol_can_access_pedido" "helper de posse por pedido existe"
+# Os 2 endpoints state-changing + histórico chamam o guard de posse:
+cnt_guard=$(grep -c "sz_mb_ol_can_access_pedido( \$pedido_id )" includes/motoboy/rest-api.php)
+[ "$cnt_guard" -ge 3 ] && ok "guard de posse aplicado nos 3 callbacks ($cnt_guard call-sites)" || bad "guard de posse não aplicado em todos os callbacks ($cnt_guard)"
+has includes/motoboy/rest-api.php "AUDIT-2026-06-18 CRIT-2" "marcador da correção presente"
+# Restringe papéis: operator/producer apenas (client/affiliate negados)
+has includes/motoboy/rest-api.php "[ 'operator', 'producer' ], true" "auth OL restrita a operator/producer"
+
+echo
+echo "── Testes AUDIT-2026-06-18 Onda 1 (PHP): seg/financeiro ───────────────────"
+# a) bulk-cancel/reschedule fail-open
+has includes/senderzz-rest.php "function sz_portal_owned_class_ids_or_null" "helper de posse fail-closed existe"
+has includes/senderzz-rest.php "function sz_portal_v1_verify_nonce" "verificação de nonce CSRF V1 existe"
+not_has includes/senderzz-rest.php "user_class_id > 0" "removido guard fail-open (\$user_class_id > 0)"
+has includes/senderzz-rest.php "in_array( \$order_class, \$class_ids, true )" "compara contra TODAS as classes"
+# b) login motoboy pin-less takeover
+has includes/motoboy/rest-api.php "Método de login desatualizado" "rota /login legada desativada (410)"
+not_has includes/motoboy/rest-api.php "password_hash( \$pin_raw" "auto-set de PIN por chamador não-autenticado removido"
+# c) tracking público sem order_key
+has includes/motoboy/rest-api.php "Link de rastreio inválido" "tracking exige order_key"
+has templates/motoboy/tracking.php "key=' + encodeURIComponent(szOrderKey)" "frontend de rastreio envia order_key"
+# d) saque afiliado atômico
+has includes/senderzz-affiliates.php "Saldo insuficiente para aprovar este saque" "aprovar_saque REST com guard de saldo"
+has includes/senderzz-affiliates.php "balance>=%f" "débito condicional (balance>=amount) presente"
+
+echo
+echo "── Testes AUDIT-2026-06-18 Onda 1 (Go): idempotência / estorno / CORS ─────"
+# NOTA: Go não é compilado aqui (sem toolchain). Asserts grep — rodar 'go build ./...' no CI.
+# e) antecipação COD idempotente
+has go/affiliates/internal/handlers/cod.go "Idempotency-Key" "antecipação aceita Idempotency-Key"
+not_has go/affiliates/internal/handlers/cod.go 'antecipacao_%d_%d' "removida referência por UnixNano (não-idempotente)"
+# f) cancel de pedido pago sem estorno
+has go/orders/internal/handlers/orders.go "pedido pago não pode ser cancelado" "cancel bloqueia pedido pago"
+not_has go/orders/internal/handlers/orders.go '"pending": true, "processing": true' "removido 'processing' do whitelist do cliente"
+# g) CORS allowlist
+has go/portal/cmd/server/main.go "func originAllowed" "portal: allowlist CORS"
+has go/motoboy/cmd/server/main.go "func originAllowed" "motoboy: allowlist CORS"
+not_has go/portal/cmd/server/main.go 'origin = "*"' "portal: removido echo de Origin curinga"
+has infra/docker/docker-compose.yml "ALLOWED_ORIGINS" "compose expõe ALLOWED_ORIGINS"
+
+echo
+echo "── Testes AUDIT-2026-06-18 Onda 2 (SSRF/IDOR/authz/privesc) ───────────────"
+# SEC-LIVE-01: SSRF push (live PHP)
+has includes/senderzz-notifications.php "function sz_notif_endpoint_seguro" "push: helper anti-SSRF existe"
+has includes/senderzz-notifications.php "wp_safe_remote_post" "push: usa wp_safe_remote_post (send)"
+not_has includes/senderzz-notifications.php 'wp_remote_post( $endpoint' "push: removido wp_remote_post cru no send"
+has includes/senderzz-producer-notifications.php "wp_safe_remote_post" "push produtor: usa wp_safe_remote_post"
+# SEC-LIVE-02: IDOR comprovante (live PHP)
+has includes/motoboy/rest-api.php "Pedido não atribuído a este motoboy" "comprovante: guard de posse por motoboy"
+# SEC-GO-01: wallet money-mint removido do grupo JWT
+not_has go/wallet/cmd/server/main.go 'r.Post("/carteira/creditar"' "wallet: creditar fora do grupo JWT de usuário"
+not_has go/wallet/cmd/server/main.go 'r.Post("/carteira/reservar"' "wallet: reservar fora do grupo JWT de usuário"
+# SEC-GO-02: /ol/* exige role operator
+has go/motoboy/cmd/server/main.go 'auth.RequireRole("operator")' "motoboy: /ol/* exige role operator"
+has go/motoboy/internal/auth/auth.go "func RequireRole" "motoboy: middleware RequireRole existe"
+# SEC-GO-03: entregar/frustrar com posse do motoboy
+has go/motoboy/internal/handlers/rota.go "pedido não atribuído a este motoboy" "motoboy: entregar/frustrar checa posse"
+# SEC-GO-04: admin JWT exige issuer próprio
+has go/admin/internal/auth/auth.go 'jwt.WithIssuer("senderzz-admin")' "admin: JWT exige iss=senderzz-admin (anti-confusão)"
+has go/admin/internal/auth/auth.go "jwt.WithExpirationRequired()" "admin: JWT exige exp"
+
+echo
+if [[ "$fail" -eq 0 ]]; then
+  echo "✅ Suíte completa passou (fixes de escala + AUDIT CRIT-1/CRIT-2 + Onda 1 PHP + Go grep + Onda 2 SSRF/IDOR/authz)."
+else
+  echo "❌ Há falhas acima — revise antes de prosseguir."
+  exit 1
+fi

@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
+import { useToast } from '../hooks/useToast'
 import { api, getToken } from '../api'
+import { safeUrl } from '../utils/safeUrl' // AUDIT-2026-06-21 #13
 import FilterButton from '../components/FilterButton'
 import FilterTopPanel, {
   FilterField,
@@ -9,6 +11,9 @@ import FilterTopPanel, {
 } from '../components/FilterTopPanel'
 import TableSkeleton from '../components/TableSkeleton'
 import EmptyState from '../components/EmptyState'
+import ErrorState from '../components/ErrorState'
+import FalkSelect from '../components/FalkSelect'
+import FalkDatePicker from '../components/FalkDatePicker'
 
 // MotoboyCustodia — espelha sz_mb_tab_estoque_motoboy() (admin.php:1510).
 // Custódia física de pacotes em rota / aguardando OL / com ocorrência.
@@ -137,7 +142,7 @@ export default function MotoboyCustodia() {
   const [motoboys, setMotoboys] = useState<MotoboyOpt[]>([])
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState('')
-  const [toast, setToast] = useState<{ kind: 'ok' | 'err'; msg: string } | null>(null)
+  const showToast = useToast() // AUDIT-2026-06-18 Onda3
 
   // Filtros aplicados.
   const [q, setQ] = useState('')
@@ -215,10 +220,6 @@ export default function MotoboyCustodia() {
   if (dataFim) chips.push({ key: 'fim', label: `Até: ${dataFim}`, onRemove: () => setDataFim('') })
   const activeCount = chips.length
 
-  function showToast(kind: 'ok' | 'err', msg: string) {
-    setToast({ kind, msg })
-    setTimeout(() => setToast(null), 5000)
-  }
 
   return (
     <div>
@@ -238,15 +239,9 @@ export default function MotoboyCustodia() {
 
       <ActiveFilterChips chips={chips} onClearAll={clearFilters} />
 
-      {err && <div className="sz-alert-danger" style={{ marginBottom: 16 }}>{err}</div>}
-      {toast && (
-        <div
-          className={toast.kind === 'ok' ? 'sz-alert-success' : 'sz-alert-danger'}
-          style={{ marginBottom: 16 }}
-        >
-          {toast.msg}
-        </div>
-      )}
+      {/* Banner só com dados na tela (erro de refresh/ação). Falha de
+          carregamento inicial vira ErrorState na área da tabela. */}
+      {err && items.length > 0 && <div className="sz-alert-danger" style={{ marginBottom: 16 }}>{err}</div>}
 
       {/* 5 KPI Cards */}
       {summary && (
@@ -486,6 +481,8 @@ export default function MotoboyCustodia() {
         <div style={{ padding: '0 20px 20px' }}>
           {loading && items.length === 0 ? (
             <TableSkeleton rows={5} cols={8} />
+          ) : err && items.length === 0 ? (
+            <ErrorState message={err} onRetry={load} />
           ) : !loading && items.length === 0 ? (
             <EmptyState
               icon="📦"
@@ -512,7 +509,7 @@ export default function MotoboyCustodia() {
                     const badge = BADGE_CLASS[it.physical_status] || 'szv2-badge-neutral'
                     return (
                       <tr key={it.id}>
-                        <td><strong>#{it.wc_order_id || it.id}</strong></td>
+                        <td><strong>{it.wc_order_id || it.id}</strong></td>
                         <td>
                           <span className={`sz-badge ${badge}`}>{it.status_label}</span>
                         </td>
@@ -539,7 +536,7 @@ export default function MotoboyCustodia() {
                                   {it.ocorrencia_fotos.map((url, i) => (
                                     <a
                                       key={i}
-                                      href={url}
+                                      href={safeUrl(url)}
                                       target="_blank"
                                       rel="noopener noreferrer"
                                       style={{ marginRight: 4 }}
@@ -573,48 +570,46 @@ export default function MotoboyCustodia() {
         title="Filtros"
       >
         <FilterField label="Data inicial">
-          <input
-            type="date"
-            style={filterInputStyle}
+          <FalkDatePicker
             value={draftIni}
             max={draftFim || undefined}
-            onChange={e => setDraftIni(e.target.value)}
+            onChange={v => setDraftIni(v)}
+            placeholder="dd/mm/aaaa"
           />
         </FilterField>
         <FilterField label="Data final">
-          <input
-            type="date"
-            style={filterInputStyle}
+          <FalkDatePicker
             value={draftFim}
             min={draftIni || undefined}
-            onChange={e => setDraftFim(e.target.value)}
+            onChange={v => setDraftFim(v)}
+            placeholder="dd/mm/aaaa"
           />
         </FilterField>
         <FilterField label="Motoboy">
-          <select
-            style={filterInputStyle}
+          <FalkSelect
             value={draftMotoboy}
-            onChange={e => setDraftMotoboy(e.target.value)}
-          >
-            <option value="">Todos</option>
-            {motoboys.map(m => (
-              <option key={m.id} value={String(m.id)}>{m.nome} (#{m.id})</option>
-            ))}
-          </select>
+            onChange={v => setDraftMotoboy(v)}
+            options={[
+              { value: '', label: 'Todos' },
+              ...motoboys.map(m => ({ value: String(m.id), label: `${m.nome} (#${m.id})` })),
+            ]}
+            placeholder="Todos"
+          />
         </FilterField>
         <FilterField label="Status">
-          <select
-            style={filterInputStyle}
+          <FalkSelect
             value={draftStatus}
-            onChange={e => setDraftStatus(e.target.value)}
-          >
-            <option value="">Todos</option>
-            <option value="with_motoboy">Com motoboy</option>
-            <option value="frustrated">Frustrado</option>
-            <option value="return_declared">Devolução declarada</option>
-            <option value="damaged">Avariado</option>
-            <option value="reserved">Reservado</option>
-          </select>
+            onChange={v => setDraftStatus(v)}
+            options={[
+              { value: '', label: 'Todos' },
+              { value: 'with_motoboy', label: 'Com motoboy' },
+              { value: 'frustrated', label: 'Frustrado' },
+              { value: 'return_declared', label: 'Devolução declarada' },
+              { value: 'damaged', label: 'Avariado' },
+              { value: 'reserved', label: 'Reservado' },
+            ]}
+            placeholder="Todos"
+          />
         </FilterField>
         <FilterField label="Busca (pedido / produto / QR)">
           <input
@@ -647,19 +642,47 @@ function RouteAssistForm({
   const [motoboyID, setMotoboyID] = useState<string>('')
   const [busy, setBusy] = useState(false)
 
+  function normalizeCode(raw: string): string {
+    const value = raw.trim()
+    if (!value) return ''
+
+    // Alguns leitores devolvem o conteúdo bruto do QR como URL/linha quebrada.
+    // Mantemos o valor original como fallback, mas tentamos extrair o payload
+    // mais provável para o backend legado.
+    try {
+      const parsed = new URL(value)
+      const data = parsed.searchParams.get('data')
+      if (data) return data.trim()
+    } catch {
+      // Não era uma URL; segue com o texto digitado/escaneado.
+    }
+
+    return value
+  }
+
   async function submit(e: React.FormEvent) {
     e.preventDefault()
-    if (!qrCode.trim() || !motoboyID) {
+    const code = normalizeCode(qrCode)
+    if (!code || !motoboyID) {
       onError('Informe QR e motoboy.')
       return
     }
     setBusy(true)
     try {
-      await api('/motoboy-custodia/route-assist', {
+      const headers: Record<string, string> = { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' }
+      const tok = getToken()
+      if (tok) headers.Authorization = `Bearer ${tok}`
+
+      await fetch(`${import.meta.env.VITE_API_BASE || '/wp-json/senderzz/v1/admin'}/motoboy-custodia/route-assist`, {
         method: 'POST',
-        body: JSON.stringify({
-          qr_code:    qrCode.trim(),
-          motoboy_id: parseInt(motoboyID, 10),
+        headers,
+        body: new URLSearchParams({
+          qr_code: code,
+          qr: code,
+          code,
+          package_code: code,
+          motoboy_id: motoboyID,
+          motoboyId: motoboyID,
         }),
       })
       setQrCode('')
@@ -687,17 +710,16 @@ function RouteAssistForm({
       </div>
       <div className="szv2-field" style={{ flex: '1 1 220px' }}>
         <label className="szv2-label">Motoboy *</label>
-        <select
-          className="szv2-select"
-          required
+        <FalkSelect
           value={motoboyID}
-          onChange={e => setMotoboyID(e.target.value)}
-        >
-          <option value="">Selecione…</option>
-          {motoboys.map(m => (
-            <option key={m.id} value={m.id}>{m.nome}</option>
-          ))}
-        </select>
+          onChange={v => setMotoboyID(v)}
+          options={[
+            { value: '', label: 'Selecione…' },
+            ...motoboys.map(m => ({ value: String(m.id), label: m.nome })),
+          ]}
+          placeholder="Selecione…"
+          aria-label="Motoboy"
+        />
       </div>
       <div style={{ flex: '0 0 auto' }}>
         <button
@@ -815,16 +837,13 @@ function ReturnForm({
       </div>
       <div className="szv2-field">
         <label className="szv2-label">Condição *</label>
-        <select
-          className="szv2-select"
-          required
+        <FalkSelect
           value={condition}
-          onChange={e => setCondition(e.target.value)}
-        >
-          {CONDITIONS.map(c => (
-            <option key={c.value} value={c.value}>{c.label}</option>
-          ))}
-        </select>
+          onChange={v => setCondition(v)}
+          options={CONDITIONS.map(c => ({ value: c.value, label: c.label }))}
+          placeholder="Selecione…"
+          aria-label="Condição"
+        />
       </div>
       <div className="szv2-field" style={{ gridColumn: '1 / -1' }}>
         <label className="szv2-label">

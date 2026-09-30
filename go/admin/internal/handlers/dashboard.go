@@ -4,7 +4,7 @@
 // Endpoints:
 //
 //	GET /dashboard         → KPIs operacionais (6 cards)
-//	GET /dashboard/alerts  → 6 linhas de alertas operacionais
+//	GET /dashboard/alerts  → 7 linhas de alertas operacionais
 //	GET /dashboard/stopped-orders → pedidos parados 24h+
 package handlers
 
@@ -21,22 +21,23 @@ type DashboardHandler struct{ Pool *pgxpool.Pool }
 
 // kpis — 6 contadores da visão operacional. Espelha tab_overview_operacao() do PHP.
 type kpis struct {
-	PedidosHoje    int64 `json:"pedidos_hoje"`    // wc-processing|wc-agendado|completed|frustrado na data de hoje
-	Agendados      int64 `json:"agendados"`        // COUNT status=agendado (sem filtro de data)
-	EmRota         int64 `json:"em_rota"`          // COUNT status IN (em_rota, em-rota)
-	EntreguesHoje  int64 `json:"entregues_hoje"`   // COUNT status IN (completed, entregue) WHERE DATE=hoje
-	FrustradosHoje int64 `json:"frustrados_hoje"`  // COUNT status=frustrado WHERE DATE=hoje
+	PedidosHoje    int64 `json:"pedidos_hoje"`    // sz_orders status processing|agendado|completo|frustrado, created_at=hoje
+	Agendados      int64 `json:"agendados"`        // COUNT sz_motoboy_pedidos.status=agendado (sem filtro de data)
+	EmRota         int64 `json:"em_rota"`          // COUNT sz_motoboy_pedidos.status IN (em_rota, em-rota)
+	EntreguesHoje  int64 `json:"entregues_hoje"`   // COUNT sz_orders status IN (completo, entregue) WHERE data_entrega=hoje
+	FrustradosHoje int64 `json:"frustrados_hoje"`  // COUNT sz_orders status=frustrado WHERE created_at=hoje
 	AlertasTotal   int64 `json:"alertas_total"`    // SUM audit_counts + webhook_fails(7d) + pedidos_parados
 }
 
-// alertas — 6 linhas de alertas operacionais. Espelha alert_line() + get_audit_counts() + webhook_failure_count().
+// alertas — 7 linhas de alertas operacionais. Espelha alert_line() + get_audit_counts() + webhook_failure_count().
 type alertas struct {
-	SaldoDivergente     int64 `json:"saldo_divergente"`      // wallet
-	AffSemTransacao     int64 `json:"aff_sem_transacao"`     // aff_missing
-	WalletDivergente    int64 `json:"wallet_divergente"`     // aff_bad
-	SplitDivergente     int64 `json:"split_divergente"`      // split
-	WebhooksFalhando7d  int64 `json:"webhooks_falhando_7d"`  // webhook_failure_count (7 dias, 4 tabelas)
-	PedidosParados24h   int64 `json:"pedidos_parados_24h"`   // stopped_order_rows (24h)
+	SaldoDivergente        int64 `json:"saldo_divergente"`         // wallet
+	AffSemTransacao        int64 `json:"aff_sem_transacao"`        // aff_missing
+	WalletDivergente       int64 `json:"wallet_divergente"`        // aff_bad
+	SplitDivergente        int64 `json:"split_divergente"`         // split
+	WebhooksFalhando7d     int64 `json:"webhooks_falhando_7d"`     // webhook_failure_count (7 dias, 4 tabelas)
+	PedidosParados24h      int64 `json:"pedidos_parados_24h"`      // stopped_order_rows (24h)
+	CronFinanceiroFalhando int64 `json:"cron_financeiro_falhando"` // QUALQUER cron last_status='error' (inclui os que liberam dinheiro: COD + comissão)
 }
 
 // stoppedOrder — linha de pedido parado.
@@ -48,13 +49,7 @@ type stoppedOrder struct {
 
 // tableExistsDash verifica existência da tabela no schema public.
 func (h *DashboardHandler) tableExists(ctx context.Context, name string) bool {
-	var ok bool
-	_ = h.Pool.QueryRow(ctx,
-		`SELECT EXISTS (
-			SELECT FROM information_schema.tables
-			WHERE table_schema='public' AND table_name=$1
-		)`, name).Scan(&ok)
-	return ok
+	return tableExistsCached(ctx, h.Pool, name) // AUDIT-2026-06-18 Onda2 (go-infoschema-cache)
 }
 
 // ordensMirror detecta qual tabela espelha as WC orders.
@@ -96,13 +91,69 @@ func (h *DashboardHandler) countByStatus(ctx context.Context, tbl string, status
 	dateClause := ""
 	if date != "" {
 		args = append(args, date)
-		dateClause = " AND created_at::date = $" + itoa(len(args))
+		// AUDIT-2026-06-18 Onda2 (go-date-sargable): range sargável no lugar de
+		// created_at::date = $N (cast na coluna impede uso de índice). Resultado
+		// idêntico: todos os timestamps do dia $N.
+		p := itoa(len(args))
+		dateClause = " AND created_at >= $" + p + " AND created_at < $" + p + "::date + interval '1 day'"
 	}
 
 	var n int64
 	_ = h.Pool.QueryRow(ctx,
 		"SELECT COUNT(*) FROM "+tbl+" WHERE status IN ("+in+")"+dateClause,
 		args...).Scan(&n)
+	return n
+}
+
+// countMbByStatus conta linhas em sz_motoboy_pedidos cujo status do fluxo
+// motoboy está em `statuses`. ALTO-12: os estados operacionais 'agendado' e
+// 'em_rota' NÃO existem em sz_orders.status — vivem em sz_motoboy_pedidos.status
+// (vide bulk_actions.go:35-40, fluxo agendado → embalado → em_rota → ...).
+// Graceful: tabela ausente = 0.
+func (h *DashboardHandler) countMbByStatus(ctx context.Context, statuses []string) int64 {
+	if len(statuses) == 0 || !h.tableExists(ctx, "sz_motoboy_pedidos") {
+		return 0
+	}
+	args := []any{}
+	in := ""
+	for i, s := range statuses {
+		if i > 0 {
+			in += ","
+		}
+		args = append(args, s)
+		in += "$" + itoa(i+1)
+	}
+	var n int64
+	_ = h.Pool.QueryRow(ctx,
+		"SELECT COUNT(*) FROM sz_motoboy_pedidos WHERE status IN ("+in+")",
+		args...).Scan(&n)
+	return n
+}
+
+// countDeliveredToday conta pedidos entregues HOJE pela DATA DE ENTREGA.
+// ALTO-12 corrige duas coisas:
+//   (a) status correto em sz_orders = 'completo'/'entregue' (não 'completed' —
+//       vide auditCounts() acima);
+//   (c) "entregues hoje" deve filtrar pela data de ENTREGA, não created_at.
+//       Usa o COALESCE canônico de bulk_actions.go:191
+//       (mp.data_entrega → mp.reagendado_para → o.created_at::date) via LEFT JOIN,
+//       preservando entregas Melhor Envio (sem linha motoboy) pelo fallback.
+// COUNT(DISTINCT o.id) evita duplicar pedidos com múltiplas linhas mp.
+func (h *DashboardHandler) countDeliveredToday(ctx context.Context, tbl, date string) int64 {
+	if tbl == "" {
+		return 0
+	}
+	dateCol := "o.created_at::date"
+	join := ""
+	if h.tableExists(ctx, "sz_motoboy_pedidos") {
+		join = " LEFT JOIN sz_motoboy_pedidos mp ON mp.wc_order_id = o.id"
+		dateCol = "COALESCE(mp.data_entrega, mp.reagendado_para, o.created_at::date)"
+	}
+	var n int64
+	_ = h.Pool.QueryRow(ctx,
+		"SELECT COUNT(DISTINCT o.id) FROM "+tbl+" o"+join+
+			" WHERE o.status IN ('completo','entregue') AND "+dateCol+" = $1::date",
+		date).Scan(&n)
 	return n
 }
 
@@ -189,6 +240,25 @@ func (h *DashboardHandler) stoppedCount(ctx context.Context) int64 {
 	return int64(len(rows))
 }
 
+// cronFailCount conta QUALQUER cron em estado de ERRO na última execução
+// (senderzz_cron_status.last_status='error') — sem filtro por nome. Inclui,
+// portanto, os que LIBERAM DINHEIRO (sz_cod_release_due, sz_affiliate_release_due,
+// cujo dinheiro pode ficar preso em pending na falha) E os demais (tracking,
+// limpeza etc.). A contagem é deliberadamente ampla: qualquer cron falho merece
+// alerta. O runner go/cron grava EXATAMENTE 'error' na falha (vide go/cron
+// main.go: res.status="error"); por isso filtramos por '=error' e NÃO por '!=ok'
+// — os estados 'never'/'manual_trigger'/'skipped' são normais e não devem
+// disparar alerta. Graceful: tabela ausente = 0.
+func (h *DashboardHandler) cronFailCount(ctx context.Context) int64 {
+	if !h.tableExists(ctx, "senderzz_cron_status") {
+		return 0
+	}
+	var n int64
+	_ = h.Pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM senderzz_cron_status WHERE last_status = 'error'`).Scan(&n)
+	return n
+}
+
 // stoppedOrderRows retorna pedidos parados 24h+ (meta _senderzz_motoboy_flow_status).
 // Espelha stopped_order_rows() PHP.
 func (h *DashboardHandler) stoppedOrderRows(ctx context.Context) []stoppedOrder {
@@ -238,12 +308,14 @@ func (h *DashboardHandler) stoppedOrderRows(ctx context.Context) []stoppedOrder 
 func (h *DashboardHandler) auditCounts(ctx context.Context) (split, affBad, affMissing, wallet int64) {
 	if h.tableExists(ctx, "sz_orders") && h.tableExists(ctx, "senderzz_affiliate_transactions") {
 		_ = h.Pool.QueryRow(ctx,
-			`SELECT COUNT(*) FROM sz_orders o
-			 WHERE o.status IN ('completo','entregue')
-			   AND ABS(COALESCE(o.total,0)
-			           - COALESCE(o.affiliate_amount,0)
-			           - COALESCE(o.senderzz_fee,0)
-			           - COALESCE(o.producer_net,0)) > 0.01`).Scan(&split)
+			`SELECT COUNT(*) FROM sz_order_financials f
+			 WHERE f.status IN ('completo','entregue')
+			   AND ABS(COALESCE(f.total,0)
+			           - COALESCE(f.affiliate_liquida,0)
+			           - COALESCE(f.affiliate_take,0)
+			           - COALESCE(f.delivery_fee,0)
+			           - COALESCE(f.producer_take,0)
+			           - COALESCE(f.producer_net_live,0)) > 0.01`).Scan(&split)
 
 		_ = h.Pool.QueryRow(ctx,
 			`SELECT COUNT(*) FROM sz_orders o
@@ -262,12 +334,18 @@ func (h *DashboardHandler) auditCounts(ctx context.Context) (split, affBad, affM
 			   AND ABS(COALESCE(o.affiliate_amount,0) - COALESCE(t.amount,0)) > 0.01`).Scan(&affBad)
 	}
 	if h.tableExists(ctx, "sz_orders") && h.tableExists(ctx, "sz_cod_wallet_transactions") {
+		// BUG-FIX 2026-07-14: type='credit' nunca existiu na tabela (real='cod_received') —
+		// esse contador ficava sempre 0. Ver AUDIT-2026-07-14 (audit.go).
 		_ = h.Pool.QueryRow(ctx,
 			`SELECT COUNT(*) FROM sz_orders o
-			 JOIN sz_cod_wallet_transactions c
-			   ON c.order_id = o.id AND c.type='credit'
+			 JOIN (SELECT order_id, SUM(COALESCE(NULLIF(net,0),gross)) net
+			         FROM sz_cod_wallet_transactions
+			        WHERE type='cod_received' AND status <> 'reversed'
+			        GROUP BY order_id) c ON c.order_id = o.id
+			 JOIN sz_order_financials f ON f.order_id = o.id
 			 WHERE o.status IN ('completo','entregue')
-			   AND ABS(COALESCE(o.producer_net,0) - COALESCE(c.net,0)) > 0.01`).Scan(&wallet)
+			   AND COALESCE(o.produtor_id,0) > 0
+			   AND ABS(COALESCE(f.producer_net_live,0) - COALESCE(c.net,0)) > 0.01`).Scan(&wallet)
 	}
 	return
 }
@@ -280,35 +358,41 @@ func (h *DashboardHandler) Summary(w http.ResponseWriter, r *http.Request) {
 	tbl := h.orderTable(ctx)
 
 	var k kpis
-	k.PedidosHoje = h.countByStatus(ctx, tbl, []string{"processing", "agendado", "completed", "frustrado"}, today)
-	k.Agendados = h.countByStatus(ctx, tbl, []string{"agendado"}, "")
-	k.EmRota = h.countByStatus(ctx, tbl, []string{"em_rota", "em-rota"}, "")
-	k.EntreguesHoje = h.countByStatus(ctx, tbl, []string{"completed", "entregue"}, today)
+	// ALTO-12 (a): status em sz_orders é 'completo', não 'completed' (vide auditCounts).
+	k.PedidosHoje = h.countByStatus(ctx, tbl, []string{"processing", "agendado", "completo", "frustrado"}, today)
+	// ALTO-12 (b): agendado/em_rota vivem em sz_motoboy_pedidos.status, não em sz_orders.status.
+	k.Agendados = h.countMbByStatus(ctx, []string{"agendado"})
+	k.EmRota = h.countMbByStatus(ctx, []string{"em_rota", "em-rota"})
+	// ALTO-12 (a)+(c): status 'completo'/'entregue' e filtro pela DATA DE ENTREGA.
+	k.EntreguesHoje = h.countDeliveredToday(ctx, tbl, today)
 	k.FrustradosHoje = h.countByStatus(ctx, tbl, []string{"frustrado"}, today)
 
 	split, affBad, affMissing, wallet := h.auditCounts(ctx)
 	webhookFail := h.webhookFailCount(ctx)
 	stopped := h.stoppedCount(ctx)
-	k.AlertasTotal = split + affBad + affMissing + wallet + webhookFail + stopped
+	cronFail := h.cronFailCount(ctx)
+	k.AlertasTotal = split + affBad + affMissing + wallet + webhookFail + stopped + cronFail
 
 	httpx.JSON(w, 200, k)
 }
 
-// Alerts retorna as 6 linhas de alertas operacionais.
+// Alerts retorna as 7 linhas de alertas operacionais.
 // GET /dashboard/alerts
 func (h *DashboardHandler) Alerts(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	split, affBad, affMissing, wallet := h.auditCounts(ctx)
 	webhookFail := h.webhookFailCount(ctx)
 	stopped := h.stoppedCount(ctx)
+	cronFail := h.cronFailCount(ctx)
 
 	out := alertas{
-		SaldoDivergente:    wallet,
-		AffSemTransacao:    affMissing,
-		WalletDivergente:   affBad,
-		SplitDivergente:    split,
-		WebhooksFalhando7d: webhookFail,
-		PedidosParados24h:  stopped,
+		SaldoDivergente:        wallet,
+		AffSemTransacao:        affMissing,
+		WalletDivergente:       affBad,
+		SplitDivergente:        split,
+		WebhooksFalhando7d:     webhookFail,
+		PedidosParados24h:      stopped,
+		CronFinanceiroFalhando: cronFail,
 	}
 	httpx.JSON(w, 200, out)
 }

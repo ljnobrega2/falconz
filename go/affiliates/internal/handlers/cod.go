@@ -16,10 +16,12 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -33,6 +35,39 @@ import (
 // CODHandler agrupa as dependências dos handlers de carteira COD.
 type CODHandler struct {
 	Pool *pgxpool.Pool
+}
+
+// Sentinelas da decisão de antecipação (withdrawal) — mapeados a HTTP 402 no handler.
+// Extraídos para permitir teste unitário sem DB do núcleo financeiro do withdrawal,
+// no mesmo espírito de comissaoLiquida/parseCommissionValor.
+var (
+	// errSaldoInsuficiente: carteira sem saldo positivo para antecipar.
+	errSaldoInsuficiente = errors.New("saldo COD insuficiente para antecipação")
+	// errValorMaiorQueSaldo: valor solicitado excede o saldo disponível.
+	errValorMaiorQueSaldo = errors.New("valor solicitado maior que saldo disponível")
+)
+
+// decidirValorAntecipacao decide quanto antecipar dado o saldo atual e o valor
+// opcional solicitado pelo cliente. É a tradução PURA (sem DB, sem HTTP) das
+// regras inline de PostAnticipate — qualquer divergência de comportamento quebra
+// os testes de withdrawal.
+//
+// Regras (idênticas ao handler):
+//   - saldo ≤ 0                         → errSaldoInsuficiente;
+//   - valorReq nil ou ≤ 0               → antecipa o saldo TOTAL;
+//   - valorReq > 0 e > saldo            → errValorMaiorQueSaldo;
+//   - valorReq > 0 e ≤ saldo            → antecipa exatamente valorReq.
+func decidirValorAntecipacao(saldo decimal.Decimal, valorReq *decimal.Decimal) (decimal.Decimal, error) {
+	if saldo.LessThanOrEqual(decimal.Zero) {
+		return decimal.Zero, errSaldoInsuficiente
+	}
+	if valorReq != nil && valorReq.GreaterThan(decimal.Zero) {
+		if valorReq.GreaterThan(saldo) {
+			return decimal.Zero, errValorMaiorQueSaldo
+		}
+		return *valorReq, nil
+	}
+	return saldo, nil
 }
 
 // ── GET /cod/saldo ────────────────────────────────────────────────────────────
@@ -91,6 +126,9 @@ func (h *CODHandler) GetExtrato(w http.ResponseWriter, r *http.Request) {
 	}
 	tipoFilter := r.URL.Query().Get("tipo")
 
+	// SEC-IDOR-affiliate-list-endpoints: extrato sempre escopado por user_id=user.ID
+	// (dono da sessão). Aceita apenas filtros não-identitários (limit, tipo) do query;
+	// nenhum user_id de terceiro é lido do path/query.
 	var rows pgx.Rows
 	var err error
 
@@ -180,8 +218,9 @@ func (h *CODHandler) PostAnticipate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Valor     *decimal.Decimal `json:"valor"`
-		Descricao string           `json:"descricao"`
+		Valor          *decimal.Decimal `json:"valor"`
+		Descricao      string           `json:"descricao"`
+		IdempotencyKey string           `json:"idempotency_key"`
 	}
 	// Body é opcional — ignora erros de decode.
 	_ = json.NewDecoder(r.Body).Decode(&req)
@@ -223,20 +262,23 @@ func (h *CODHandler) PostAnticipate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	saldo, err := decimal.NewFromString(saldoStr)
-	if err != nil || saldo.LessThanOrEqual(decimal.Zero) {
-		slog.Info("[cod_anticipate] saldo zero ou negativo", "user_id", user.ID, "saldo", saldoStr)
-		httpx.WriteErr(w, http.StatusPaymentRequired, "saldo COD insuficiente para antecipação")
-		return
+	if err != nil {
+		// Preserva o comportamento original: antes saldo não-numérico caía no mesmo
+		// ramo de saldo ≤ 0 (err != nil || saldo.LessThanOrEqual(Zero) → 402). Tratamos
+		// como saldo zero para reaproveitar o caminho errSaldoInsuficiente → 402 + slog.Info,
+		// mantendo status, mensagem e log idênticos (sem mudança de lógica de negócio).
+		saldo = decimal.Zero
 	}
 
 	// Determina valor a antecipar: informado pelo cliente ou saldo total.
-	valorAntecipar := saldo
-	if req.Valor != nil && req.Valor.GreaterThan(decimal.Zero) {
-		if req.Valor.GreaterThan(saldo) {
-			httpx.WriteErr(w, http.StatusPaymentRequired, "valor solicitado maior que saldo disponível")
-			return
+	// Núcleo financeiro extraído em decidirValorAntecipacao (testável sem DB).
+	valorAntecipar, err := decidirValorAntecipacao(saldo, req.Valor)
+	if err != nil {
+		if errors.Is(err, errSaldoInsuficiente) {
+			slog.Info("[cod_anticipate] saldo zero ou negativo", "user_id", user.ID, "saldo", saldoStr)
 		}
-		valorAntecipar = *req.Valor
+		httpx.WriteErr(w, http.StatusPaymentRequired, err.Error())
+		return
 	}
 
 	novoSaldo := saldo.Sub(valorAntecipar)
@@ -252,8 +294,24 @@ func (h *CODHandler) PostAnticipate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Gera referência de idempotência baseada em timestamp.
-	referencia := fmt.Sprintf("antecipacao_%d_%d", user.ID, time.Now().UnixNano())
+	// AUDIT-2026-06-18 (Onda 1): referência de idempotência ESTÁVEL.
+	// Antes usava time.Now().UnixNano() (única por request) => ON CONFLICT nunca disparava
+	// e um RETRY de antecipação parcial debitava 2x (lê saldo já decrementado e debita de
+	// novo). Agora prioriza Idempotency-Key do cliente (header ou body); sem ela, cai para
+	// uma chave determinística por janela de minuto (user+valor+minuto), de modo que retries
+	// imediatos deduplicam via o rollback on-conflict abaixo. Recomenda-se que o cliente
+	// SEMPRE envie Idempotency-Key.
+	idemKey := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if idemKey == "" {
+		idemKey = strings.TrimSpace(req.IdempotencyKey)
+	}
+	var referencia string
+	if idemKey != "" {
+		referencia = fmt.Sprintf("antecipacao_%d_%s", user.ID, idemKey)
+	} else {
+		referencia = fmt.Sprintf("antecipacao_%d_%s_%s", user.ID, valorAntecipar.StringFixed(2), time.Now().UTC().Format("2006-01-02T15:04"))
+		slog.Warn("[cod_anticipate] sem Idempotency-Key; usando chave determinística por janela de minuto", "user_id", user.ID)
+	}
 	descricao := req.Descricao
 	if descricao == "" {
 		descricao = fmt.Sprintf("Antecipação de saldo COD — R$ %s", valorAntecipar.StringFixed(2))

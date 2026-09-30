@@ -1,314 +1,133 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api'
 
-// ----- tipos ---------------------------------------------------------------
+// CapabilitiesGuard — modelo de PAPÉIS (read-only). Atualizado 2026-06-18:
+// reflete os 4 papéis atuais (operator/produtor/afiliado/cliente) + admin do
+// full-Postgres, não mais capabilities WordPress.
 
-type GuardConfig = {
-  trigger: string
-  auto_grants: string[]
-}
-
-type CustomCapability = {
-  cap: string
+type RoleAccess = {
+  role: string
+  label: string
   description: string
-  default_roles: string[]
+  fonte: string
+  acessos: string[]
+  sem_acesso: string[]
 }
 
-type ScopeType = {
-  scope: string
-  description: string
-  check: string
-}
+type RoleCount = { role: string; total: number }
 
-type CapabilitiesData = {
-  guard: GuardConfig
-  custom_capabilities: CustomCapability[]
-  scope_types: ScopeType[]
-}
+type CapabilitiesData = { roles: RoleAccess[] }
+type DistData = { distribuicao: RoleCount[]; admins_ativos: number; note: string }
 
-type CapabilityUser = {
-  email: string
-  nome: string
-  capabilities: string[]
+const ROLE_LABEL: Record<string, string> = {
+  admin: 'Admin', operator: 'Operador', produtor: 'Produtor',
+  afiliado: 'Afiliado', cliente: 'Cliente',
 }
-
-type CapabilityUsersData = {
-  users: CapabilityUser[]
-  note: string
-}
-
-// ----- componente principal ------------------------------------------------
 
 export default function CapabilitiesGuard() {
   const [data, setData] = useState<CapabilitiesData | null>(null)
-  const [usersData, setUsersData] = useState<CapabilityUsersData | null>(null)
+  const [dist, setDist] = useState<DistData | null>(null)
   const [loading, setLoading] = useState(true)
-  const [usersLoading, setUsersLoading] = useState(true)
   const [err, setErr] = useState('')
 
   useEffect(() => {
     api<CapabilitiesData>('/capabilities')
       .then(d => setData(d))
-      .catch((e: any) => setErr(e.message || 'Erro ao carregar capabilities'))
+      .catch((e: any) => setErr(e.message || 'Erro ao carregar papéis'))
       .finally(() => setLoading(false))
 
-    api<CapabilityUsersData>('/capabilities/users')
-      .then(d => setUsersData(d))
-      .catch(() => setUsersData({ users: [], note: '' }))
-      .finally(() => setUsersLoading(false))
+    api<DistData>('/capabilities/users')
+      .then(d => setDist(d))
+      .catch(() => setDist(null))
   }, [])
 
   return (
     <div>
       {err && <div className="sz-alert-danger" style={{ marginBottom: 16 }}>{err}</div>}
 
-      {/* Aviso somente leitura */}
       <div
         style={{
-          marginBottom: 20,
-          padding: '12px 16px',
-          background: 'rgba(234,88,12,.08)',
-          border: '1px solid rgba(234,88,12,.25)',
-          borderRadius: 8,
-          color: 'var(--szv2-text)',
-          fontSize: 13,
+          marginBottom: 20, padding: '12px 16px',
+          background: 'rgba(30, 111, 242,.08)', border: '1px solid rgba(30, 111, 242,.25)',
+          borderRadius: 8, color: 'var(--szv2-text)', fontSize: 13,
         }}
       >
-        Esta tela é <strong>somente leitura</strong>. Para alterar capabilities, edite{' '}
-        <code>senderzz-access-scope.php</code> ou <code>senderzz_admin_capability_guard()</code>.
+        Somente leitura. O papel de cada usuário é definido por <strong>vínculo/produto</strong> em{' '}
+        <code>senderzz_portal_users.role</code> — não por capability do WordPress.
       </div>
 
-      {loading ? (
-        <div style={{ padding: 48, textAlign: 'center', color: 'var(--szv2-text-muted)' }}>
-          Carregando…
-        </div>
-      ) : data ? (
-        <>
-          {/* Card: Guard Automático */}
-          <div className="szv2-card" style={{ marginBottom: 24 }}>
-            <div className="szv2-card-head">
-              <div>
-                <h2>Guard Automático</h2>
-                <p className="szv2-card-sub">
-                  Qualquer usuário WordPress com a capability trigger recebe automaticamente todas as capabilities listadas abaixo.
-                </p>
+      {/* Distribuição real de usuários por papel */}
+      {dist && (
+        <div className="szv2-kpi-grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(140px,1fr))', marginBottom: 24 }}>
+          {dist.distribuicao.map(d => (
+            <div className="szv2-card" key={d.role}>
+              <div className="szv2-kpi">
+                <span className="szv2-kpi-label">{ROLE_LABEL[d.role] || d.role}</span>
+                <span className="szv2-kpi-value" style={{ color: 'var(--szv2-brand)' }}>{d.total}</span>
+                <span className="szv2-kpi-meta">usuários de portal</span>
               </div>
             </div>
-
-            <div style={{ marginBottom: 12 }}>
-              <span className="szv2-field-label" style={{ marginRight: 8 }}>Trigger capability:</span>
-              <code
-                style={{
-                  padding: '3px 8px',
-                  background: 'rgba(234,88,12,.10)',
-                  borderRadius: 4,
-                  color: 'var(--szv2-brand)',
-                  fontFamily: 'monospace',
-                  fontSize: 13,
-                }}
-              >
-                {data.guard.trigger}
-              </code>
-            </div>
-
-            <div>
-              <span className="szv2-field-label" style={{ display: 'block', marginBottom: 8 }}>
-                Auto-grants:
-              </span>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                {data.guard.auto_grants.map(cap => (
-                  <span
-                    key={cap}
-                    style={{
-                      padding: '4px 10px',
-                      background: 'rgba(234,88,12,.10)',
-                      border: '1px solid rgba(234,88,12,.25)',
-                      borderRadius: 16,
-                      fontFamily: 'monospace',
-                      fontSize: 12,
-                      color: 'var(--szv2-brand)',
-                    }}
-                  >
-                    {cap}
-                  </span>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          {/* Card: Capabilities Customizadas */}
-          <div className="szv2-card" style={{ marginBottom: 24 }}>
-            <div className="szv2-card-head">
-              <div>
-                <h2>Capabilities Customizadas</h2>
-                <p className="szv2-card-sub">
-                  Capabilities registradas pelo plugin em senderzz-access-scope.php.
-                </p>
-              </div>
-            </div>
-            <div style={{ overflowX: 'auto' }}>
-              <table className="szv2-table">
-                <thead>
-                  <tr>
-                    <th>Capability</th>
-                    <th>Descrição</th>
-                    <th>Roles padrão</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.custom_capabilities.map(c => (
-                    <tr key={c.cap}>
-                      <td>
-                        <code style={{ fontFamily: 'monospace', fontSize: 13 }}>{c.cap}</code>
-                      </td>
-                      <td>{c.description}</td>
-                      <td>
-                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-                          {c.default_roles.map(role => (
-                            <span
-                              key={role}
-                              className="sz-badge"
-                              style={{ fontFamily: 'monospace', fontSize: 11 }}
-                            >
-                              {role}
-                            </span>
-                          ))}
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          {/* Card: Tipos de Scope */}
-          <div className="szv2-card" style={{ marginBottom: 24 }}>
-            <div className="szv2-card-head">
-              <div>
-                <h2>Tipos de Scope</h2>
-                <p className="szv2-card-sub">
-                  Como o portal detecta o nível de acesso de cada usuário.
-                </p>
-              </div>
-            </div>
-            <div style={{ overflowX: 'auto' }}>
-              <table className="szv2-table">
-                <thead>
-                  <tr>
-                    <th>Scope</th>
-                    <th>Descrição</th>
-                    <th>Como detectado</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.scope_types.map(s => (
-                    <tr key={s.scope}>
-                      <td>
-                        <span
-                          className="sz-badge"
-                          style={{
-                            background: 'rgba(234,88,12,.10)',
-                            color: 'var(--szv2-brand)',
-                            border: '1px solid rgba(234,88,12,.20)',
-                            fontFamily: 'monospace',
-                          }}
-                        >
-                          {s.scope}
-                        </span>
-                      </td>
-                      <td>{s.description}</td>
-                      <td>
-                        <code style={{ fontFamily: 'monospace', fontSize: 12, color: 'var(--szv2-text-muted)' }}>
-                          {s.check}
-                        </code>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          {/* Card: Quais usuários têm capabilities */}
+          ))}
           <div className="szv2-card">
-            <div className="szv2-card-head">
-              <div>
-                <h2>Quais usuários têm</h2>
-                <p className="szv2-card-sub">
-                  Usuários admin ativos e as capabilities que detêm via auto-grant.
-                </p>
+            <div className="szv2-kpi">
+              <span className="szv2-kpi-label">Admins ativos</span>
+              <span className="szv2-kpi-value" style={{ color: 'var(--szv2-brand)' }}>{dist.admins_ativos}</span>
+              <span className="szv2-kpi-meta">painel admin</span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {loading ? (
+        <div style={{ padding: 48, textAlign: 'center', color: 'var(--szv2-text-muted)' }}>Carregando…</div>
+      ) : data && data.roles.length > 0 ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          {data.roles.map(role => (
+            <div className="szv2-card" key={role.role}>
+              <div className="szv2-card-head">
+                <div>
+                  <h2 style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    {role.label}
+                    <code
+                      style={{
+                        padding: '2px 8px', background: 'rgba(30, 111, 242,.10)',
+                        borderRadius: 4, color: 'var(--szv2-brand)', fontFamily: 'monospace', fontSize: 12,
+                      }}
+                    >
+                      {role.role}
+                    </code>
+                  </h2>
+                  <p className="szv2-card-sub">{role.description}</p>
+                </div>
+              </div>
+
+              <div style={{ fontSize: 12, color: 'var(--szv2-text-muted)', marginBottom: 12 }}>
+                <strong>Como é determinado:</strong> <code style={{ fontFamily: 'monospace' }}>{role.fonte}</code>
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: role.sem_acesso.length ? '1fr 1fr' : '1fr', gap: 16 }}>
+                <div>
+                  <span className="szv2-field-label" style={{ display: 'block', marginBottom: 6 }}>Acessa</span>
+                  <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, lineHeight: 1.7 }}>
+                    {role.acessos.map((a, i) => <li key={i}>{a}</li>)}
+                  </ul>
+                </div>
+                {role.sem_acesso.length > 0 && (
+                  <div>
+                    <span className="szv2-field-label" style={{ display: 'block', marginBottom: 6 }}>Não acessa</span>
+                    <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, lineHeight: 1.7, color: 'var(--szv2-text-muted)' }}>
+                      {role.sem_acesso.map((a, i) => <li key={i}>{a}</li>)}
+                    </ul>
+                  </div>
+                )}
               </div>
             </div>
-
-            {usersData?.note && (
-              <div
-                style={{
-                  marginBottom: 12,
-                  padding: '8px 12px',
-                  background: 'var(--szv2-bg-alt, rgba(0,0,0,.04))',
-                  borderRadius: 6,
-                  fontSize: 12,
-                  color: 'var(--szv2-text-muted)',
-                }}
-              >
-                {usersData.note}
-              </div>
-            )}
-
-            {usersLoading ? (
-              <div style={{ padding: 24, textAlign: 'center', color: 'var(--szv2-text-muted)', fontSize: 13 }}>
-                Carregando…
-              </div>
-            ) : usersData && usersData.users.length > 0 ? (
-              <div style={{ overflowX: 'auto' }}>
-                <table className="szv2-table">
-                  <thead>
-                    <tr>
-                      <th>Usuário</th>
-                      <th>E-mail</th>
-                      <th>Capabilities</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {usersData.users.map(u => (
-                      <tr key={u.email}>
-                        <td>{u.nome || '—'}</td>
-                        <td>
-                          <code style={{ fontFamily: 'monospace', fontSize: 12 }}>{u.email}</code>
-                        </td>
-                        <td>
-                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-                            {u.capabilities.map(cap => (
-                              <span
-                                key={cap}
-                                style={{
-                                  padding: '2px 7px',
-                                  background: 'rgba(234,88,12,.10)',
-                                  border: '1px solid rgba(234,88,12,.20)',
-                                  borderRadius: 12,
-                                  fontFamily: 'monospace',
-                                  fontSize: 11,
-                                  color: 'var(--szv2-brand)',
-                                }}
-                              >
-                                {cap}
-                              </span>
-                            ))}
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            ) : (
-              <div style={{ padding: 24, textAlign: 'center', color: 'var(--szv2-text-muted)', fontSize: 13 }}>
-                Nenhum usuário admin ativo encontrado.
-              </div>
-            )}
-          </div>
-        </>
+          ))}
+        </div>
+      ) : !err ? (
+        <div style={{ padding: 48, textAlign: 'center', color: 'var(--szv2-text-muted)' }}>
+          Nenhum papel definido no momento.
+        </div>
       ) : null}
     </div>
   )

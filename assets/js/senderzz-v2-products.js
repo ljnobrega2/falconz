@@ -87,13 +87,32 @@
     ajaxPost(getAjax(cb), { szaction: "checkout_link_affiliate_toggle", link_id: cb.getAttribute("data-link-id"), visible: cb.checked ? 1 : 0, _ajax_nonce: cb.getAttribute("data-nonce") })
       .then(function (r) { if (!r.success) { cb.checked = !cb.checked; toast((r.data && r.data.message) || "Erro.", "error"); } });
   };
-  window.szV2SaveComm = function (btn) {
-    var row = btn.closest(".szv2-lk-comm-row");
-    var inp = row && row.querySelector(".szv2-lk-comm-input");
-    if (!inp) return;
+  function _doSaveComm(btn, inp, pct) {
     btn.disabled = true;
-    ajaxPost(getAjax(btn), { szaction: "checkout_link_commission_update", link_id: inp.getAttribute("data-link-id"), commission_pct: parseFloat(inp.value) || 0, _ajax_nonce: inp.getAttribute("data-nonce") })
+    ajaxPost(getAjax(btn), { szaction: "checkout_link_commission_update", link_id: inp.getAttribute("data-link-id"), commission_pct: pct, _ajax_nonce: inp.getAttribute("data-nonce") })
       .then(function (r) { btn.disabled = false; toast(r.success ? "Comissao salva." : ((r.data && r.data.message) || "Erro."), r.success ? "success" : "error"); });
+  }
+  window.szV2SaveComm = function (btn) {
+    // O input fica no MESMO contêiner do botão (div flex em products.php). Fallback:
+    // procura a linha .szv2-lk-comm-row (compat) e depois o ancestral imediato.
+    var inp = (btn.parentNode && btn.parentNode.querySelector(".szv2-lk-comm-input"))
+           || (btn.closest(".szv2-lk-comm-row") && btn.closest(".szv2-lk-comm-row").querySelector(".szv2-lk-comm-input"));
+    if (!inp) return;
+    var pct = parseFloat(inp.value) || 0;
+    // FEAT-AFF-COMMISSION: confirma override quando a % muda em relação ao padrão do produto.
+    var defPct = parseFloat(inp.getAttribute("data-default-pct"));
+    var isOverride = !isNaN(defPct) && Math.abs(pct - defPct) >= 0.005;
+    if (isOverride && typeof window.szV2Confirm === "function") {
+      window.szV2Confirm({
+        title: "Sobrescrever comissão padrão?",
+        message: "Isto sobrescreve a comissão padrão do produto para este link de checkout. "
+               + "O afiliado que usar este link receberá " + pct + "% (padrão: " + defPct + "%).",
+        btn: "Salvar comissão",
+        danger: false,
+      }, function () { _doSaveComm(btn, inp, pct); });
+      return;
+    }
+    _doSaveComm(btn, inp, pct);
   };
   window.szV2DeleteLink = function (btn) {
     var name = btn.getAttribute("data-link-name") || "este checkout";

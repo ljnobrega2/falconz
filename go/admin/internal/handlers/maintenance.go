@@ -39,13 +39,7 @@ type MaintenanceSettings struct {
 
 // tableExists verifica presença de uma tabela no schema public.
 func (h *MaintenanceHandler) tableExists(ctx context.Context, name string) bool {
-	var ok bool
-	_ = h.Pool.QueryRow(ctx,
-		`SELECT EXISTS (
-			SELECT FROM information_schema.tables
-			WHERE table_schema='public' AND table_name=$1
-		)`, name).Scan(&ok)
-	return ok
+	return tableExistsCached(ctx, h.Pool, name) // AUDIT-2026-06-18 Onda2 (go-infoschema-cache)
 }
 
 // defaults retorna settings com valores default (manutenção desativada).
@@ -68,7 +62,7 @@ func (h *MaintenanceHandler) readSettings(ctx context.Context) MaintenanceSettin
 	}
 	var raw string
 	err := h.Pool.QueryRow(ctx,
-		`SELECT value FROM senderzz_options WHERE "key"=$1`, maintenanceOptionKey).Scan(&raw)
+		`SELECT value FROM senderzz_options WHERE name=$1`, maintenanceOptionKey).Scan(&raw)
 	if err != nil || strings.TrimSpace(raw) == "" {
 		return out
 	}
@@ -119,9 +113,9 @@ func (h *MaintenanceHandler) upsertSettings(ctx context.Context, s MaintenanceSe
 		return err
 	}
 	_, err = h.Pool.Exec(ctx,
-		`INSERT INTO senderzz_options ("key", value)
+		`INSERT INTO senderzz_options (name, value)
 		 VALUES ($1, $2)
-		 ON CONFLICT ("key") DO UPDATE SET value = EXCLUDED.value`,
+		 ON CONFLICT (name) DO UPDATE SET value = EXCLUDED.value`,
 		maintenanceOptionKey, string(b))
 	return err
 }

@@ -1,4 +1,6 @@
 import { useEffect, useState } from 'react'
+import { confirmAsync } from '../components/ConfirmDialog'
+import { useToast } from '../hooks/useToast'
 import { api } from '../api'
 import FilterButton from '../components/FilterButton'
 import FilterTopPanel, {
@@ -10,6 +12,9 @@ import FilterTopPanel, {
 import TableSkeleton from '../components/TableSkeleton'
 import EmptyState from '../components/EmptyState'
 import CardKpiSkeleton from '../components/CardKpiSkeleton'
+import StatusBadge from '../components/StatusBadge'
+import DetailDrawer from '../components/DetailDrawer'
+import FalkDatePicker from '../components/FalkDatePicker'
 
 // ----- Tipos retornados pelo handler Go -------------------------------------
 
@@ -85,11 +90,6 @@ const todayISO = () => {
   return `${y}-${mo}-${da}`
 }
 
-const STATUS_BADGE: Record<string, string> = {
-  disponivel: 'szv2-badge-success',
-  pendente: 'szv2-badge-warning',
-  pago: 'szv2-badge-neutral',
-}
 
 // ----- KPI card (mesma estética da AuditEngine) ------------------------------
 
@@ -127,7 +127,7 @@ export default function MotoboyCarteira() {
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
-  const [toast, setToast] = useState<{ kind: 'ok' | 'err'; msg: string } | null>(null)
+  const showToast = useToast() // AUDIT-2026-06-18 Onda3
 
   // Filtros aplicados.
   const [q, setQ] = useState('')
@@ -169,10 +169,6 @@ export default function MotoboyCarteira() {
 
   useEffect(() => { load() /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [q, motoboyID, dataIni, dataFim])
 
-  function showToast(kind: 'ok' | 'err', msg: string) {
-    setToast({ kind, msg })
-    setTimeout(() => setToast(null), 5000)
-  }
 
   function openPanel() {
     setDraftQ(q); setDraftMotoboy(motoboyID); setDraftIni(dataIni); setDraftFim(dataFim)
@@ -197,7 +193,7 @@ export default function MotoboyCarteira() {
   const activeCount = chips.length
 
   async function handleSync() {
-    if (!window.confirm('Recalcular os saldos da carteira dos motoboys?')) return
+    if (!await confirmAsync({ message: 'Recalcular os saldos da carteira dos motoboys?' })) return
     setBusy(true)
     try {
       const res = await api<SyncResponse>('/motoboy-carteira/sync', { method: 'POST' })
@@ -241,14 +237,6 @@ export default function MotoboyCarteira() {
       <ActiveFilterChips chips={chips} onClearAll={clearFilters} />
 
       {err && <div className="sz-alert-danger" style={{ marginBottom: 16 }}>{err}</div>}
-      {toast && (
-        <div
-          className={toast.kind === 'ok' ? 'sz-alert-success' : 'sz-alert-danger'}
-          style={{ marginBottom: 16 }}
-        >
-          {toast.msg}
-        </div>
-      )}
 
       {/* KPIs */}
       {!summary && loading && <CardKpiSkeleton count={3} />}
@@ -412,21 +400,17 @@ export default function MotoboyCarteira() {
         title="Filtros"
       >
         <FilterField label="Data inicial">
-          <input
-            type="date"
-            style={filterInputStyle}
+          <FalkDatePicker
             value={draftIni}
             max={draftFim || undefined}
-            onChange={e => setDraftIni(e.target.value)}
+            onChange={v => setDraftIni(v)}
           />
         </FilterField>
         <FilterField label="Data final">
-          <input
-            type="date"
-            style={filterInputStyle}
+          <FalkDatePicker
             value={draftFim}
             min={draftIni || undefined}
-            onChange={e => setDraftFim(e.target.value)}
+            onChange={v => setDraftFim(v)}
           />
         </FilterField>
         <FilterField label="Motoboy ID">
@@ -476,8 +460,13 @@ function PagamentoModal({
     e.preventDefault()
     setLocalErr('')
 
-    // Aceita "1.234,56" (BR) ou "1234.56" — converte sempre para ponto decimal.
-    const v = parseFloat(valor.replace(/\./g, '').replace(',', '.'))
+    // Aceita "1.234,56" (BR) ou "1234.56"/"5.00" (ponto decimal).
+    // Só trata ponto como separador de milhar quando há vírgula (decimal BR);
+    // senão "5.00" virava "500". (bug do parser antigo)
+    const raw = valor.trim()
+    const v = raw.includes(',')
+      ? parseFloat(raw.replace(/\./g, '').replace(',', '.'))
+      : parseFloat(raw)
     if (!v || v <= 0) { setLocalErr('Valor inválido'); return }
     if (v > motoboy.saldo_disponivel + 0.0001) {
       setLocalErr(`Valor maior que o disponível (${fmtMoney(motoboy.saldo_disponivel)}).`)
@@ -511,84 +500,80 @@ function PagamentoModal({
     }
   }
 
+  // 2026-06-19 — migrado para DetailDrawer (lateral direito, marca registrada)
   return (
-    <div className="szv2-modal-overlay szv2-open" onClick={onClose}>
-      <div className="szv2-modal" onClick={e => e.stopPropagation()}>
-        <div className="szv2-modal-head">
-          <h3>Registrar pagamento — {motoboy.motoboy_nome || `Motoboy #${motoboy.motoboy_id}`}</h3>
-          <button className="szv2-modal-x" onClick={onClose}>✕</button>
+    <DetailDrawer
+      open
+      onClose={() => { if (!busy) onClose() }}
+      title={`Registrar pagamento — ${motoboy.motoboy_nome || `Motoboy #${motoboy.motoboy_id}`}`}
+      footer={
+        <>
+          <button type="button" className="szv2-btn-secondary" onClick={onClose} disabled={busy}>
+            Cancelar
+          </button>
+          <button type="button" className="szv2-btn-brand" onClick={submit as any} disabled={busy}>
+            {busy ? 'Registrando…' : 'Registrar pagamento'}
+          </button>
+        </>
+      }
+    >
+      <form onSubmit={submit}>
+        {localErr && <div className="sz-alert-danger" style={{ marginBottom: 12 }}>{localErr}</div>}
+
+        <div
+          style={{
+            background: 'var(--szv2-surface-alt)',
+            borderRadius: 8,
+            padding: 12,
+            marginBottom: 16,
+            fontSize: 13,
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+          }}
+        >
+          <span style={{ color: 'var(--szv2-text-muted)' }}>Disponível</span>
+          <strong style={{ color: 'var(--szv2-success)', fontSize: 16 }}>
+            {fmtMoney(motoboy.saldo_disponivel)}
+          </strong>
         </div>
-        <form onSubmit={submit}>
-          <div className="szv2-modal-body">
-            {localErr && <div className="sz-alert-danger" style={{ marginBottom: 12 }}>{localErr}</div>}
 
-            <div
-              style={{
-                background: 'var(--szv2-surface-alt)',
-                borderRadius: 8,
-                padding: 12,
-                marginBottom: 16,
-                fontSize: 13,
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-              }}
-            >
-              <span style={{ color: 'var(--szv2-text-muted)' }}>Disponível</span>
-              <strong style={{ color: 'var(--szv2-success)', fontSize: 16 }}>
-                {fmtMoney(motoboy.saldo_disponivel)}
-              </strong>
-            </div>
+        <div className="szv2-field" style={{ marginBottom: 12 }}>
+          <label className="szv2-label">Valor a pagar (R$) *</label>
+          <input
+            className="szv2-input"
+            type="text"
+            inputMode="decimal"
+            required
+            value={valor}
+            onChange={e => setValor(e.target.value)}
+            placeholder="0,00"
+          />
+          <small style={{ color: 'var(--szv2-text-muted)', fontSize: 12 }}>
+            Use ponto ou vírgula como separador decimal. Default = saldo disponível.
+          </small>
+        </div>
 
-            <div className="szv2-field" style={{ marginBottom: 12 }}>
-              <label className="szv2-label">Valor a pagar (R$) *</label>
-              <input
-                className="szv2-input"
-                type="text"
-                inputMode="decimal"
-                required
-                value={valor}
-                onChange={e => setValor(e.target.value)}
-                placeholder="0,00"
-              />
-              <small style={{ color: 'var(--szv2-text-muted)', fontSize: 12 }}>
-                Use ponto ou vírgula como separador decimal. Default = saldo disponível.
-              </small>
-            </div>
+        <div className="szv2-field" style={{ marginBottom: 12 }}>
+          <label className="szv2-label">Data do pagamento *</label>
+          <FalkDatePicker
+            value={data}
+            onChange={v => setData(v)}
+          />
+        </div>
 
-            <div className="szv2-field" style={{ marginBottom: 12 }}>
-              <label className="szv2-label">Data do pagamento *</label>
-              <input
-                className="szv2-input"
-                type="date"
-                required
-                value={data}
-                onChange={e => setData(e.target.value)}
-              />
-            </div>
-
-            <div className="szv2-field" style={{ marginBottom: 0 }}>
-              <label className="szv2-label">Observação</label>
-              <textarea
-                className="szv2-input"
-                rows={3}
-                value={obs}
-                onChange={e => setObs(e.target.value)}
-                placeholder="Ex.: pagamento parcial referente à semana 23"
-              />
-            </div>
-          </div>
-          <div className="szv2-modal-foot">
-            <button type="button" className="szv2-btn-secondary" onClick={onClose} disabled={busy}>
-              Cancelar
-            </button>
-            <button type="submit" className="szv2-btn-brand" disabled={busy}>
-              {busy ? 'Registrando…' : 'Registrar pagamento'}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
+        <div className="szv2-field" style={{ marginBottom: 0 }}>
+          <label className="szv2-label">Observação</label>
+          <textarea
+            className="szv2-input"
+            rows={3}
+            value={obs}
+            onChange={e => setObs(e.target.value)}
+            placeholder="Ex.: pagamento parcial referente à semana 23"
+          />
+        </div>
+      </form>
+    </DetailDrawer>
   )
 }
 
@@ -622,100 +607,91 @@ function HistoricoModal({
 
   useEffect(() => { load() /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [motoboy.motoboy_id])
 
+  // 2026-06-19 — migrado para DetailDrawer (lateral direito, marca registrada)
   return (
-    <div className="szv2-modal-overlay szv2-open" onClick={onClose}>
-      <div className="szv2-modal szv2-modal-lg" onClick={e => e.stopPropagation()}>
-        <div className="szv2-modal-head">
-          <h3>
-            Histórico — {motoboy.motoboy_nome || `Motoboy #${motoboy.motoboy_id}`}
-            <span
-              style={{
-                fontWeight: 400,
-                fontSize: 13,
-                color: 'var(--szv2-text-muted)',
-                marginLeft: 8,
-              }}
-            >
-              {items.length} lançamento(s)
-            </span>
-          </h3>
-          <button className="szv2-modal-x" onClick={onClose}>✕</button>
-        </div>
-        <div className="szv2-modal-body">
-          {err && <div className="sz-alert-danger" style={{ marginBottom: 12 }}>{err}</div>}
+    <DetailDrawer
+      open
+      onClose={onClose}
+      large
+      title={
+        <>
+          Histórico — {motoboy.motoboy_nome || `Motoboy #${motoboy.motoboy_id}`}
+          <span
+            style={{
+              fontWeight: 400,
+              fontSize: 13,
+              color: 'var(--szv2-text-muted)',
+              marginLeft: 8,
+            }}
+          >
+            {items.length} lançamento(s)
+          </span>
+        </>
+      }
+    >
+      {err && <div className="sz-alert-danger" style={{ marginBottom: 12 }}>{err}</div>}
 
-          {loading && items.length === 0 ? (
-            <TableSkeleton rows={4} cols={9} />
-          ) : !loading && items.length === 0 ? (
-            <EmptyState
-              icon="📜"
-              title="Sem lançamentos para este motoboy."
-            />
-          ) : (
-            <div style={{ overflowX: 'auto' }}>
-              <table className="szv2-table">
-                <thead>
-                  <tr>
-                    <th>Data</th>
-                    <th>Pedido</th>
-                    <th>Tipo</th>
-                    <th style={{ textAlign: 'right' }}>Ganho</th>
-                    <th style={{ textAlign: 'right' }}>Pago</th>
-                    <th style={{ textAlign: 'right' }}>Saldo aberto</th>
-                    <th>Data saque</th>
-                    <th>Status</th>
-                    <th style={{ textAlign: 'right' }}>Recebido cliente</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {items.map(h => (
-                    <tr key={h.id}>
-                      <td style={{ fontSize: 12, color: 'var(--szv2-text-muted)' }}>
-                        {fmtDateBR(h.data)}
-                      </td>
-                      <td>
-                        <strong>#{h.wc_order_id || h.pedido_id || h.id}</strong>
-                      </td>
-                      <td style={{ fontSize: 12 }}>{h.tipo || '—'}</td>
-                      <td style={{ textAlign: 'right', fontWeight: 700 }}>
-                        {fmtMoney(h.valor)}
-                      </td>
-                      <td style={{ textAlign: 'right' }}>{fmtMoney(h.pago_neste_ganho)}</td>
-                      <td
-                        style={{
-                          textAlign: 'right',
-                          fontWeight: 600,
-                          color: h.saldo_aberto > 0 ? 'var(--szv2-warning)' : 'inherit',
-                        }}
-                      >
-                        {fmtMoney(h.saldo_aberto)}
-                      </td>
-                      <td style={{ fontSize: 12, color: 'var(--szv2-text-muted)' }}>
-                        {fmtDateBR(h.data_saque)}
-                      </td>
-                      <td>
-                        <span
-                          className={`sz-badge ${STATUS_BADGE[h.status] || 'szv2-badge-neutral'}`}
-                        >
-                          {h.status || '—'}
-                        </span>
-                      </td>
-                      <td style={{ textAlign: 'right', color: 'var(--szv2-text-muted)' }}>
-                        {fmtMoney(h.recebido_cliente)}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
+      {loading && items.length === 0 ? (
+        <TableSkeleton rows={4} cols={9} />
+      ) : !loading && items.length === 0 ? (
+        <EmptyState
+          icon="📜"
+          title="Sem lançamentos para este motoboy."
+        />
+      ) : (
+        <div style={{ overflowX: 'auto' }}>
+          <table className="szv2-table">
+            <thead>
+              <tr>
+                <th>Data</th>
+                <th>Pedido</th>
+                <th>Tipo</th>
+                <th style={{ textAlign: 'right' }}>Ganho</th>
+                <th style={{ textAlign: 'right' }}>Pago</th>
+                <th style={{ textAlign: 'right' }}>Saldo acumulado</th>
+                <th>Data saque</th>
+                <th>Status</th>
+                <th style={{ textAlign: 'right' }}>Recebido cliente</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.map(h => (
+                <tr key={h.id}>
+                  <td style={{ fontSize: 12, color: 'var(--szv2-text-muted)' }}>
+                    {fmtDateBR(h.data)}
+                  </td>
+                  <td>
+                    <strong>{h.wc_order_id || h.pedido_id || h.id}</strong>
+                  </td>
+                  <td style={{ fontSize: 12 }}>{h.tipo || '—'}</td>
+                  <td style={{ textAlign: 'right', fontWeight: 700 }}>
+                    {fmtMoney(h.valor)}
+                  </td>
+                  <td style={{ textAlign: 'right' }}>{fmtMoney(h.pago_neste_ganho)}</td>
+                  <td
+                    style={{
+                      textAlign: 'right',
+                      fontWeight: 600,
+                      color: h.saldo_aberto > 0 ? 'var(--szv2-warning)' : 'inherit',
+                    }}
+                  >
+                    {fmtMoney(h.saldo_aberto)}
+                  </td>
+                  <td style={{ fontSize: 12, color: 'var(--szv2-text-muted)' }}>
+                    {fmtDateBR(h.data_saque)}
+                  </td>
+                  <td>
+                    <StatusBadge status={h.status} />
+                  </td>
+                  <td style={{ textAlign: 'right', color: 'var(--szv2-text-muted)' }}>
+                    {fmtMoney(h.recebido_cliente)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
-        <div className="szv2-modal-foot">
-          <button type="button" className="szv2-btn-secondary" onClick={onClose}>
-            Fechar
-          </button>
-        </div>
-      </div>
-    </div>
+      )}
+    </DetailDrawer>
   )
 }

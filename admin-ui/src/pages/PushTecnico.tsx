@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useToast } from '../hooks/useToast'
 import { api } from '../api'
 
 // ----- tipos ---------------------------------------------------------------
@@ -69,7 +70,7 @@ export default function PushTecnico() {
   const [logs, setLogs] = useState<NotifLogItem[]>([])
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState('')
-  const [toast, setToast] = useState<{ kind: 'ok' | 'err'; msg: string } | null>(null)
+  const showToast = useToast() // AUDIT-2026-06-18 Onda3
   const [busy, setBusy] = useState(false)
 
   // --- VAPID regenerar
@@ -81,10 +82,6 @@ export default function PushTecnico() {
   const [testTitle, setTestTitle] = useState('')
   const [testBody, setTestBody] = useState('')
 
-  function showToast(kind: 'ok' | 'err', msg: string) {
-    setToast({ kind, msg })
-    setTimeout(() => setToast(null), 5000)
-  }
 
   async function load() {
     setLoading(true)
@@ -162,14 +159,6 @@ export default function PushTecnico() {
   return (
     <div>
       {err && <div className="sz-alert-danger" style={{ marginBottom: 16 }}>{err}</div>}
-      {toast && (
-        <div
-          className={toast.kind === 'ok' ? 'sz-alert-success' : 'sz-alert-danger'}
-          style={{ marginBottom: 16 }}
-        >
-          {toast.msg}
-        </div>
-      )}
 
       {/* Banner env_managed */}
       {status?.env_managed && (

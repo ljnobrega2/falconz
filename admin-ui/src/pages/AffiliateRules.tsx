@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
+import { useToast } from '../hooks/useToast'
 import { api } from '../api'
+import FalkSelect from '../components/FalkSelect'
 
 // Tela "Regras de Afiliados" — defaults globais do programa de afiliados.
 // Espelha AUDIT-ADMIN-WP.md §4.7 + §26.4 e bate com handlers/affiliate_rules.go.
@@ -25,6 +27,70 @@ type AffiliateRulesStats = {
   total_balance_available: number
   total_balance_pending: number
 }
+
+// FEAT-RBAC-2026-06-21 — recompensa de convite (programa "indique e ganhe").
+// Persistida em senderzz_options sob `sz_invite_reward_type` / `sz_invite_reward_value`,
+// gravadas via PUT /settings (mesmo endpoint canônico de options do admin).
+//
+// BACKEND GAP (DOCUMENTADO, NÃO chutar semântica financeira):
+//   - go/admin/internal/handlers/settings.go ainda NÃO conhece estas chaves.
+//     `settingsSave` (linhas 82-88) não tem os campos → o PUT as ignora
+//     silenciosamente; `settingsResp`/Get (linhas 71-128) não as devolve.
+//     Para o round-trip funcionar é preciso adicionar `sz_invite_reward_type`
+//     e `sz_invite_reward_value` AOS DOIS: struct `settingsSave` + upsert no
+//     Save, e struct `settingsResp` + leitura no Get.
+//   - O PUT /settings é merge por-campo (ponteiros), então enviar só estas duas
+//     chaves NÃO apaga as demais options — body parcial é seguro.
+//   - Esta tela define APENAS tipo + valor da recompensa. QUANDO ela paga, A
+//     QUEM e em que evento é regra financeira nova → fica para o backend; aqui
+//     não inventamos esses gatilhos.
+type InviteReward = {
+  type: 'none' | 'fixed' | 'percent'
+  value: number
+}
+
+// FALK-2026-06-22 — taxa de frustração (configurável, REGRA DO DONO).
+// Persistida em senderzz_options sob `sz_frustration_fee_type` / `sz_frustration_fee_value`,
+// gravadas via PUT /settings (mesmo endpoint canônico de options do admin).
+//
+// SEMÂNTICA (não mexer no backend aqui): a config vale para pedidos NOVOS
+// frustrados. Pedidos ANTIGOS preservam o que JÁ foi cobrado — o backend
+// (order_detail.go) lê o valor armazenado nas metas `_sz_aff_frustration_penalty` /
+// `_sz_prod_frustration_penalty` e NÃO recomputa. Esta tela define só tipo + valor.
+//
+// BACKEND GAP (DOCUMENTADO, mesmo padrão do invite-reward): settings.go ainda NÃO
+// conhece estas chaves → o PUT é no-op até o handler ler/gravar `sz_frustration_fee_*`.
+// Por isso o toast é honesto (não mente "salvo").
+type FrustrationFee = {
+  type: 'none' | 'fixed' | 'percent'
+  value: number
+}
+
+// Resposta parcial de GET /settings — só os campos que esta tela consome.
+// (O endpoint devolve mais; deixamos o resto fora do type de propósito.)
+type SettingsRewardResp = {
+  invite_reward_type?: InviteReward['type']
+  invite_reward_value?: number
+  // FALK-2026-06-22 — gap-tolerante: GET ainda não devolve estas chaves → cai no default.
+  frustration_fee_type?: FrustrationFee['type']
+  frustration_fee_value?: number
+}
+
+const INVITE_REWARD_TYPES: { value: InviteReward['type']; label: string }[] = [
+  { value: 'none',    label: 'Desativada' },
+  { value: 'fixed',   label: 'Valor fixo (R$)' },
+  { value: 'percent', label: 'Percentual (%)' },
+]
+
+// FALK-2026-06-22 — mesmos rótulos da recompensa (Desativada / Valor fixo / Percentual).
+const FRUSTRATION_FEE_TYPES: { value: FrustrationFee['type']; label: string }[] = [
+  { value: 'none',    label: 'Desativada' },
+  { value: 'fixed',   label: 'Valor fixo (R$)' },
+  { value: 'percent', label: 'Percentual (%)' },
+]
+
+const DEFAULT_INVITE_REWARD: InviteReward = { type: 'none', value: 0 }
+const DEFAULT_FRUSTRATION_FEE: FrustrationFee = { type: 'none', value: 0 }
 
 // Defaults batem com o handler Go (fonte da verdade) — usados antes do GET.
 const DEFAULT_RULES: AffiliateRules = {
@@ -126,31 +192,59 @@ function NumberField({
   )
 }
 
-export default function AffiliateRules() {
+// `embedded` esconde o cabeçalho interno, a faixa de 5 KPIs e o card de
+// "Recompensa de indicação" — usados quando a tela única (AfiliadosFinHub)
+// promove esses elementos. Os formulários (Regras Padrão + Penalidades +
+// Taxa de frustração) e seus botões de salvar permanecem 100% funcionais.
+export default function AffiliateRules({
+  embedded = false,
+}: {
+  embedded?: boolean
+} = {}) {
   const [rules, setRules] = useState<AffiliateRules>(DEFAULT_RULES)
   const [stats, setStats] = useState<AffiliateRulesStats | null>(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [err, setErr] = useState('')
-  const [toast, setToast] = useState<{ kind: 'ok' | 'err'; msg: string } | null>(null)
+  const showToast = useToast() // AUDIT-2026-06-18 Onda3
 
-  function showToast(kind: 'ok' | 'err', msg: string) {
-    setToast({ kind, msg })
-    setTimeout(() => setToast(null), 5000)
-  }
+  // FEAT-RBAC-2026-06-21 — recompensa de convite: estado e salvar independentes
+  // (round-trip próprio em /settings, fora do form de regras de afiliado).
+  const [reward, setReward] = useState<InviteReward>(DEFAULT_INVITE_REWARD)
+  const [rewardSaving, setRewardSaving] = useState(false)
+
+  // FALK-2026-06-22 — taxa de frustração: estado e salvar independentes
+  // (round-trip próprio em /settings, fora do form de regras de afiliado).
+  const [frustFee, setFrustFee] = useState<FrustrationFee>(DEFAULT_FRUSTRATION_FEE)
+  const [frustFeeSaving, setFrustFeeSaving] = useState(false)
+
 
   async function load() {
     setLoading(true)
     setErr('')
     try {
-      // Carrega rules + stats em paralelo (Promise.all para corte de latência).
-      const [r, s] = await Promise.all([
+      // Carrega rules + stats + recompensa em paralelo (corte de latência).
+      // O GET /settings é tolerante: hoje não devolve as chaves de recompensa
+      // (BACKEND GAP) → cai no default. `.catch(()=>null)` evita derrubar a tela.
+      const [r, s, rw] = await Promise.all([
         api<AffiliateRules>('/affiliate-rules'),
         api<AffiliateRulesStats>('/affiliate-rules/stats').catch(() => null),
+        api<SettingsRewardResp>('/settings').catch(() => null), // FEAT-RBAC-2026-06-21
       ])
       // Mescla com defaults caso o backend devolva campos faltando.
       setRules({ ...DEFAULT_RULES, ...r })
       setStats(s)
+      if (rw) {
+        setReward({
+          type: rw.invite_reward_type ?? DEFAULT_INVITE_REWARD.type,
+          value: typeof rw.invite_reward_value === 'number' ? rw.invite_reward_value : DEFAULT_INVITE_REWARD.value,
+        })
+        // FALK-2026-06-22 — taxa de frustração (gap-tolerante → cai no default).
+        setFrustFee({
+          type: rw.frustration_fee_type ?? DEFAULT_FRUSTRATION_FEE.type,
+          value: typeof rw.frustration_fee_value === 'number' ? rw.frustration_fee_value : DEFAULT_FRUSTRATION_FEE.value,
+        })
+      }
     } catch (e: any) {
       setErr(e?.message || 'Erro ao carregar regras de afiliados')
     } finally {
@@ -206,28 +300,79 @@ export default function AffiliateRules() {
     setRules(prev => ({ ...prev, [key]: value }))
   }
 
+  // FEAT-RBAC-2026-06-21 — salva SÓ a recompensa de convite, em /settings.
+  // Round-trip independente do form de regras (chaves sz_invite_* ≠ sz_aff_*).
+  // PUT /settings é merge por-campo → body parcial não apaga outras options.
+  // NOTA: enquanto settings.go não conhecer estas chaves, o PUT é no-op no
+  // backend (não persiste) — por isso o toast é neutro, não um "salvo" mentiroso.
+  async function handleSaveReward() {
+    const v = reward.type === 'none' ? 0 : Math.max(0, reward.value)
+    if (reward.type === 'percent' && v > 100) {
+      showToast('err', 'Percentual de recompensa deve estar entre 0 e 100%.')
+      return
+    }
+    setRewardSaving(true)
+    try {
+      await api('/settings', {
+        method: 'PUT',
+        body: JSON.stringify({
+          invite_reward_type: reward.type,
+          invite_reward_value: v,
+        }),
+      })
+      // Mensagem honesta: o backend ainda pode não persistir (gap documentado).
+      showToast('info', 'Recompensa de convite enviada. Persistência depende de suporte no backend /settings (sz_invite_reward_*).')
+    } catch (e: any) {
+      showToast('err', e?.message || 'Falha ao salvar recompensa de convite')
+    } finally {
+      setRewardSaving(false)
+    }
+  }
+
+  // FALK-2026-06-22 — salva SÓ a taxa de frustração, em /settings.
+  // Round-trip independente do form de regras (chaves sz_frustration_fee_* ≠ sz_aff_*).
+  // PUT /settings é merge por-campo → body parcial não apaga outras options.
+  // NOTA: enquanto settings.go não conhecer estas chaves, o PUT é no-op no backend
+  // (não persiste) — por isso o toast é neutro, não um "salvo" mentiroso.
+  async function handleSaveFrustFee() {
+    const v = frustFee.type === 'none' ? 0 : Math.max(0, frustFee.value)
+    if (frustFee.type === 'percent' && v > 100) {
+      showToast('err', 'Percentual da taxa de frustração deve estar entre 0 e 100%.')
+      return
+    }
+    setFrustFeeSaving(true)
+    try {
+      await api('/settings', {
+        method: 'PUT',
+        body: JSON.stringify({
+          frustration_fee_type: frustFee.type,
+          frustration_fee_value: v,
+        }),
+      })
+      // Mensagem honesta: o backend ainda pode não persistir (gap documentado).
+      showToast('info', 'Taxa de frustração enviada. Persistência depende de suporte no backend /settings (sz_frustration_fee_*).')
+    } catch (e: any) {
+      showToast('err', e?.message || 'Falha ao salvar taxa de frustração')
+    } finally {
+      setFrustFeeSaving(false)
+    }
+  }
+
   return (
     <div>
-      <div className="szv2-section-head">
-        <div>
-          <h1>Regras de Afiliados</h1>
-          <p>Defaults globais aplicados a novos afiliados, retenção de saldo e penalidades de frustração</p>
-        </div>
-      </div>
-
-      {err && <div className="sz-alert-danger" style={{ marginBottom: 16 }}>{err}</div>}
-
-      {toast && (
-        <div
-          className={toast.kind === 'ok' ? 'sz-alert-success' : 'sz-alert-danger'}
-          style={{ marginBottom: 16 }}
-        >
-          {toast.msg}
+      {!embedded && (
+        <div className="szv2-section-head">
+          <div>
+            <h1>Regras de Afiliados</h1>
+            <p>Defaults globais aplicados a novos afiliados, retenção de saldo e penalidades de frustração</p>
+          </div>
         </div>
       )}
 
-      {/* ---------- KPIs ---------- */}
-      {stats && (
+      {err && <div className="sz-alert-danger" style={{ marginBottom: 16 }}>{err}</div>}
+
+      {/* ---------- KPIs — ocultos em embedded (promovidos para a faixa do pai) ---------- */}
+      {!embedded && stats && (
         <div
           className="szv2-kpi-grid"
           style={{ gridTemplateColumns: 'repeat(5, minmax(0,1fr))', gap: 16, marginBottom: 24 }}
@@ -267,6 +412,7 @@ export default function AffiliateRules() {
           Carregando regras…
         </div>
       ) : (
+        <>
         <form onSubmit={handleSave}>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
             {/* ---------- Card 1: Regras Padrão ---------- */}
@@ -402,9 +548,9 @@ export default function AffiliateRules() {
                 <div
                   style={{
                     padding: 12,
-                    background: 'rgba(234,88,12,.06)',
+                    background: 'rgba(30, 111, 242,.06)',
                     borderRadius: 8,
-                    border: '1px solid rgba(234,88,12,.20)',
+                    border: '1px solid rgba(30, 111, 242,.20)',
                     marginTop: 6,
                   }}
                 >
@@ -428,16 +574,8 @@ export default function AffiliateRules() {
             }}
           >
             <button
-              type="button"
-              className="szv2-btn-secondary"
-              onClick={() => load()}
-              disabled={saving || loading}
-            >
-              Restaurar do servidor
-            </button>
-            <button
               type="submit"
-              className="szv2-btn-brand"
+              className="szv2-btn szv2-btn-brand"
               disabled={saving || loading}
               style={{ minWidth: 180 }}
             >
@@ -445,6 +583,140 @@ export default function AffiliateRules() {
             </button>
           </div>
         </form>
+
+        {/* ---------- FEAT-RBAC-2026-06-21 — Recompensa de convite ---------- */}
+        {/* Card autônomo: GET/PUT /settings próprio, botão de salvar próprio.
+            Não compartilha o form de regras (chaves sz_invite_* ≠ sz_aff_*).
+            Em embedded esconde-se — a tela única (AfiliadosFinHub) mostra uma
+            versão compacta da mesma regra fixa no corpo principal. */}
+        {!embedded && (
+        <div className="szv2-card" style={{ marginTop: 24 }}>
+          <div className="szv2-card-head">
+            <div>
+              <h2>Recompensa de indicação (indique e ganhe)</h2>
+              <p className="szv2-card-sub">
+                Regra FIXA, igual para qualquer usuário — não é configurável. Cada
+                usuário tem um link individual de indicação no próprio perfil
+                (<span style={{ fontFamily: 'var(--szv2-font-mono)' }}>falklog.com.br/r/&#123;código&#125;</span>);
+                quem se cadastra por ele fica associado ao indicador, que recebe abaixo.
+              </p>
+            </div>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, alignItems: 'stretch' }}>
+            <div style={{ padding: 16, background: 'var(--szv2-brand-light)', borderRadius: 10 }}>
+              <div style={{ fontSize: 12, color: 'var(--szv2-text-muted)' }}>Pedido COD (pago na entrega) concluído</div>
+              <div style={{ fontSize: 30, fontWeight: 800, color: 'var(--szv2-brand)', lineHeight: 1.1 }}>2,5%</div>
+              <div style={{ fontSize: 12, color: 'var(--szv2-text-muted)' }}>do valor do pedido, por indicação</div>
+            </div>
+            <div style={{ padding: 16, background: 'var(--szv2-bg-soft, #f8fafc)', borderRadius: 10, border: '1px solid var(--szv2-divider)' }}>
+              <div style={{ fontSize: 12, color: 'var(--szv2-text-muted)' }}>Pedido por Expedição (frete)</div>
+              <div style={{ fontSize: 30, fontWeight: 800, color: 'var(--szv2-text)', lineHeight: 1.1 }}>1%</div>
+              <div style={{ fontSize: 12, color: 'var(--szv2-text-muted)' }}>do valor do pedido, por indicação</div>
+            </div>
+          </div>
+
+          <div
+            style={{
+              padding: 12,
+              background: 'rgba(30, 111, 242,.06)',
+              borderRadius: 8,
+              border: '1px solid rgba(30, 111, 242,.20)',
+              marginTop: 12,
+            }}
+          >
+            <span style={{ fontSize: 13, color: 'var(--szv2-text-muted)', lineHeight: 1.5 }}>
+              Recompensa paga ao INDICADOR quando o usuário indicado gera pedido: 2,5% em COD
+              concluído, 1% em expedição. O crédito automático na carteira é processado no
+              backend (cron de indicação) — a tela não tem mais configuração de tipo/valor.
+            </span>
+          </div>
+        </div>
+        )}
+
+        {/* ---------- FALK-2026-06-22 — Taxa de frustração ---------- */}
+        {/* Card autônomo: GET/PUT /settings próprio, botão de salvar próprio.
+            Não compartilha o form de regras (chaves sz_frustration_fee_* ≠ sz_aff_*). */}
+        <div className="szv2-card" style={{ marginTop: 24 }}>
+          <div className="szv2-card-head">
+            <div>
+              <h2>Taxa de frustração</h2>
+              <p className="szv2-card-sub">
+                Define o tipo e o valor cobrado quando um pedido é marcado como frustrado.
+              </p>
+            </div>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, alignItems: 'flex-start' }}>
+            <div className="szv2-field">
+              <label className="szv2-label">Tipo de taxa</label>
+              <FalkSelect
+                value={frustFee.type}
+                onChange={v => setFrustFee(prev => ({ ...prev, type: v as FrustrationFee['type'] }))}
+                options={FRUSTRATION_FEE_TYPES.map(t => ({ value: t.value, label: t.label }))}
+                aria-label="Tipo de taxa"
+              />
+              <span
+                className="szv2-help"
+                style={{ display: 'block', marginTop: 4, fontSize: 12, color: 'var(--szv2-text-muted)' }}
+              >
+                "Desativada" zera o valor — nenhuma taxa de frustração é cobrada.
+              </span>
+            </div>
+
+            {frustFee.type !== 'none' && (
+              <NumberField
+                label="Valor da taxa"
+                value={frustFee.value}
+                onChange={v => setFrustFee(prev => ({
+                  ...prev,
+                  value: frustFee.type === 'percent' ? Math.min(100, Math.max(0, v)) : Math.max(0, v),
+                }))}
+                step="0.01"
+                min={0}
+                max={frustFee.type === 'percent' ? 100 : undefined}
+                suffix={frustFee.type === 'percent' ? '%' : 'R$'}
+                help={frustFee.type === 'percent'
+                  ? 'Percentual aplicado sobre o pedido frustrado.'
+                  : 'Valor fixo em R$ por pedido frustrado.'}
+              />
+            )}
+          </div>
+
+          {/* Nota da REGRA DO DONO: vale só para pedidos NOVOS; antigos preservam o cobrado. */}
+          <div
+            style={{
+              padding: 12,
+              background: 'rgba(30, 111, 242,.06)',
+              borderRadius: 8,
+              border: '1px solid rgba(30, 111, 242,.20)',
+              marginTop: 6,
+            }}
+          >
+            <span style={{ fontSize: 13, color: 'var(--szv2-text-muted)', lineHeight: 1.5 }}>
+              Aplica-se a pedidos <strong>NOVOS</strong> frustrados; pedidos antigos mantêm o que já
+              foi cobrado. Salva em{' '}
+              <span style={{ fontFamily: 'var(--szv2-font-mono)' }}>sz_frustration_fee_type</span> /
+              {' '}<span style={{ fontFamily: 'var(--szv2-font-mono)' }}>sz_frustration_fee_value</span> via
+              {' '}<span style={{ fontFamily: 'var(--szv2-font-mono)' }}>/settings</span>. A persistência
+              depende de suporte no backend (essas chaves ainda não são lidas/gravadas pelo handler
+              de configurações).
+            </span>
+          </div>
+
+          <div style={{ marginTop: 20, display: 'flex', justifyContent: 'flex-end' }}>
+            <button
+              type="button"
+              className="szv2-btn szv2-btn-brand"
+              disabled={frustFeeSaving || loading}
+              onClick={handleSaveFrustFee}
+              style={{ minWidth: 180 }}
+            >
+              {frustFeeSaving ? 'Salvando…' : 'Salvar taxa de frustração'}
+            </button>
+          </div>
+        </div>
+        </>
       )}
     </div>
   )

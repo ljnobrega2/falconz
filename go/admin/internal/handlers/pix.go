@@ -34,13 +34,7 @@ type recarga struct {
 }
 
 func (h *PixHandler) tableExists(ctx context.Context, name string) bool {
-	var ok bool
-	_ = h.Pool.QueryRow(ctx,
-		`SELECT EXISTS (
-			SELECT FROM information_schema.tables
-			WHERE table_schema='public' AND table_name=$1
-		)`, name).Scan(&ok)
-	return ok
+	return tableExistsCached(ctx, h.Pool, name) // AUDIT-2026-06-18 Onda2 (go-infoschema-cache)
 }
 
 // List — GET /pix?status=&user_id=&data_ini=&data_fim=&page=1&per_page=25
@@ -52,7 +46,9 @@ func (h *PixHandler) tableExists(ctx context.Context, name string) bool {
 //   - page / per_page: paginação
 //
 // JOIN com senderzz_portal_users (graceful: sem a tabela, retorna nome/email vazios).
-// Chave do JOIN: u.wp_user_id = t.user_id (tpc_recargas.user_id armazena wp_user_id).
+// Chave do JOIN (MIGRAÇÃO 2026-07-28): u.id = t.user_id — tpc_recargas.user_id foi
+// migrado de wp_user_id pro id nativo do portal (produtor sem WordPress nunca tem
+// wp_user_id; ficava sem histórico de recarga visível no admin).
 func (h *PixHandler) List(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	q := r.URL.Query()
@@ -87,8 +83,8 @@ func (h *PixHandler) List(w http.ResponseWriter, r *http.Request) {
 	whereClause := `
 		WHERE ($1 = '' OR t.status = $1)
 		  AND ($2 = 0 OR t.user_id = $2)
-		  AND ($3 = '' OR t.created_at >= ($3 || ' 00:00:00')::timestamp)
-		  AND ($4 = '' OR t.created_at <= ($4 || ' 23:59:59')::timestamp)`
+		  AND ($3 = '' OR t.created_at >= ($3::date)::timestamp AT TIME ZONE 'America/Sao_Paulo')
+		  AND ($4 = '' OR t.created_at <= (($4::date + 1)::timestamp AT TIME ZONE 'America/Sao_Paulo' - interval '1 second'))`
 
 	var sqlList string
 	if hasUsers {
@@ -103,7 +99,7 @@ func (h *PixHandler) List(w http.ResponseWriter, r *http.Request) {
 			       t.paid_at::text,
 			       t.created_at::text
 			FROM tpc_recargas t
-			LEFT JOIN senderzz_portal_users u ON u.wp_user_id = t.user_id` +
+			LEFT JOIN senderzz_portal_users u ON u.id = t.user_id` +
 			whereClause + `
 			ORDER BY t.id DESC
 			LIMIT $5 OFFSET $6`
@@ -296,27 +292,39 @@ func (h *PixHandler) confirmarAdmin(ctx context.Context, recargaID int64) error 
 	referencia := "recarga:" + strconv.FormatInt(recargaID, 10)
 
 	// Garante linha na carteira (upsert).
+	// P0-05: mutação financeira — todo erro de Exec/QueryRow faz rollback + 500.
+	// Nunca '_,_' em fluxo de dinheiro. ON CONFLICT DO NOTHING retorna nil em
+	// conflito (não erro), então idempotência é preservada.
 	if h.tableExists(ctx, "tpc_carteira") {
-		_, _ = tx.Exec(ctx,
+		if _, err := tx.Exec(ctx,
 			`INSERT INTO tpc_carteira (user_id, saldo, saldo_reservado)
 			 VALUES ($1, 0, 0)
-			 ON CONFLICT (user_id) DO NOTHING`, userID)
+			 ON CONFLICT (user_id) DO NOTHING`, userID); err != nil {
+			return err // rollback via defer → caller retorna 500
+		}
 
 		// Credita carteira (SELECT FOR UPDATE para evitar race com webhook/reserva).
+		// P0-05: falha no SELECT não pode mais silenciosamente pular o crédito e
+		// ainda assim confirmar a recarga — fail-closed.
 		var saldoAtual float64
 		if err := tx.QueryRow(ctx,
 			`SELECT saldo FROM tpc_carteira WHERE user_id = $1 FOR UPDATE`,
-			userID).Scan(&saldoAtual); err == nil {
-			novoSaldo := saldoAtual + valor
-			_, _ = tx.Exec(ctx,
-				`UPDATE tpc_carteira SET saldo = $1 WHERE user_id = $2`,
-				novoSaldo, userID)
+			userID).Scan(&saldoAtual); err != nil {
+			return err // rollback via defer → caller retorna 500
+		}
+		novoSaldo := saldoAtual + valor
+		if _, err := tx.Exec(ctx,
+			`UPDATE tpc_carteira SET saldo = $1 WHERE user_id = $2`,
+			novoSaldo, userID); err != nil {
+			return err // rollback via defer → caller retorna 500
 		}
 	}
 
 	// Insere transação (ON CONFLICT DO NOTHING — idempotência S8).
+	// P0-05: mutação financeira — erro faz rollback + 500. ON CONFLICT DO NOTHING
+	// retorna nil em conflito, preservando a idempotência S8.
 	if h.tableExists(ctx, "tpc_transacoes") {
-		_, _ = tx.Exec(ctx,
+		if _, err := tx.Exec(ctx,
 			`INSERT INTO tpc_transacoes
 			    (user_id, tipo, valor, saldo_apos, descricao, referencia, status)
 			 SELECT $1, 'credito', $2,
@@ -324,7 +332,9 @@ func (h *PixHandler) confirmarAdmin(ctx context.Context, recargaID int64) error 
 			        'Recarga PIX confirmada via admin',
 			        $3, 'confirmado'
 			 ON CONFLICT (user_id, referencia, tipo) DO NOTHING`,
-			userID, valor, referencia)
+			userID, valor, referencia); err != nil {
+			return err // rollback via defer → caller retorna 500
+		}
 	}
 
 	// Atualiza recarga — condição WHERE status IN ('pendente','analise') protege
@@ -525,7 +535,7 @@ func (h *PixHandler) Detail(w http.ResponseWriter, r *http.Request) {
 			       t.expires_at::text, t.paid_at::text,
 			       t.tx_id, t.created_at::text
 			FROM tpc_recargas t
-			LEFT JOIN senderzz_portal_users u ON u.wp_user_id = t.user_id
+			LEFT JOIN senderzz_portal_users u ON u.id = t.user_id
 			WHERE t.id = $1`
 	} else {
 		sqlDetail = `

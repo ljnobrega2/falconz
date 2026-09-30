@@ -1,5 +1,5 @@
 // Package handlers — endpoint admin para CronStatus.
-// Lista os 18 crons do plugin Senderzz (vide AUDIT-ADMIN-WP.md §19),
+// Lista os 22 crons do plugin Senderzz (vide AUDIT-ADMIN-WP.md §19),
 // merge com metadata de última execução guardada em senderzz_cron_status.
 // Em produção, jobs reais rodam via Asynq (Redis); esta tela é VIEWER +
 // manual trigger (apenas marca a linha; não enfileira ainda).
@@ -35,8 +35,14 @@ type CronInfo struct {
 	NextRun        *time.Time `json:"next_run"`
 }
 
-// cronCatalog — fonte da verdade dos 18 crons do plugin.
+// cronCatalog — fonte da verdade dos 22 crons do plugin.
 // Mantém ordem estável para a UI (não ordenar alfabético).
+//
+// Os nomes DEVEM bater exatamente com os gravados em senderzz_cron_status pelo
+// runner go/cron (vide go/cron/cmd/server/main.go `jobs[]`). Nome divergente =
+// List() descarta a linha real (whitelist em `if !ok { continue }`) e a UI mostra
+// "never" enganoso — foi o que acontecia com sz_cod_release_due /
+// sz_affiliate_release_due (os crons que LIBERAM DINHEIRO COD/comissão).
 var cronCatalog = []CronInfo{
 	{
 		Name:        "tpc_cron_verificar_recargas_pix",
@@ -81,18 +87,20 @@ var cronCatalog = []CronInfo{
 		HandlerPath: "includes/senderzz-low-balance.php",
 	},
 	{
-		Name:        "sz_cod_release_cron",
+		// Nome REAL gravado pelo runner (go/cron jobs[]: SELECT sz_cod_release_due()).
+		Name:        "sz_cod_release_due",
 		Frequency:   "hourly",
-		Description: "Libera saldos COD (cash on delivery) retidos após período de retenção.",
+		Description: "Libera saldos COD (cash on delivery) retidos após período de retenção (pending → available).",
 		Tables:      []string{"sz_cod_wallet_transactions"},
-		HandlerPath: "includes/senderzz-cod-wallet.php",
+		HandlerPath: "go/cron/cmd/server/main.go (SELECT sz_cod_release_due)",
 	},
 	{
-		Name:        "sz_aff_release_commissions",
+		// Nome REAL gravado pelo runner (go/cron jobs[]: SELECT sz_affiliate_release_due()).
+		Name:        "sz_affiliate_release_due",
 		Frequency:   "hourly",
-		Description: "Libera comissões de afiliado vencidas (status pending → available).",
+		Description: "Libera comissões de afiliado vencidas (status pending → approved).",
 		Tables:      []string{"senderzz_affiliate_transactions", "senderzz_affiliate_wallet"},
-		HandlerPath: "includes/senderzz-affiliates.php",
+		HandlerPath: "go/cron/cmd/server/main.go (SELECT sz_affiliate_release_due)",
 	},
 	{
 		Name:        "sz_motoboy_geofence_check",
@@ -164,6 +172,41 @@ var cronCatalog = []CronInfo{
 		Tables:      []string{"wc_me_labels"},
 		HandlerPath: "src/Webhook/Tracking_Webhook.php",
 	},
+	// --- Jobs do runner go/cron (jobs[]) que faltavam no catálogo. Sem eles,
+	// List() descartava a linha real de senderzz_cron_status e o cron sumia da UI. ---
+	{
+		// Nome REAL gravado pelo runner (go/cron jobs[]: SELECT sz_cancel_preagendados_vencidos()).
+		Name:        "sz_cancel_preagendados_vencidos",
+		Frequency:   "hourly",
+		Description: "Cancela pré-agendamentos de motoboy vencidos (janela de coleta expirada).",
+		Tables:      []string{"sz_motoboy_pedidos"},
+		HandlerPath: "go/cron/cmd/server/main.go (SELECT sz_cancel_preagendados_vencidos)",
+	},
+	{
+		// LGPD — mascara PII de telemetria (ip/user_agent/actor_email) > 2 anos. minInterval=24h.
+		Name:        "sz_anonymize_old_pii",
+		Frequency:   "daily",
+		Description: "LGPD: anonimiza PII de telemetria (sessões expiradas + trilha de acesso a PII) com mais de 2 anos.",
+		Tables:      []string{"wp_senderzz_portal_sessions"},
+		HandlerPath: "go/cron/cmd/server/main.go (SELECT sz_anonymize_old_pii)",
+	},
+	{
+		// LGPD — mascara PII de pedido/entrega (nome/telefone/email) de pedidos finalizados > 2 anos. minInterval=24h.
+		Name:        "sz_anonymize_old_order_pii",
+		Frequency:   "daily",
+		Description: "LGPD: anonimiza PII de pedido/entrega (nome/telefone/email) de pedidos finalizados há mais de 2 anos.",
+		Tables:      []string{"sz_order_addresses", "sz_motoboy_pedidos"},
+		HandlerPath: "go/cron/cmd/server/main.go (SELECT sz_anonymize_old_order_pii)",
+	},
+	{
+		// Dispatcher do outbox de webhooks (Go). GATE webhook_dispatch_enabled (default '0').
+		// Ainda não gravou linha em senderzz_cron_status — exibirá "never" até a 1ª execução com a flag ligada.
+		Name:        "sz_webhook_dispatch",
+		Frequency:   "1min",
+		Description: "Entrega o outbox de webhooks ao produtor (gate webhook_dispatch_enabled; SKIP LOCKED contra dupla entrega).",
+		Tables:      []string{"sz_webhook_outbox"},
+		HandlerPath: "go/cron/cmd/server/main.go (dispatch.Dispatch)",
+	},
 }
 
 // cronCatalogIndex — mapa nome → índice no slice. Usado para whitelist em
@@ -178,13 +221,7 @@ var cronCatalogIndex = func() map[string]int {
 
 // tableExists espelha o helper do AuditHandler (graceful degradation).
 func (h *CronStatusHandler) tableExists(ctx context.Context, name string) bool {
-	var ok bool
-	_ = h.Pool.QueryRow(ctx,
-		`SELECT EXISTS (
-			SELECT FROM information_schema.tables
-			WHERE table_schema='public' AND table_name=$1
-		)`, name).Scan(&ok)
-	return ok
+	return tableExistsCached(ctx, h.Pool, name) // AUDIT-2026-06-18 Onda2 (go-infoschema-cache)
 }
 
 // frequencyToDuration converte a string de frequência em time.Duration.
@@ -209,7 +246,7 @@ func frequencyToDuration(freq string) time.Duration {
 	}
 }
 
-// List retorna o catálogo dos 18 crons mesclado com metadata da tabela
+// List retorna o catálogo dos 22 crons mesclado com metadata da tabela
 // senderzz_cron_status (se existir). Se a tabela não existe, todos os
 // crons retornam com last_status="never" (graceful).
 // GET /crons

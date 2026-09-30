@@ -82,13 +82,7 @@ type HistoricoRow struct {
 
 // tableExists igual ao padrão de audit.go / cod_saques.go.
 func (h *MotoboyCarteiraHandler) tableExists(ctx context.Context, name string) bool {
-	var ok bool
-	_ = h.Pool.QueryRow(ctx,
-		`SELECT EXISTS (
-			SELECT FROM information_schema.tables
-			WHERE table_schema='public' AND table_name=$1
-		)`, name).Scan(&ok)
-	return ok
+	return tableExistsCached(ctx, h.Pool, name) // AUDIT-2026-06-18 Onda2 (go-infoschema-cache)
 }
 
 // parseMotoboyIDParam lê chi URLParam "motoboy_id" como int64 positivo.
@@ -167,6 +161,27 @@ func (h *MotoboyCarteiraHandler) List(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query().Get("q")
 	limit := clampLimit(r.URL.Query().Get("limit"), 200, 500)
 
+	// MED18: o front (MotoboyCarteira.tsx) envia motoboy_id/data_ini/data_fim com
+	// chips de filtro ativo. Aplicamos os três aqui:
+	//   - motoboy_id  → filtro de entidade sobre m.id (WHERE). Parse em Go: valor
+	//     não-numérico/≤0 vira 0 = "sem filtro" (evita 500 em ::bigint).
+	//   - data_ini/data_fim → filtro de período sobre g.created_at. Vai na cláusula
+	//     ON do LEFT JOIN (não no WHERE): assim o motoboy sem ganhos no período
+	//     continua aparecendo com saldos zerados — preserva o contrato documentado.
+	//     Datas malformadas viram '' = "sem filtro" (evita 500 em ::timestamp).
+	mbFiltro, _ := strconv.ParseInt(strings.TrimSpace(r.URL.Query().Get("motoboy_id")), 10, 64)
+	if mbFiltro < 0 {
+		mbFiltro = 0
+	}
+	dataIni := strings.TrimSpace(r.URL.Query().Get("data_ini"))
+	if dataIni != "" && !isISODate(dataIni) {
+		dataIni = ""
+	}
+	dataFim := strings.TrimSpace(r.URL.Query().Get("data_fim"))
+	if dataFim != "" && !isISODate(dataFim) {
+		dataFim = ""
+	}
+
 	// JOIN em sz_motoboy_ganhos / sz_motoboy_zonas é LEFT — motoboys sem ganhos
 	// aparecem com saldos zerados. ILIKE %% casa com qualquer nome quando q=''.
 	rows, err := h.Pool.Query(ctx,
@@ -193,11 +208,14 @@ func (h *MotoboyCarteiraHandler) List(w http.ResponseWriter, r *http.Request) {
 		 FROM sz_motoboys m
 		 LEFT JOIN sz_motoboy_zonas z  ON z.id = m.zona_id
 		 LEFT JOIN sz_motoboy_ganhos g ON g.motoboy_id = m.id
+		   AND ($3 = '' OR g.created_at >= ($3::date)::timestamp AT TIME ZONE 'America/Sao_Paulo')
+		   AND ($4 = '' OR g.created_at <= (($4::date + 1)::timestamp AT TIME ZONE 'America/Sao_Paulo' - interval '1 second'))
 		 WHERE COALESCE(m.ativo, TRUE) = TRUE
 		   AND ($1 = '' OR m.nome ILIKE '%' || $1 || '%')
+		   AND ($2 = 0 OR m.id = $2)
 		 GROUP BY m.id, m.nome, m.telefone, z.nome
 		 ORDER BY m.nome ASC
-		 LIMIT $2`, q, limit)
+		 LIMIT $5`, q, mbFiltro, dataIni, dataFim, limit)
 	if err != nil {
 		httpx.Err(w, 500, "db_error", err.Error())
 		return
@@ -337,19 +355,23 @@ func (h *MotoboyCarteiraHandler) RegistrarPagamento(w http.ResponseWriter, r *ht
 	}
 
 	// 3. Insere pagamento. Status='pago' = registro fechado (não é fila de saque).
+	//    sz_motoboy_pagamentos no Postgres tem DUAS colunas de valor: `valor`
+	//    (NOT NULL, sem default — legado do schema de saques do PWA) e
+	//    `valor_total` (usado pela carteira admin). Gravamos o mesmo montante em
+	//    ambas para satisfazer a constraint e manter a leitura coerente.
 	var pagamentoID int64
 	if dataPgto == "" {
 		err = tx.QueryRow(ctx,
 			`INSERT INTO sz_motoboy_pagamentos
-			   (motoboy_id, valor_total, data_pagamento, status, obs)
-			 VALUES ($1, $2, CURRENT_DATE, 'pago', $3)
+			   (motoboy_id, valor, valor_total, data_pagamento, status, obs)
+			 VALUES ($1, $2, $2, CURRENT_DATE, 'pago', $3)
 			 RETURNING id`,
 			motoboyID, valor, obs).Scan(&pagamentoID)
 	} else {
 		err = tx.QueryRow(ctx,
 			`INSERT INTO sz_motoboy_pagamentos
-			   (motoboy_id, valor_total, data_pagamento, status, obs)
-			 VALUES ($1, $2, $3::date, 'pago', $4)
+			   (motoboy_id, valor, valor_total, data_pagamento, status, obs)
+			 VALUES ($1, $2, $2, $3::date, 'pago', $4)
 			 RETURNING id`,
 			motoboyID, valor, dataPgto, obs).Scan(&pagamentoID)
 	}
@@ -438,27 +460,37 @@ func (h *MotoboyCarteiraHandler) Historico(w http.ResponseWriter, r *http.Reques
 
 	// LEFT JOINs porque o pedido pode ter sido removido e o pagamento ainda
 	// não existir para ganhos ainda disponíveis.
+	// SALDO ABERTO é um saldo ACUMULADO (running balance): empilha o aberto de cada
+	// ganho desde o mais antigo. Janela ordenada ASC; saída ordenada DESC.
 	rows, err := h.Pool.Query(ctx,
-		`SELECT
-			g.id,
-			g.created_at::text AS data,
-			COALESCE(g.pedido_id, 0),
-			COALESCE(mp.wc_order_id, 0),
-			COALESCE(g.tipo, ''),
-			COALESCE(g.valor, 0),
-			COALESCE(g.valor_pago, 0),
-			GREATEST(COALESCE(g.valor,0) - COALESCE(g.valor_pago,0), 0) AS saldo_aberto,
-			pg.data_pagamento::text AS data_saque,
-			COALESCE(g.status, ''),
-			COALESCE(mp.pgto_dinheiro, 0)
-				+ COALESCE(mp.pgto_pix, 0)
-				+ COALESCE(mp.pgto_cartao, 0) AS recebido_cliente
-		 FROM sz_motoboy_ganhos g
-		 LEFT JOIN sz_motoboy_pedidos    mp ON mp.id = g.pedido_id
-		 LEFT JOIN sz_motoboy_pagamentos pg ON pg.id = g.pagamento_id
-		 WHERE g.motoboy_id = $1
-		 ORDER BY g.created_at DESC, g.id DESC
-		 LIMIT $2`, motoboyID, limit)
+		`WITH base AS (
+			SELECT
+				g.id,
+				g.created_at,
+				COALESCE(g.pedido_id, 0)   AS pedido_id,
+				COALESCE(mp.wc_order_id, 0) AS wc_order_id,
+				COALESCE(g.tipo, '')       AS tipo,
+				COALESCE(g.valor, 0)       AS valor,
+				COALESCE(g.valor_pago, 0)  AS valor_pago,
+				GREATEST(COALESCE(g.valor,0) - COALESCE(g.valor_pago,0), 0) AS aberto,
+				pg.data_pagamento          AS data_saque,
+				COALESCE(g.status, '')     AS status,
+				COALESCE(mp.pgto_dinheiro, 0)
+					+ COALESCE(mp.pgto_pix, 0)
+					+ COALESCE(mp.pgto_cartao, 0) AS recebido_cliente
+			 FROM sz_motoboy_ganhos g
+			 LEFT JOIN sz_motoboy_pedidos    mp ON mp.id = g.pedido_id
+			 LEFT JOIN sz_motoboy_pagamentos pg ON pg.id = g.pagamento_id
+			 WHERE g.motoboy_id = $1
+		)
+		SELECT
+			id, created_at::text, pedido_id, wc_order_id, tipo, valor, valor_pago,
+			SUM(aberto) OVER (ORDER BY created_at ASC, id ASC
+			                  ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS saldo_aberto,
+			data_saque::text, status, recebido_cliente
+		FROM base
+		ORDER BY created_at DESC, id DESC
+		LIMIT $2`, motoboyID, limit)
 	if err != nil {
 		httpx.Err(w, 500, "db_error", err.Error())
 		return
@@ -661,23 +693,24 @@ func (h *MotoboyCarteiraHandler) Sync(w http.ResponseWriter, r *http.Request) {
 			if existsStatus == "pago" {
 				continue
 			}
+			// sz_motoboy_ganhos no Postgres NÃO tem coluna wc_order_id — o
+			// extrato puxa wc_order_id via JOIN com sz_motoboy_pedidos (Historico).
 			_, err := h.Pool.Exec(ctx,
 				`UPDATE sz_motoboy_ganhos SET
 				   motoboy_id  = $1,
-				   wc_order_id = (SELECT wc_order_id FROM sz_motoboy_pedidos WHERE id=$2 LIMIT 1),
-				   valor       = $3,
-				   created_at  = $4
-				 WHERE id = $5`,
-				p.MotoboyID, p.ID, roundCents(valor), createdAt, existsID)
+				   valor       = $2,
+				   created_at  = $3
+				 WHERE id = $4`,
+				p.MotoboyID, roundCents(valor), createdAt, existsID)
 			if err == nil {
 				ganhosUpserted++
 			}
 		} else {
 			_, err := h.Pool.Exec(ctx,
 				`INSERT INTO sz_motoboy_ganhos
-				   (motoboy_id, pedido_id, wc_order_id, tipo, valor, status, created_at)
+				   (motoboy_id, pedido_id, tipo, valor, status, created_at)
 				 VALUES
-				   ($1, $2, (SELECT wc_order_id FROM sz_motoboy_pedidos WHERE id=$2 LIMIT 1), $3, $4, 'pendente', $5)
+				   ($1, $2, $3, $4, 'pendente', $5)
 				 ON CONFLICT DO NOTHING`,
 				p.MotoboyID, p.ID, tipo, roundCents(valor), createdAt)
 			if err == nil {
@@ -802,8 +835,9 @@ func (h *MotoboyCarteiraHandler) Sync(w http.ResponseWriter, r *http.Request) {
 // Espelha getOptionFloat de cod_taxas.go mas sem dependência cruzada de handler.
 func (h *MotoboyCarteiraHandler) optionFloat(ctx context.Context, key string, def float64) float64 {
 	var raw string
+	// A tabela senderzz_options no Postgres usa a coluna `name` (não `key`).
 	err := h.Pool.QueryRow(ctx,
-		`SELECT value FROM senderzz_options WHERE "key"=$1`, key).Scan(&raw)
+		`SELECT value FROM senderzz_options WHERE name=$1`, key).Scan(&raw)
 	if err != nil {
 		return def
 	}

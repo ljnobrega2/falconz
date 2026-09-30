@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+    <meta name="theme-color" content="#1E6FF2" />
+    <!--
+      Defesa-em-profundidade no proprio bundle (ENDURECEDOR-2026-06-20).
+      Checkout publico (cliente final, sem auth) tunelado direto pelo Vite em dev,
+      com o nginx fora do caminho de request. CSP via <meta> so cobre diretivas de
+      RECURSO; X-Frame-Options/nosniff/HSTS/Permissions-Policy/frame-ancestors sao
+      IGNORADOS em <meta> e continuam exigindo o header Go/nginx (clickjacking e
+      MIME-sniffing NAO sao mitigados aqui). 'unsafe-eval'/ws: = concessao do HMR
+      do Vite em dev. viacep = lookup de CEP (fetch direto em validation.ts).
+      Multiplas CSPs aplicam-se como INTERSECAO — esta meta nao enfraquece header
+      mais estrito adicionado depois.
+    -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://www.googletagmanager.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' https://viacep.com.br https://www.google-analytics.com https://region1.google-analytics.com https://analytics.google.com https://stats.g.doubleclick.net https://www.google.com ws: wss:; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'" />
+    <meta name="referrer" content="strict-origin-when-cross-origin" />
+    <!-- favicon FALK — FALCÃO da marca (asset em /checkout/falk-falcon.png; CSP img-src
+         'self' permite). Título setado por rota no App (checkout vs rastreio). -->
+    <link rel="icon" type="image/png" href="/checkout/falk-falcon.png" />
+    <link rel="apple-touch-icon" href="/checkout/falk-falcon.png" />
+    <title>Finalizar pedido · FALK</title>
+    <!-- Google tag (gtag.js) — estática para o verificador do GA4 e carregamento assíncrono. -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-22GCCY3KMP"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'G-22GCCY3KMP', { send_page_view: false });
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

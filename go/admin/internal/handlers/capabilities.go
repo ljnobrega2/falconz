@@ -1,7 +1,11 @@
-// Package handlers — endpoint admin somente leitura para visualização de capabilities e escopos.
-// Espelha senderzz-access-scope.php + senderzz_admin_capability_guard() (PHP legado).
-// Dados estáticos para estrutura de capabilities; DB usado para listar usuários admin ativos
-// (substituto de wp_usermeta que reside no MySQL e não é espelhado neste serviço PG).
+// Package handlers — endpoint admin somente leitura para visualização do modelo
+// de PAPÉIS (roles) do Senderzz no full-Postgres.
+//
+// Atualizado 2026-06-18 (pedido do dono "atualizar conforme necessidade atual"):
+// deixou de espelhar capabilities da era WordPress (manage_options/manage_woocommerce)
+// e passou a refletir os 4 papéis atuais + admin, e o que cada um acessa.
+// Papel é determinado por vínculo/produto em senderzz_portal_users.role, não por
+// capability WP. Continua SOMENTE LEITURA.
 package handlers
 
 import (
@@ -12,115 +16,107 @@ import (
 	"github.com/senderzz/admin-service/internal/httpx"
 )
 
-// CapabilitiesHandler expõe a estrutura de capabilities e escopos do Senderzz (read-only).
+// CapabilitiesHandler expõe o modelo de papéis do Senderzz (read-only).
 type CapabilitiesHandler struct {
 	Pool *pgxpool.Pool
 }
 
 // ----- tipos de payload ---------------------------------------------------
 
-// GuardConfig descreve o mecanismo de auto-grant de capabilities.
-type GuardConfig struct {
-	// Trigger é a capability WordPress que dispara o auto-grant.
-	Trigger string `json:"trigger"`
-	// AutoGrants lista capabilities concedidas automaticamente a quem tem Trigger.
-	AutoGrants []string `json:"auto_grants"`
-}
-
-// CustomCapability descreve uma capability customizada registrada pelo plugin.
-type CustomCapability struct {
-	Cap          string   `json:"cap"`
-	Description  string   `json:"description"`
-	DefaultRoles []string `json:"default_roles"`
-}
-
-// ScopeType descreve um tipo de escopo de acesso ao portal/módulos.
-type ScopeType struct {
-	Scope       string `json:"scope"`
-	Description string `json:"description"`
-	Check       string `json:"check"`
+// RoleAccess descreve um papel e o que ele acessa no Senderzz.
+type RoleAccess struct {
+	Role        string   `json:"role"`
+	Label       string   `json:"label"`
+	Description string   `json:"description"`
+	// Fonte: como o papel é determinado no banco.
+	Fonte string `json:"fonte"`
+	// Acessos: o que o papel vê/faz.
+	Acessos []string `json:"acessos"`
+	// SemAcesso: o que o papel explicitamente NÃO acessa (vazio = sem restrição).
+	SemAcesso []string `json:"sem_acesso"`
 }
 
 // CapabilitiesResponse payload completo de GET /capabilities.
 type CapabilitiesResponse struct {
-	Guard             GuardConfig        `json:"guard"`
-	CustomCapabilities []CustomCapability `json:"custom_capabilities"`
-	ScopeTypes        []ScopeType        `json:"scope_types"`
+	Roles []RoleAccess `json:"roles"`
 }
 
 // ----- GET /capabilities -------------------------------------------------
 
-// GetCapabilities retorna a estrutura estática de capabilities e escopos.
-// Somente leitura — para alterar edite senderzz-access-scope.php ou senderzz_admin_capability_guard().
+// GetCapabilities retorna o modelo de papéis atual (estático, read-only).
 func (h *CapabilitiesHandler) GetCapabilities(w http.ResponseWriter, r *http.Request) {
 	out := CapabilitiesResponse{
-		// Guard automático: qualquer usuário com manage_options recebe todas as capabilities abaixo.
-		// Espelha senderzz_admin_capability_guard() em senderzz-logistics.php.
-		Guard: GuardConfig{
-			Trigger: "manage_options",
-			AutoGrants: []string{
-				"manage_woocommerce",
-				"view_woocommerce_reports",
-				"edit_shop_orders",
-				"read_shop_order",
-				"senderzz_admin",
-				"senderzz_manage",
-				"senderzz_manage_motoboy",
-				"senderzz_manage_finance",
-			},
-		},
-
-		// Capabilities customizadas registradas em senderzz-access-scope.php.
-		CustomCapabilities: []CustomCapability{
+		Roles: []RoleAccess{
 			{
-				Cap:          "senderzz_admin",
-				Description:  "Acesso completo ao painel Senderzz",
-				DefaultRoles: []string{"administrator"},
+				Role:        "admin",
+				Label:       "Administrador",
+				Description: "Operador do painel administrativo (este painel). Acesso total.",
+				Fonte:       "senderzz_admin_users (login e-mail + senha)",
+				Acessos: []string{
+					"Tudo: pedidos, financeiro (expedição/COD), afiliados, produtos",
+					"Motoboy, expedição, zonas/CDs, etiquetas, comprovantes",
+					"Configurações, auditoria, histórico de crons",
+				},
+				SemAcesso: []string{},
 			},
 			{
-				Cap:          "senderzz_manage",
-				Description:  "Gerenciamento geral da operação",
-				DefaultRoles: []string{"administrator", "shop_manager"},
+				Role:        "operator",
+				Label:       "Operador Logístico (OL)",
+				Description: "Opera a logística: motoboys do dia, status de entrega e fechamentos.",
+				Fonte:       "senderzz_portal_users.role = 'operator'",
+				Acessos: []string{
+					"Motoboys do dia (KPIs, pedidos do dia)",
+					"Mudar status do pedido / trocar motoboy",
+					"Fechamentos e confirmação de repasse",
+				},
+				SemAcesso: []string{
+					"Produtos / vitrine como dono",
+					"Carteira de expedição do produtor",
+				},
 			},
 			{
-				Cap:          "senderzz_manage_motoboy",
-				Description:  "Gerenciar módulo Motoboy (pedidos, motoboys, zonas)",
-				DefaultRoles: []string{"administrator"},
+				Role:        "produtor",
+				Label:       "Produtor",
+				Description: "Dono de um produto (classe de entrega). Vê sua operação e seus afiliados.",
+				Fonte:       "senderzz_portal_users.role = 'produtor' (possui produto/classe)",
+				Acessos: []string{
+					"Seus pedidos (e o afiliado que fez cada venda)",
+					"Produtos, vitrine, ofertas / links de checkout",
+					"Seus afiliados (comissões, vínculos)",
+					"Carteira de expedição, webhooks/integrações, frete, localidades",
+				},
+				SemAcesso: []string{
+					"Pedidos de outros produtores",
+				},
 			},
 			{
-				Cap:          "senderzz_manage_finance",
-				Description:  "Acesso a carteiras, PIX, transações financeiras",
-				DefaultRoles: []string{"administrator"},
-			},
-		},
-
-		// Escopos de acesso — como o portal detecta o nível de cada usuário.
-		// Espelha senderzz-access-scope.php + Portal_Auth.php.
-		ScopeTypes: []ScopeType{
-			{
-				Scope:       "admin",
-				Description: "Acesso total a todos os pedidos e módulos",
-				Check:       "manage_woocommerce",
-			},
-			{
-				Scope:       "producer",
-				Description: "Vê apenas seus próprios pedidos e produção",
-				Check:       "portal_role=client",
+				Role:        "afiliado",
+				Label:       "Afiliado",
+				Description: "Vinculado a ≥1 produtor. Vê só o que é dele.",
+				Fonte:       "senderzz_portal_users.role = 'afiliado' (vínculo ativo)",
+				Acessos: []string{
+					"Vitrine e sua afiliação",
+					"Seus links de checkout",
+					"Somente os pedidos que ele mesmo originou",
+					"Sua carteira / comissões",
+				},
+				SemAcesso: []string{
+					"Produtos (não é dono)",
+					"Expedição, motoboy, motoboys do dia",
+					"Pedidos de outros afiliados",
+				},
 			},
 			{
-				Scope:       "affiliate",
-				Description: "Vê pedidos onde é o afiliado vinculado",
-				Check:       "portal_role=affiliate",
-			},
-			{
-				Scope:       "operator",
-				Description: "OL — acesso ao painel motoboy-dia",
-				Check:       "portal_role=operator",
-			},
-			{
-				Scope:       "motoboy",
-				Description: "Acesso ao PWA motoboy via token de sessão",
-				Check:       "sz_motoboys.token_app",
+				Role:        "cliente",
+				Label:       "Cliente",
+				Description: "Comprador. Sem afiliação nem produto. Papel padrão.",
+				Fonte:       "senderzz_portal_users.role = 'cliente' (padrão)",
+				Acessos: []string{
+					"Rastreio do próprio pedido",
+				},
+				SemAcesso: []string{
+					"Painel (produtor/afiliado/operador)",
+				},
 			},
 		},
 	}
@@ -130,81 +126,67 @@ func (h *CapabilitiesHandler) GetCapabilities(w http.ResponseWriter, r *http.Req
 
 // ----- GET /capabilities/users -------------------------------------------
 
-// capabilityUser representa um usuário que detém capabilities Senderzz neste serviço.
-// Nota: wp_usermeta (MySQL) não está espelhada neste serviço Postgres. Os usuários listados
-// aqui são os admins do painel (senderzz_admin_users WHERE ativo=true); pela regra
-// senderzz_admin_capability_guard(), todo usuário com manage_options recebe automaticamente
-// as 8 capabilities listadas em auto_grants — logo cada admin ativo detém todas elas.
-type capabilityUser struct {
-	Email        string   `json:"email"`
-	Nome         string   `json:"nome"`
-	Capabilities []string `json:"capabilities"`
+// RoleCount é a contagem de usuários por papel.
+type RoleCount struct {
+	Role  string `json:"role"`
+	Total int    `json:"total"`
 }
 
 // CapabilityUsersResponse é o payload de GET /capabilities/users.
 type CapabilityUsersResponse struct {
-	Users []capabilityUser `json:"users"`
-	// Note explica o escopo dos dados para consumidores da API.
+	// Distribuicao: quantos usuários de portal há por papel (dado real do banco).
+	Distribuicao []RoleCount `json:"distribuicao"`
+	// AdminsAtivos: total de admins do painel ativos.
+	AdminsAtivos int `json:"admins_ativos"`
+	// Note explica a fonte dos dados.
 	Note string `json:"note"`
 }
 
-// allAutoGrants são as capabilities concedidas a qualquer admin (manage_options → auto-grant).
-// Espelha GuardConfig.AutoGrants acima — mantidos em sincronia manualmente.
-var allAutoGrants = []string{
-	"manage_woocommerce",
-	"view_woocommerce_reports",
-	"edit_shop_orders",
-	"read_shop_order",
-	"senderzz_admin",
-	"senderzz_manage",
-	"senderzz_manage_motoboy",
-	"senderzz_manage_finance",
-}
-
-// tableExistsCaps verifica se a tabela existe no schema public (graceful degradation).
+// tableExistsCaps verifica se a tabela existe (graceful degradation).
 func (h *CapabilitiesHandler) tableExistsCaps(ctx context.Context, name string) bool {
-	var ok bool
-	_ = h.Pool.QueryRow(ctx,
-		`SELECT EXISTS (
-			SELECT FROM information_schema.tables
-			WHERE table_schema='public' AND table_name=$1
-		)`, name).Scan(&ok)
-	return ok
+	return tableExistsCached(ctx, h.Pool, name) // AUDIT-2026-06-18 Onda2 (go-infoschema-cache)
 }
 
-// GetCapabilityUsers lista os usuários admin ativos e as capabilities que detêm.
-// Como wp_usermeta não está espelhada neste serviço PG, a fonte é senderzz_admin_users.
-// Cada admin ativo possui manage_options e, portanto, todas as 8 auto-grant capabilities.
+// GetCapabilityUsers retorna a distribuição real de usuários por papel
+// (senderzz_portal_users.role) + total de admins ativos.
 func (h *CapabilitiesHandler) GetCapabilityUsers(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	note := "Fonte: senderzz_admin_users (admins do painel). " +
-		"wp_usermeta (MySQL) não está espelhada neste serviço. " +
-		"Todo admin ativo possui manage_options e recebe as 8 capabilities por auto-grant."
+	resp := CapabilityUsersResponse{
+		Distribuicao: []RoleCount{},
+		Note:         "Fonte: senderzz_portal_users.role (distribuição real) + senderzz_admin_users (admins do painel).",
+	}
 
-	if h.Pool == nil || !h.tableExistsCaps(ctx, "senderzz_admin_users") {
-		httpx.JSON(w, 200, CapabilityUsersResponse{Users: []capabilityUser{}, Note: note})
+	if h.Pool == nil {
+		httpx.JSON(w, 200, resp)
 		return
 	}
 
-	rows, err := h.Pool.Query(ctx,
-		`SELECT email, nome FROM senderzz_admin_users WHERE ativo=TRUE ORDER BY id`)
-	if err != nil {
-		httpx.Err(w, 500, "db_error", err.Error())
-		return
-	}
-	defer rows.Close()
-
-	out := []capabilityUser{}
-	for rows.Next() {
-		var u capabilityUser
-		if err := rows.Scan(&u.Email, &u.Nome); err != nil {
-			httpx.Err(w, 500, "scan_error", err.Error())
+	if h.tableExistsCaps(ctx, "senderzz_portal_users") {
+		rows, err := h.Pool.Query(ctx,
+			`SELECT COALESCE(NULLIF(role,''), '(sem papel)') AS role, COUNT(*)
+			   FROM senderzz_portal_users
+			  GROUP BY 1
+			  ORDER BY 2 DESC`)
+		if err != nil {
+			httpx.Err(w, 500, "db_error", err.Error())
 			return
 		}
-		u.Capabilities = allAutoGrants
-		out = append(out, u)
+		defer rows.Close()
+		for rows.Next() {
+			var rc RoleCount
+			if err := rows.Scan(&rc.Role, &rc.Total); err != nil {
+				httpx.Err(w, 500, "scan_error", err.Error())
+				return
+			}
+			resp.Distribuicao = append(resp.Distribuicao, rc)
+		}
 	}
 
-	httpx.JSON(w, 200, CapabilityUsersResponse{Users: out, Note: note})
+	if h.tableExistsCaps(ctx, "senderzz_admin_users") {
+		_ = h.Pool.QueryRow(ctx,
+			`SELECT COUNT(*) FROM senderzz_admin_users WHERE ativo=TRUE`).Scan(&resp.AdminsAtivos)
+	}
+
+	httpx.JSON(w, 200, resp)
 }

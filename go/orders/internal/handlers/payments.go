@@ -67,6 +67,9 @@ func NewPaymentHandler(db *pgxpool.Pool) *PaymentHandler {
 //
 // O total do pagamento é sempre lido de sz_orders.total — nunca do cliente.
 func (h *PaymentHandler) PostOrderPay(w http.ResponseWriter, r *http.Request) {
+	// OBSERVABILIDADE: logger decorado com request_id (slogMiddleware). Cobre inclusive
+	// os retornos antecipados (fail-closed). Fallback p/ slog.Default() sem middleware.
+	lg := httpx.LoggerFrom(r.Context())
 	userID := auth.GetUserID(r.Context())
 	if userID == 0 {
 		httpx.WriteErr(w, http.StatusUnauthorized, "não autenticado")
@@ -116,7 +119,7 @@ func (h *PaymentHandler) PostOrderPay(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		slog.Error("[payments] falha ao buscar pedido", "order_id", orderID, "err", err)
+		lg.Error("[payments] falha ao buscar pedido", "order_id", orderID, "err", err)
 		httpx.WriteErr(w, http.StatusInternalServerError, "erro interno")
 		return
 	}
@@ -150,12 +153,12 @@ func (h *PaymentHandler) PostOrderPay(w http.ResponseWriter, r *http.Request) {
 		orderID, req.Gateway, gatewayRefPtr, orderTotal.StringFixed(2),
 	).Scan(&paymentID)
 	if err != nil {
-		slog.Error("[payments] falha ao criar pagamento", "order_id", orderID, "err", err)
+		lg.Error("[payments] falha ao criar pagamento", "order_id", orderID, "err", err)
 		httpx.WriteErr(w, http.StatusInternalServerError, "erro ao criar pagamento")
 		return
 	}
 
-	slog.Info("[payments] pagamento iniciado",
+	lg.Info("[payments] pagamento iniciado",
 		"order_id", orderID,
 		"payment_id", paymentID,
 		"gateway", req.Gateway,
@@ -167,14 +170,22 @@ func (h *PaymentHandler) PostOrderPay(w http.ResponseWriter, r *http.Request) {
 		// COD: pagamento confirmado na entrega — transita imediatamente para processing.
 		if err := statemachine.Transition(ctx, h.db, orderID, "processing", userID, "sistema",
 			"pagamento COD registrado"); err != nil {
-			slog.Error("[payments] falha ao transitar COD para processing",
+			lg.Error("[payments] falha ao transitar COD para processing",
 				"order_id", orderID, "err", err)
 			httpx.WriteErr(w, http.StatusInternalServerError, "erro ao processar pagamento COD")
 			return
 		}
 		// Marca pagamento como aguardando (será confirmado na entrega).
-		_, _ = h.db.Exec(ctx,
-			`UPDATE sz_order_payments SET status = 'pending' WHERE id = $1`, paymentID)
+		// P0-05: nunca ignorar erro em mutação de pagamento. A transição COD→processing
+		// já foi commitada (linha acima); este UPDATE é redundante com o INSERT
+		// 'pending' acima, então em caso de falha apenas logamos e seguimos — o
+		// pedido já está consistente (processing + payment 'pending'). Não retornamos
+		// 500 para não enganar o cliente sobre um pagamento que de fato foi iniciado.
+		if _, errPay := h.db.Exec(ctx,
+			`UPDATE sz_order_payments SET status = 'pending' WHERE id = $1`, paymentID); errPay != nil {
+			lg.Error("[payments] falha ao confirmar status 'pending' do pagamento COD",
+				"order_id", orderID, "payment_id", paymentID, "err", errPay)
+		}
 
 		httpx.WriteOK(w, map[string]any{
 			"payment_id": paymentID,
@@ -201,7 +212,7 @@ func (h *PaymentHandler) PostOrderPay(w http.ResponseWriter, r *http.Request) {
 	case "wallet":
 		// Wallet: débita carteira de frete (stub Fase 7).
 		// TODO Fase 7 — chamar wallet-service POST /carteira/reservar + /carteira/debitar-reserva.
-		slog.Info("[payments] débito de carteira solicitado (stub Fase 7)",
+		lg.Info("[payments] débito de carteira solicitado (stub Fase 7)",
 			"order_id", orderID, "valor", orderTotal.StringFixed(2))
 
 		httpx.WriteOK(w, map[string]any{
@@ -233,10 +244,13 @@ func (h *PaymentHandler) PostOrderPay(w http.ResponseWriter, r *http.Request) {
 //
 //	{order_id?, payment_id?, gateway_ref?, status?, amount?}
 func (h *PaymentHandler) PostPaymentWebhook(w http.ResponseWriter, r *http.Request) {
+	// OBSERVABILIDADE: logger decorado com request_id (slogMiddleware). Cobre inclusive
+	// os retornos antecipados (fail-closed). Fallback p/ slog.Default() sem middleware.
+	lg := httpx.LoggerFrom(r.Context())
 	webhookSecret := os.Getenv("WEBHOOK_SECRET")
 	if webhookSecret == "" {
 		// Fail-closed: sem secret configurado, não processa nenhum webhook.
-		slog.Error("[payments/webhook] WEBHOOK_SECRET não configurado — rejeitando webhook",
+		lg.Error("[payments/webhook] WEBHOOK_SECRET não configurado — rejeitando webhook",
 			"gateway", chi.URLParam(r, "gateway"),
 			"ip", r.RemoteAddr,
 		)
@@ -264,7 +278,7 @@ func (h *PaymentHandler) PostPaymentWebhook(w http.ResponseWriter, r *http.Reque
 	}
 	expected := "sha256=" + hmacSHA256HexPayment(rawBody, webhookSecret)
 	if !hmac.Equal([]byte(sig), []byte(expected)) {
-		slog.Warn("[payments/webhook] assinatura inválida",
+		lg.Warn("[payments/webhook] assinatura inválida",
 			"gateway", gateway,
 			"ip", r.RemoteAddr,
 		)
@@ -287,7 +301,7 @@ func (h *PaymentHandler) PostPaymentWebhook(w http.ResponseWriter, r *http.Reque
 	// Whitelist de status de pagamento aprovado — NUNCA confiar em string genérica.
 	approvedStatuses := map[string]bool{"paid": true, "approved": true}
 	if !approvedStatuses[statusRaw] {
-		slog.Info("[payments/webhook] status não aprovado — ignorando",
+		lg.Info("[payments/webhook] status não aprovado — ignorando",
 			"gateway", gateway, "status", statusRaw, "gateway_ref", gatewayRef)
 		// Retorna 200 para o gateway não retentar (status legítimo mas não acionável).
 		httpx.WriteOK(w, map[string]any{"ok": true, "acao": "ignorado", "status": statusRaw})
@@ -295,7 +309,7 @@ func (h *PaymentHandler) PostPaymentWebhook(w http.ResponseWriter, r *http.Reque
 	}
 
 	if gatewayRef == "" && orderIDRaw == 0 {
-		slog.Warn("[payments/webhook] payload sem referência identificável",
+		lg.Warn("[payments/webhook] payload sem referência identificável",
 			"gateway", gateway, "payload", string(rawBody))
 		httpx.WriteErr(w, http.StatusUnprocessableEntity, "payload sem referência de pagamento")
 		return
@@ -303,70 +317,114 @@ func (h *PaymentHandler) PostPaymentWebhook(w http.ResponseWriter, r *http.Reque
 
 	ctx := r.Context()
 
-	// Busca o pagamento pelo gateway_ref ou order_id.
+	// SEC-PAY: idempotência atômica do webhook de pagamento.
+	//
+	// Problema endereçado: o fluxo anterior fazia SELECT status → (if 'paid' return)
+	// → UPDATE 'paid' SEM lock — uma janela TOCTOU. Duas entregas concorrentes do
+	// MESMO gateway_ref liam ambas 'pending', passavam ambas pela guarda e confirmavam
+	// o pagamento duas vezes (paid_at sobrescrito, transição de pedido disparada 2×).
+	// Não há UNIQUE em (gateway, gateway_ref) — a tabela suporta pagamentos parciais —
+	// então a serialização tem de vir de um row-lock no nível do handler.
+	//
+	// Correção: tx CURTA que faz `SELECT … FOR UPDATE` no pagamento, checa o status já
+	// sob lock e só então marca 'paid'. A entrega concorrente #2 BLOQUEIA no lock da
+	// linha; ao desbloquear lê 'paid' e retorna idempotente sem reprocessar.
+	//
+	// IMPORTANTE: o escopo da tx é EXATAMENTE {SELECT FOR UPDATE; check; UPDATE; COMMIT}.
+	// NÃO incluir aqui o `UPDATE sz_orders` nem `statemachine.Transition` — Transition
+	// abre a SUA própria transação e faz `SELECT … FOR UPDATE` em sz_orders; manter um
+	// lock de pedido aberto nesta conexão causaria deadlock contra a própria conexão.
+	// Por isso a transição de pedido permanece FORA da tx (igual ao comportamento atual).
 	var paymentID, linkedOrderID int64
 	var currentPayStatus string
-	var lookupErr error
 
+	tx, err := h.db.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		lg.Error("[payments/webhook] falha ao iniciar transação de confirmação", "err", err)
+		httpx.WriteErr(w, http.StatusInternalServerError, "erro interno")
+		return
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	var lookupErr error
 	if gatewayRef != "" {
-		lookupErr = h.db.QueryRow(ctx,
+		lookupErr = tx.QueryRow(ctx,
 			`SELECT id, order_id, status FROM sz_order_payments
 			  WHERE gateway = $1 AND gateway_ref = $2
-			  ORDER BY id DESC LIMIT 1`,
+			  ORDER BY id DESC LIMIT 1
+			  FOR UPDATE`,
 			gateway, gatewayRef,
 		).Scan(&paymentID, &linkedOrderID, &currentPayStatus)
 	} else {
-		lookupErr = h.db.QueryRow(ctx,
+		lookupErr = tx.QueryRow(ctx,
 			`SELECT id, order_id, status FROM sz_order_payments
 			  WHERE order_id = $1 AND gateway = $2
-			  ORDER BY id DESC LIMIT 1`,
+			  ORDER BY id DESC LIMIT 1
+			  FOR UPDATE`,
 			orderIDRaw, gateway,
 		).Scan(&paymentID, &linkedOrderID, &currentPayStatus)
 	}
 
 	if lookupErr == pgx.ErrNoRows {
-		slog.Warn("[payments/webhook] pagamento não encontrado para referência",
+		lg.Warn("[payments/webhook] pagamento não encontrado para referência",
 			"gateway", gateway, "gateway_ref", gatewayRef, "order_id", orderIDRaw)
 		httpx.WriteErr(w, http.StatusNotFound, "pagamento não encontrado")
 		return
 	}
 	if lookupErr != nil {
-		slog.Error("[payments/webhook] erro ao buscar pagamento", "err", lookupErr)
+		lg.Error("[payments/webhook] erro ao buscar pagamento", "err", lookupErr)
 		httpx.WriteErr(w, http.StatusInternalServerError, "erro interno")
 		return
 	}
 
-	// Idempotência: já confirmado → retorna ok sem reprocessar.
+	// SEC-PAY: idempotência sob lock — já confirmado → retorna ok sem reprocessar.
+	// A checagem agora ocorre DEPOIS de adquirir o lock da linha, fechando a janela
+	// TOCTOU: a segunda entrega só chega aqui após a primeira ter commitado 'paid'.
 	if currentPayStatus == "paid" {
-		slog.Info("[payments/webhook] pagamento já confirmado (idempotente)",
+		_ = tx.Rollback(ctx) // libera o lock sem escrever
+		lg.Info("[payments/webhook] pagamento já confirmado (idempotente)",
 			"payment_id", paymentID, "order_id", linkedOrderID)
 		httpx.WriteOK(w, map[string]any{"ok": true, "idempotente": true, "payment_id": paymentID})
 		return
 	}
 
-	// Confirma o pagamento.
-	_, err = h.db.Exec(ctx,
+	// SEC-PAY: confirma o pagamento sob o mesmo lock e commita imediatamente —
+	// nada de mutação de dinheiro nova: apenas marca como 'paid' a linha cujo `valor`
+	// foi fixado server-side em /pay a partir de sz_orders.total (nunca do cliente).
+	_, err = tx.Exec(ctx,
 		`UPDATE sz_order_payments
 		    SET status = 'paid', paid_at = NOW(), gateway_ref = COALESCE($1, gateway_ref)
 		  WHERE id = $2`,
 		nullableStrPayment(gatewayRef), paymentID,
 	)
 	if err != nil {
-		slog.Error("[payments/webhook] falha ao confirmar pagamento",
+		lg.Error("[payments/webhook] falha ao confirmar pagamento",
 			"payment_id", paymentID, "err", err)
 		httpx.WriteErr(w, http.StatusInternalServerError, "erro ao confirmar pagamento")
 		return
 	}
 
-	// Atualiza payment_status do pedido.
-	_, err = h.db.Exec(ctx,
+	// AUDIT-2026-07-30 LOW: payment_status do pedido rodava FORA desta tx (via
+	// h.db.Exec após o Commit), com erro só logado — um blip de banco deixava
+	// sz_order_payments='paid' mas sz_orders.payment_status ainda 'pending',
+	// divergência que o guard de /cancel usa pra decidir se pode cancelar.
+	// Move pra dentro da MESMA tx: ou os dois confirmam juntos, ou nenhum.
+	_, err = tx.Exec(ctx,
 		`UPDATE sz_orders SET payment_status = 'paid', updated_at = NOW() WHERE id = $1`,
 		linkedOrderID,
 	)
 	if err != nil {
-		slog.Error("[payments/webhook] falha ao atualizar payment_status do pedido",
+		lg.Error("[payments/webhook] falha ao atualizar payment_status do pedido",
 			"order_id", linkedOrderID, "err", err)
-		// Continua — a transição de status ainda deve ocorrer.
+		httpx.WriteErr(w, http.StatusInternalServerError, "erro ao confirmar pagamento")
+		return
+	}
+
+	if err = tx.Commit(ctx); err != nil {
+		lg.Error("[payments/webhook] falha ao commitar confirmação de pagamento",
+			"payment_id", paymentID, "err", err)
+		httpx.WriteErr(w, http.StatusInternalServerError, "erro ao confirmar pagamento")
+		return
 	}
 
 	// Transita o pedido para processing (se ainda estiver em pending).
@@ -377,13 +435,13 @@ func (h *PaymentHandler) PostPaymentWebhook(w http.ResponseWriter, r *http.Reque
 	if statemachine.CanTransition(currentOrderStatus, "processing") {
 		if err := statemachine.Transition(ctx, h.db, linkedOrderID, "processing", 0, "webhook",
 			fmt.Sprintf("pagamento confirmado via webhook %s", gateway)); err != nil {
-			slog.Error("[payments/webhook] falha ao transitar para processing",
+			lg.Error("[payments/webhook] falha ao transitar para processing",
 				"order_id", linkedOrderID, "err", err)
 			// Não retorna erro — o pagamento já foi confirmado. Log suficiente.
 		}
 	}
 
-	slog.Info("[payments/webhook] pagamento confirmado",
+	lg.Info("[payments/webhook] pagamento confirmado",
 		"payment_id", paymentID,
 		"order_id", linkedOrderID,
 		"gateway", gateway,
@@ -404,6 +462,9 @@ func (h *PaymentHandler) PostPaymentWebhook(w http.ResponseWriter, r *http.Reque
 // Apenas admins podem reembolsar. O gateway de reembolso é um stub na Fase 6.
 // TODO Fase 7 — integrar com gateway real para estorno.
 func (h *PaymentHandler) PostOrderRefund(w http.ResponseWriter, r *http.Request) {
+	// OBSERVABILIDADE: logger decorado com request_id (slogMiddleware). Cobre inclusive
+	// os retornos antecipados (fail-closed). Fallback p/ slog.Default() sem middleware.
+	lg := httpx.LoggerFrom(r.Context())
 	userID := auth.GetUserID(r.Context())
 	if userID == 0 {
 		httpx.WriteErr(w, http.StatusUnauthorized, "não autenticado")
@@ -438,7 +499,7 @@ func (h *PaymentHandler) PostOrderRefund(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if err != nil {
-		slog.Error("[payments] falha ao buscar pedido para reembolso", "order_id", orderID, "err", err)
+		lg.Error("[payments] falha ao buscar pedido para reembolso", "order_id", orderID, "err", err)
 		httpx.WriteErr(w, http.StatusInternalServerError, "erro interno")
 		return
 	}
@@ -455,33 +516,57 @@ func (h *PaymentHandler) PostOrderRefund(w http.ResponseWriter, r *http.Request)
 	}
 
 	if err := statemachine.Transition(ctx, h.db, orderID, "reembolsado", userID, "admin", motivo); err != nil {
-		slog.Error("[payments] falha ao transitar para reembolsado",
+		lg.Error("[payments] falha ao transitar para reembolsado",
 			"order_id", orderID, "err", err)
 		httpx.WriteErr(w, http.StatusInternalServerError, "erro ao processar reembolso")
 		return
 	}
 
-	// Atualiza payment_status do pedido.
-	_, _ = h.db.Exec(ctx,
-		`UPDATE sz_orders SET payment_status = 'refunded', updated_at = NOW() WHERE id = $1`,
-		orderID,
-	)
+	// AUDIT-2026-07-31 (dono) — liquidação financeira do reembolso é GATED por
+	// verificação de envio, não mais incondicional. Registra o pedido de
+	// reembolso e tenta liquidar NA HORA se a etiqueta ativa da Melhor Envio já
+	// está confirmada cancelada (wc_me_labels.status, sincronizado em tempo real
+	// pelo webhook nativo da ME — ver labels-service/me_webhook.go). Se não dá
+	// pra confirmar agora (em trânsito, sem etiqueta = motoboy/COD, etc.), fica
+	// pendente e o cron (sz_process_refund_requests_due, a cada tick) reprocessa
+	// — liquidando de verdade quando a ME confirmar, ou por prazo fixo de 12h
+	// se nunca confirmar (fallback, pedido do dono).
+	if _, err := h.db.Exec(ctx,
+		`INSERT INTO sz_order_refund_requests (order_id, requested_by, motivo, deadline_at)
+		 VALUES ($1, $2, $3, NOW() + INTERVAL '12 hours')
+		 ON CONFLICT (order_id) DO NOTHING`,
+		orderID, userID, motivo,
+	); err != nil {
+		lg.Error("[payments] falha ao registrar pedido de reembolso",
+			"order_id", orderID, "err", err)
+		httpx.WriteErr(w, http.StatusInternalServerError, "erro ao registrar reembolso")
+		return
+	}
 
-	// Marca todos os pagamentos confirmados como refunded.
-	_, _ = h.db.Exec(ctx,
-		`UPDATE sz_order_payments SET status = 'refunded' WHERE order_id = $1 AND status = 'paid'`,
-		orderID,
-	)
+	if _, err := h.db.Exec(ctx, `SELECT sz_process_refund_requests_due()`); err != nil {
+		// Não falha a request por isso — o cron cobre no próximo tick. O pedido
+		// já está 'reembolsado' e o refund_request já está registrado.
+		lg.Error("[payments] falha ao tentar liquidação imediata de reembolso (cron cobre depois)",
+			"order_id", orderID, "err", err)
+	}
+	var settled bool
+	_ = h.db.QueryRow(ctx,
+		`SELECT status = 'settled' FROM sz_order_refund_requests WHERE order_id = $1`, orderID,
+	).Scan(&settled)
 
-	// Stub de estorno no gateway externo.
-	// TODO Fase 7 — chamar gateway de estorno conforme payment_method do pedido.
-	slog.Info("[payments] reembolso solicitado (stub gateway — implementar Fase 7)",
-		"order_id", orderID, "user_id", userID, "motivo", motivo)
+	respStatus := "reembolso_pendente_verificacao"
+	if settled {
+		respStatus = "reembolso_liquidado"
+	}
+	lg.Info("[payments] reembolso solicitado",
+		"order_id", orderID, "user_id", userID, "motivo", motivo, "liquidado_na_hora", settled)
 
 	httpx.WriteOK(w, map[string]any{
-		"order_id": orderID,
-		"status":   "reembolsado",
-		"motivo":   motivo,
+		"order_id":        orderID,
+		"status":          "reembolsado",
+		"liquidacao":      respStatus,
+		"motivo":          motivo,
+		"prazo_maximo_h":  12,
 	})
 }
 

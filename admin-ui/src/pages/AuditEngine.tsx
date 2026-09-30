@@ -1,14 +1,18 @@
 import { useEffect, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
+import { confirmAsync } from '../components/ConfirmDialog'
+import { useToast } from '../hooks/useToast'
 import { api } from '../api'
 import FilterButton from '../components/FilterButton'
 import FilterTopPanel, {
   FilterField,
-  filterInputStyle,
   ActiveFilterChips,
   type ActiveChip,
 } from '../components/FilterTopPanel'
 import TableSkeleton from '../components/TableSkeleton'
 import EmptyState from '../components/EmptyState'
+import FalkSelect from '../components/FalkSelect'
+import FalkDatePicker from '../components/FalkDatePicker'
 
 type Counts = {
   split: number
@@ -75,10 +79,18 @@ export default function AuditEngine() {
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
-  const [toast, setToast] = useState<{ kind: 'ok' | 'err'; msg: string } | null>(null)
+  const showToast = useToast() // AUDIT-2026-06-18 Onda3
+
+  // Drill-down: a Dashboard deep-linka ?audit_type=split (pré-seleciona o filtro
+  // de divergência). Param distinto de ?tab= (que o SistemaHub usa).
+  const [searchParams] = useSearchParams()
+  const initialType = ((): TypeFilter => {
+    const t = searchParams.get('audit_type')
+    return (t && t in TYPE_LABELS) ? (t as TypeFilter) : ''
+  })()
 
   // Filtros aplicados.
-  const [typeFilter, setTypeFilter] = useState<TypeFilter>('')
+  const [typeFilter, setTypeFilter] = useState<TypeFilter>(initialType)
   const [dataIni, setDataIni] = useState('')
   const [dataFim, setDataFim] = useState('')
 
@@ -124,13 +136,9 @@ export default function AuditEngine() {
     setFilterOpen(false)
   }
 
-  function showToast(kind: 'ok' | 'err', msg: string) {
-    setToast({ kind, msg })
-    setTimeout(() => setToast(null), 5000)
-  }
 
   async function handleFixAll() {
-    if (!window.confirm('Corrigir TODAS as divergências em batch?\n\nEssa operação:\n- Insere comissões ausentes\n- Atualiza valores divergentes\n- Sincroniza carteiras\n\nContinuar?')) return
+    if (!await confirmAsync({ message: 'Corrigir TODAS as divergências em batch?\n\nEssa operação:\n- Insere comissões ausentes\n- Atualiza valores divergentes\n- Sincroniza carteiras\n\nContinuar?' })) return
     setBusy(true)
     try {
       const r = await api<FixAllResult>('/audit/fix-all', { method: 'POST' })
@@ -146,11 +154,11 @@ export default function AuditEngine() {
   }
 
   async function handleFixOrder(orderID: number) {
-    if (!window.confirm(`Corrigir pedido #${orderID}?`)) return
+    if (!await confirmAsync({ message: `Corrigir pedido ${orderID}?` })) return
     setBusy(true)
     try {
       await api(`/audit/fix-order/${orderID}`, { method: 'POST' })
-      showToast('ok', `Pedido #${orderID} corrigido`)
+      showToast('ok', `Pedido ${orderID} corrigido`)
       await load()
     } catch (e: any) {
       showToast('err', e.message || 'Falha')
@@ -160,7 +168,7 @@ export default function AuditEngine() {
   }
 
   async function handleFixAffiliateWallet(affiliateID: number) {
-    if (!window.confirm(`Sincronizar carteira do afiliado #${affiliateID}?\n\nRecalcula balance e pending_balance a partir das transações.`)) return
+    if (!await confirmAsync({ message: `Sincronizar carteira do afiliado #${affiliateID}?\n\nRecalcula balance e pending_balance a partir das transações.` })) return
     setBusy(true)
     try {
       await api(`/affiliates/${affiliateID}/wallet-fix`, { method: 'POST' })
@@ -183,15 +191,6 @@ export default function AuditEngine() {
   return (
     <div>
       {err && <div className="sz-alert-danger" style={{ marginBottom: 16 }}>{err}</div>}
-
-      {toast && (
-        <div
-          className={toast.kind === 'ok' ? 'sz-alert-success' : 'sz-alert-danger'}
-          style={{ marginBottom: 16 }}
-        >
-          {toast.msg}
-        </div>
-      )}
 
       <div className="szv2-section-head">
         <div>
@@ -272,7 +271,7 @@ export default function AuditEngine() {
                   const diff = p.actual - p.expected
                   return (
                     <tr key={`${p.type_key}-${p.order_id}`}>
-                      <td><strong>#{p.order_id}</strong></td>
+                      <td><strong>{p.order_id}</strong></td>
                       <td>
                         <span className="sz-badge szv2-badge-danger">{p.type_label}</span>
                       </td>
@@ -321,33 +320,31 @@ export default function AuditEngine() {
         title="Filtros"
       >
         <FilterField label="Data inicial">
-          <input
-            type="date"
-            style={filterInputStyle}
+          <FalkDatePicker
             value={draftIni}
             max={draftFim || undefined}
-            onChange={e => setDraftIni(e.target.value)}
+            onChange={v => setDraftIni(v)}
+            placeholder="dd/mm/aaaa"
           />
         </FilterField>
         <FilterField label="Data final">
-          <input
-            type="date"
-            style={filterInputStyle}
+          <FalkDatePicker
             value={draftFim}
             min={draftIni || undefined}
-            onChange={e => setDraftFim(e.target.value)}
+            onChange={v => setDraftFim(v)}
+            placeholder="dd/mm/aaaa"
           />
         </FilterField>
         <FilterField label="Tipo">
-          <select
-            style={filterInputStyle}
+          <FalkSelect
+            aria-label="Tipo"
             value={draftType}
-            onChange={e => setDraftType(e.target.value as TypeFilter)}
-          >
-            {(Object.keys(TYPE_LABELS) as TypeFilter[]).map(k => (
-              <option key={k} value={k}>{TYPE_LABELS[k]}</option>
-            ))}
-          </select>
+            onChange={v => setDraftType(v as TypeFilter)}
+            options={(Object.keys(TYPE_LABELS) as TypeFilter[]).map(k => ({
+              value: k,
+              label: TYPE_LABELS[k],
+            }))}
+          />
         </FilterField>
       </FilterTopPanel>
     </div>

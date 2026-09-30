@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useToast } from '../hooks/useToast'
 import { api } from '../api'
 
 // Tela COD · Taxas de Entrega — paridade com tab_fin_taxas_entrega() (PHP).
@@ -7,6 +8,7 @@ import { api } from '../api'
 
 type GlobalRates = {
   taxa_cliente_cod: number
+  cod_delivery_fee: number
   taxa_transacao_percentual: number
   taxa_motoboy_entrega: number
   taxa_motoboy_frustrado: number
@@ -83,6 +85,7 @@ const strToNum = (v: string): number | null => {
 export default function CodTaxasEntrega() {
   const [global, setGlobal] = useState<GlobalRates>({
     taxa_cliente_cod: 25,
+    cod_delivery_fee: 23.98,
     taxa_transacao_percentual: 0,
     taxa_motoboy_entrega: 18,
     taxa_motoboy_frustrado: 5,
@@ -95,15 +98,18 @@ export default function CodTaxasEntrega() {
   const [producers, setProducers] = useState<ProducerEditable[]>([])
   const [affiliates, setAffiliates] = useState<AffiliateEditable[]>([])
 
+  // Taxa de transação do produtor (%) — option global sz_producer_transaction_fee_pct
+  // (endpoint próprio /producer-fee-config; default 4.99). Mantida fora do
+  // Promise.all de loadAll para não derrubar a tela se o endpoint falhar/404.
+  const PRODUCER_FEE_DEFAULT = 4.99
+  const [producerFeePct, setProducerFeePct] = useState<string>(String(PRODUCER_FEE_DEFAULT))
+  const [savingProducerFee, setSavingProducerFee] = useState(false)
+
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [err, setErr] = useState('')
-  const [toast, setToast] = useState<{ kind: 'ok' | 'err'; msg: string } | null>(null)
+  const showToast = useToast() // AUDIT-2026-06-18 Onda3
 
-  function showToast(kind: 'ok' | 'err', msg: string) {
-    setToast({ kind, msg })
-    setTimeout(() => setToast(null), 5000)
-  }
 
   async function loadAll() {
     setLoading(true)
@@ -147,6 +153,46 @@ export default function CodTaxasEntrega() {
   }
 
   useEffect(() => { loadAll() }, [])
+
+  // Carrega a taxa de transação do produtor separadamente — falha aqui não
+  // derruba o restante da tela (default 4.99 permanece).
+  useEffect(() => {
+    let alivo = true
+    // O back-end (cod_taxas.go::GetProducerFeeConfig) responde com a chave
+    // `producer_transaction_fee_pct` (sem prefixo sz_). Ler a chave errada fazia
+    // o valor salvo nunca recarregar — mantemos os fallbacks legados por garantia.
+    api<{ producer_transaction_fee_pct?: number; sz_producer_transaction_fee_pct?: number; value?: number; pct?: number }>('/producer-fee-config')
+      .then(r => {
+        if (!alivo) return
+        const v = r?.producer_transaction_fee_pct ?? r?.sz_producer_transaction_fee_pct ?? r?.value ?? r?.pct
+        if (v != null && isFinite(Number(v))) setProducerFeePct(String(v))
+      })
+      .catch(() => { /* mantém default 4.99 */ })
+    return () => { alivo = false }
+  }, [])
+
+  async function handleSaveProducerFee() {
+    const n = strToNum(producerFeePct)
+    if (n == null) {
+      showToast('err', 'Informe um percentual válido.')
+      return
+    }
+    setSavingProducerFee(true)
+    try {
+      // POST espera `producer_transaction_fee_pct` (sem prefixo sz_). Enviar a
+      // chave prefixada fazia o back-end ignorar o valor e persistir 0 — a taxa
+      // do produtor era zerada a cada save. Ver cod_taxas.go::SaveProducerFeeConfig.
+      await api('/producer-fee-config', {
+        method: 'POST',
+        body: JSON.stringify({ producer_transaction_fee_pct: n }),
+      })
+      showToast('ok', 'Taxa de transação do produtor salva.')
+    } catch (e: any) {
+      showToast('err', e.message || 'Falha ao salvar')
+    } finally {
+      setSavingProducerFee(false)
+    }
+  }
 
   async function handleSave() {
     setSaving(true)
@@ -262,14 +308,6 @@ export default function CodTaxasEntrega() {
       </div>
 
       {err && <div className="sz-alert-danger" style={{ marginBottom: 16 }}>{err}</div>}
-      {toast && (
-        <div
-          className={toast.kind === 'ok' ? 'sz-alert-success' : 'sz-alert-danger'}
-          style={{ marginBottom: 16 }}
-        >
-          {toast.msg}
-        </div>
-      )}
 
       {loading ? (
         <div style={{ padding: 48, textAlign: 'center', color: 'var(--szv2-text-muted)' }}>
@@ -290,6 +328,12 @@ export default function CodTaxasEntrega() {
               onChange={v => setGlobal(p => ({ ...p, taxa_cliente_cod: v }))}
             />
             <KpiInput
+              label="Taxa de entrega COD (R$)"
+              sub="usada no breakdown financeiro (padrão 23,98)"
+              value={global.cod_delivery_fee}
+              onChange={v => setGlobal(p => ({ ...p, cod_delivery_fee: v }))}
+            />
+            <KpiInput
               label="Venda · taxa de transação (%)"
               sub="replica por participante em pedidos novos; sem afiliado cobra uma vez do produtor"
               value={global.taxa_transacao_percentual}
@@ -307,6 +351,56 @@ export default function CodTaxasEntrega() {
               value={global.taxa_motoboy_frustrado}
               onChange={v => setGlobal(p => ({ ...p, taxa_motoboy_frustrado: v }))}
             />
+          </div>
+
+          {/* Taxa de transação do produtor — option global sz_producer_transaction_fee_pct */}
+          <h2 style={{ marginTop: 24, marginBottom: 12, fontSize: 16 }}>Taxa de transação do produtor</h2>
+          <div className="szv2-card" style={{ padding: 20 }}>
+            <div
+              style={{
+                display: 'flex',
+                flexWrap: 'wrap',
+                gap: 16,
+                alignItems: 'flex-end',
+              }}
+            >
+              <div style={{ flex: '1 1 280px', minWidth: 240 }}>
+                <label
+                  htmlFor="sz-producer-fee-pct"
+                  className="szv2-kpi-label"
+                  style={{ display: 'block', marginBottom: 6 }}
+                >
+                  Taxa de transação do produtor (%)
+                </label>
+                <input
+                  id="sz-producer-fee-pct"
+                  className="szv2-input"
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  value={producerFeePct}
+                  onChange={e => setProducerFeePct(e.target.value)}
+                  style={{
+                    fontSize: 22,
+                    fontWeight: 600,
+                    color: 'var(--szv2-brand)',
+                    width: '100%',
+                  }}
+                />
+                <span className="szv2-kpi-meta" style={{ display: 'block', marginTop: 4 }}>
+                  Percentual cobrado do produtor por transação (padrão 4,99%).
+                </span>
+              </div>
+              <button
+                type="button"
+                className="szv2-btn szv2-btn-brand"
+                onClick={handleSaveProducerFee}
+                disabled={savingProducerFee}
+                style={{ minWidth: 160 }}
+              >
+                {savingProducerFee ? 'Salvando…' : 'Salvar'}
+              </button>
+            </div>
           </div>
 
           {/* KPI Grid 2 — Penalidades */}
@@ -416,7 +510,7 @@ export default function CodTaxasEntrega() {
                 userSelect: 'none',
               }}
             >
-              Configuração Senderzz por produtor ({producers.length})
+              Configuração FALK LOG por produtor ({producers.length})
             </summary>
             <div style={{ padding: '0 20px 20px', overflowX: 'auto' }}>
               {producers.length === 0 ? (

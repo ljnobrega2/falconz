@@ -1,36 +1,53 @@
 import { useEffect, useState } from 'react'
+import { confirmAsync } from '../components/ConfirmDialog'
+import { useToast } from '../hooks/useToast'
 import { api } from '../api'
+import CardKpiSkeleton from '../components/CardKpiSkeleton'
+import EmptyState from '../components/EmptyState'
+import ErrorState from '../components/ErrorState'
 
 type CD = { id: number; nome: string; cidade: string; uf: string; endereco: string | null; lat: number | null; lng: number | null; ativo: boolean; zona_count: number }
 const empty = (): CD => ({ id: 0, nome: '', cidade: '', uf: 'SP', endereco: null, lat: null, lng: null, ativo: true, zona_count: 0 })
 
 export default function Cds() {
   const [items, setItems] = useState<CD[]>([])
+  // `err` é canal EXCLUSIVO de erro de carregamento (alimenta ErrorState/banner).
+  // Erros de mutação (salvar/ativar) vão para toast — assim uma falha de save com
+  // lista vazia NÃO é confundida com falha de load (que mostraria "Tentar novamente").
   const [err, setErr] = useState('')
+  const [loading, setLoading] = useState(true)
   const [form, setForm] = useState<CD>(empty())
   const [showForm, setShowForm] = useState(false)
   const [saving, setSaving] = useState(false)
+  const showToast = useToast()
 
   async function load() {
-    try { const r = await api<{ items: CD[] }>('/cds'); setItems(r.items) }
+    setLoading(true); setErr('')
+    try { const r = await api<{ items: CD[] }>('/cds'); setItems(r.items ?? []) }
     catch (e: any) { setErr(e.message) }
+    finally { setLoading(false) }
   }
   useEffect(() => { load() }, [])
 
   async function save(e: React.FormEvent) {
     e.preventDefault(); setSaving(true)
     try {
-      if (form.id) await api(`/cds/${form.id}`, { method: 'PUT', body: JSON.stringify(form) })
-      else await api('/cds', { method: 'POST', body: JSON.stringify(form) })
+      // cidade/uf seguem NOT NULL no banco e alimentam seletores de CD do portal; o form
+      // não os coleta mais → default seguro (nome vira cidade no create; SP no uf). Na edição,
+      // form.cidade/uf vêm preservados do registro (setForm(cd)), então nada é apagado.
+      const payload = { ...form, cidade: form.cidade?.trim() || form.nome, uf: form.uf?.trim() || 'SP' }
+      if (form.id) await api(`/cds/${form.id}`, { method: 'PUT', body: JSON.stringify(payload) })
+      else await api('/cds', { method: 'POST', body: JSON.stringify(payload) })
       setShowForm(false); setForm(empty()); load()
-    } catch (e: any) { setErr(e.message) }
+      showToast('ok', form.id ? 'CD atualizado.' : 'CD criado.')
+    } catch (e: any) { showToast('err', e.message || 'Falha ao salvar CD') }
     finally { setSaving(false) }
   }
 
   async function toggle(cd: CD) {
-    if (cd.ativo && !window.confirm(`Desativar o CD "${cd.nome}"? As zonas vinculadas continuarão cadastradas.`)) return
-    try { await api(`/cds/${cd.id}`, { method: 'PUT', body: JSON.stringify({ ...cd, ativo: !cd.ativo }) }); load() }
-    catch (e: any) { setErr(e.message) }
+    if (cd.ativo && !await confirmAsync({ message: `Desativar o CD "${cd.nome}"? As zonas vinculadas continuarão cadastradas.`, danger: true })) return
+    try { await api(`/cds/${cd.id}`, { method: 'PUT', body: JSON.stringify({ ...cd, ativo: !cd.ativo }) }); load(); showToast('ok', !cd.ativo ? 'CD ativado.' : 'CD desativado.') }
+    catch (e: any) { showToast('err', e.message || 'Falha ao alterar status do CD') }
   }
 
   return (
@@ -38,14 +55,16 @@ export default function Cds() {
       <div className="szv2-section-head">
         <div>
           <h1>Centros de Distribuição</h1>
-          <p>{items.length} CDs cadastrados</p>
+          <p>{loading ? 'Carregando…' : `${items.length} CD${items.length !== 1 ? 's' : ''} cadastrado${items.length !== 1 ? 's' : ''}`}</p>
         </div>
         <button className="szv2-btn szv2-btn-brand" onClick={() => { setForm(empty()); setShowForm(true) }}>
           + Novo CD
         </button>
       </div>
 
-      {err && <div className="sz-alert-danger">{err}</div>}
+      {/* Banner só com dados na tela (erro de refresh/ação). Falha de
+          carregamento inicial vira ErrorState abaixo. */}
+      {err && items.length > 0 && <div className="sz-alert-danger">{err}</div>}
 
       {showForm && (
         <div className="szv2-card" style={{ marginBottom: '24px' }}>
@@ -54,30 +73,13 @@ export default function Cds() {
             <button className="szv2-modal-x" onClick={() => setShowForm(false)}>✕</button>
           </div>
           <form onSubmit={save}>
-            <div className="sz-form-grid sz-form-grid-3" style={{ marginBottom: '16px' }}>
-              <div className="szv2-field">
-                <label className="szv2-label">Nome *</label>
-                <input className="szv2-input" required value={form.nome} onChange={e => setForm({ ...form, nome: e.target.value })} />
-              </div>
-              <div className="szv2-field">
-                <label className="szv2-label">Cidade *</label>
-                <input className="szv2-input" required value={form.cidade} onChange={e => setForm({ ...form, cidade: e.target.value })} />
-              </div>
-              <div className="szv2-field">
-                <label className="szv2-label">UF</label>
-                <input className="szv2-input" maxLength={2} value={form.uf} onChange={e => setForm({ ...form, uf: e.target.value.toUpperCase() })} />
-              </div>
-              <div className="szv2-field" style={{ gridColumn: '1 / 3' }}>
-                <label className="szv2-label">Endereço</label>
-                <input className="szv2-input" value={form.endereco ?? ''} onChange={e => setForm({ ...form, endereco: e.target.value || null })} />
-              </div>
-              <div className="szv2-field">
-                <label className="szv2-label">Lat / Lng</label>
-                <div style={{ display: 'flex', gap: '8px' }}>
-                  <input className="szv2-input" type="number" step="any" placeholder="Lat" value={form.lat ?? ''} onChange={e => setForm({ ...form, lat: e.target.value ? +e.target.value : null })} />
-                  <input className="szv2-input" type="number" step="any" placeholder="Lng" value={form.lng ?? ''} onChange={e => setForm({ ...form, lng: e.target.value ? +e.target.value : null })} />
-                </div>
-              </div>
+            {/* CD = só Nome (pedido do dono 2026-06-26): Cidade/UF/Endereço/Lat/Lng saíram —
+                as cidades de cobertura são definidas pelas ZONAS, não pelo CD. cidade/uf
+                continuam no payload (default no save) só p/ não quebrar NOT NULL nem os
+                seletores de CD do portal. */}
+            <div className="szv2-field" style={{ marginBottom: '16px' }}>
+              <label className="szv2-label">Nome *</label>
+              <input className="szv2-input" required value={form.nome} onChange={e => setForm({ ...form, nome: e.target.value })} />
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '16px', marginBottom: '16px' }}>
               <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '14px', cursor: 'pointer', color: 'var(--szv2-text-soft)' }}>
@@ -95,14 +97,25 @@ export default function Cds() {
         </div>
       )}
 
+      {loading && items.length === 0 ? (
+        <CardKpiSkeleton count={3} />
+      ) : err && items.length === 0 ? (
+        <ErrorState message={err} onRetry={() => { setErr(''); load() }} />
+      ) : !loading && items.length === 0 ? (
+        <EmptyState
+          icon="🏢"
+          title="Nenhum CD cadastrado"
+          description='Clique em "+ Novo CD" para começar.'
+          action={{ label: '+ Novo CD', onClick: () => { setForm(empty()); setShowForm(true) } }}
+        />
+      ) : (
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0,1fr))', gap: '16px' }}>
         {items.map(cd => (
           <div key={cd.id} className="szv2-card" style={!cd.ativo ? { opacity: 0.6 } : {}}>
             <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: '8px' }}>
               <div>
                 <h3 style={{ margin: '0 0 2px', fontSize: '15px', fontWeight: 700, color: 'var(--szv2-text)' }}>{cd.nome}</h3>
-                <p style={{ margin: 0, fontSize: '13px', color: 'var(--szv2-text-muted)' }}>{cd.cidade} — {cd.uf}</p>
-                <p style={{ margin: '4px 0 0', fontSize: '12px', color: 'var(--szv2-text-faint)' }}>
+                <p style={{ margin: '2px 0 0', fontSize: '12px', color: 'var(--szv2-text-faint)' }}>
                   {cd.zona_count} zona{cd.zona_count !== 1 ? 's' : ''}
                 </p>
               </div>
@@ -110,12 +123,6 @@ export default function Cds() {
                 {cd.ativo ? 'Ativo' : 'Inativo'}
               </span>
             </div>
-            {cd.endereco && <p style={{ fontSize: '12px', color: 'var(--szv2-text-faint)', margin: '0 0 12px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{cd.endereco}</p>}
-            {cd.lat && cd.lng && (
-              <p style={{ fontSize: '11px', color: 'var(--szv2-text-faint)', margin: '0 0 12px', fontFamily: 'var(--szv2-font-mono)' }}>
-                {cd.lat?.toFixed(4)}, {cd.lng?.toFixed(4)}
-              </p>
-            )}
             <div style={{ display: 'flex', gap: '12px', paddingTop: '12px', borderTop: '1px solid var(--szv2-divider)' }}>
               <button className="szv2-btn szv2-btn-sm szv2-btn-secondary" onClick={() => { setForm(cd); setShowForm(true) }}>
                 Editar
@@ -127,17 +134,8 @@ export default function Cds() {
             </div>
           </div>
         ))}
-        {items.length === 0 && (
-          <div style={{ gridColumn: '1 / 4' }}>
-            <div className="szv2-card">
-              <div className="szv2-empty">
-                <h3>Nenhum CD cadastrado</h3>
-                <p>Clique em "Novo CD" para começar.</p>
-              </div>
-            </div>
-          </div>
-        )}
       </div>
+      )}
     </div>
   )
 }

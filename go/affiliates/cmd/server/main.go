@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -49,7 +50,11 @@ func main() {
 
 	// ── Handlers ──────────────────────────────────────────────────────────────
 	affiliatesH := &handlers.AffiliatesHandler{Pool: pool}
-	codH := &handlers.CODHandler{Pool: pool}
+	// P2-SEC carteira-fantasma: CODHandler (rotas /cod/*) desregistrado — lia
+	// senderzz_cod_wallet/senderzz_cod_ledger (0 linhas, fonte ERRADA). A fonte
+	// canônica de saldo COD é sz_cod_wallet_transactions. Manter essas rotas criava
+	// uma 3ª fonte-de-verdade contraditória. O tipo handlers.CODHandler permanece
+	// no pacote (não instanciado aqui) até ser migrado para a tabela correta.
 
 	// double-write sempre inicializado; secret vazio → 503 dentro dos handlers (fail-closed).
 	internalH, err := handlers.NewInternalHandler(pool)
@@ -64,6 +69,11 @@ func main() {
 	// Middlewares globais.
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
+	// AUDIT GO-HDR-01: cabeçalhos de segurança (nosniff/X-Frame/CSP/HSTS/Referrer/
+	// Permissions) em TODA resposta — logo após RealIP para embrulhar Recoverer/CORS/
+	// handlers e cobrir /health, /readyz e preflights. Defense-in-depth atrás do nginx
+	// nas RESPOSTAS Go (não no HTML do painel). Ver internal/httpx/security_headers.go.
+	r.Use(httpx.SecurityHeaders())
 	r.Use(slogMiddleware)
 	r.Use(middleware.Recoverer)
 	r.Use(corsMiddleware)
@@ -74,13 +84,15 @@ func main() {
 	handlers.RegisterInternalRoutes(r, internalH)
 
 	// Health check (fora do prefixo WP) — usado pelo nginx e health checks do K8s.
-	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
-		if err := pool.Ping(r.Context()); err != nil {
-			httpx.WriteErr(w, http.StatusServiceUnavailable, "banco inacessível")
-			return
-		}
-		httpx.WriteOK(w, map[string]any{"status": "ok", "service": "affiliates"})
-	})
+	//
+	// OBSERVABILIDADE: dois probes com semânticas distintas (padrão liveness/readiness):
+	//   - /health  → liveness + sanidade do banco. Mantido EXATAMENTE como antes
+	//                (faz Ping) para não quebrar probes/nginx já configurados.
+	//   - /readyz  → readiness explícita. 200 quando o pool responde Ping; 503 quando
+	//                o banco está inacessível. É o probe canônico para "pronto para
+	//                receber tráfego" (drena o pod do load balancer sem matá-lo).
+	r.Get("/health", healthHandler(pool))
+	r.Get("/readyz", readyzHandler(pool))
 
 	// Middleware de auth JWT para portal (principal esquema desta fase).
 	// AuthPortalSession disponível via auth.AuthPortalSession(pool) como fallback.
@@ -97,6 +109,12 @@ func main() {
 			// Lista vínculos do usuário autenticado (produtor ou afiliado).
 			// Parâmetro opcional: ?status=pending|active|paused|revoked
 			r.Get("/affiliates", affiliatesH.List)
+
+			// FEAT-RBAC-2026-06-21: código de indicação PERMANENTE do usuário da
+			// sessão (link fixo /r/{code}). Gera lazy no 1º acesso. Caminho ESTÁTICO
+			// (/affiliates/referral) — não colide com /affiliates/{id}/... pois o
+			// segmento literal "referral" é mais específico que o param {id}.
+			r.Get("/affiliates/referral", affiliatesH.Referral)
 
 			// Afiliado solicita vínculo com produtor+produto.
 			// Body: {produtor_id, produto_id}
@@ -136,15 +154,29 @@ func main() {
 			r.Delete("/affiliates/links/{id}", affiliatesH.DeactivateLink)
 
 			// ── Carteira COD ─────────────────────────────────────────────────
-			// Saldo atual da carteira COD.
-			r.Get("/cod/saldo", codH.GetSaldo)
+			// P2-SEC carteira-fantasma: rotas /cod/saldo, /cod/extrato e
+			// /cod/anticipate REMOVIDAS. Liam senderzz_cod_wallet/senderzz_cod_ledger
+			// (0 linhas, fonte ERRADA) — a fonte canônica é sz_cod_wallet_transactions.
+			// Re-registrar só após o CODHandler apontar para a tabela correta.
+		})
 
-			// Histórico de movimentações COD. Parâmetros opcionais: ?limit=&tipo=
-			r.Get("/cod/extrato", codH.GetExtrato)
-
-			// Solicita antecipação de saldo COD.
-			// Body opcional: {valor, descricao}
-			r.Post("/cod/anticipate", codH.PostAnticipate)
+		// ── Rotas PÚBLICAS (SEM JWT) ──────────────────────────────────────────
+		// FEAT-RBAC-2026-06-21: o link fixo de indicação é clicado por um prospect
+		// DESLOGADO, então o resolver NÃO pode carregar jwtAuth. Grupo irmão do
+		// grupo autenticado, no mesmo prefixo /wp-json/senderzz/v1.
+		//
+		// ROTEAMENTO (decisivo): o gateway FALK (infra/falk/gateway.conf:16)
+		// roteia ESTE serviço por ^/wp-json/senderzz/v1/(affiliates|cod) — então
+		// o resolver PRECISA ficar sob /affiliates/ para chegar aqui (um path
+		// /referral/* cairia no catch-all → orders-service). Por isso:
+		//   /affiliates/referral/{code}  (público, resolve dono)
+		//   /affiliates/referral         (autenticado, código próprio)
+		// São rotas chi distintas (1 segmento extra) → sem colisão com
+		// /affiliates/{id}/... (o literal "referral" é mais específico que {id}).
+		// O caminho pretty falklog.com.br/r/{code} é mapeado pelo gateway/front
+		// sobre este endpoint — não é satisfeito no Go.
+		r.Group(func(r chi.Router) {
+			r.Get("/affiliates/referral/{code}", affiliatesH.ResolveReferral)
 		})
 	})
 
@@ -182,6 +214,40 @@ func main() {
 	slog.Info("[main] servidor encerrado")
 }
 
+// ── Probes de saúde (liveness/readiness) ──────────────────────────────────────
+
+// dbPinger é a superfície mínima que os probes precisam do pool de conexões.
+// *pgxpool.Pool satisfaz a interface (método Ping(context.Context) error).
+// Extrair a interface permite testar healthHandler/readyzHandler sem um banco real.
+type dbPinger interface {
+	Ping(ctx context.Context) error
+}
+
+// healthHandler é o probe de liveness/sanidade — comportamento idêntico ao antigo
+// closure inline (Ping → 200/503). Mantido para nginx/probes já configurados.
+func healthHandler(p dbPinger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := p.Ping(r.Context()); err != nil {
+			httpx.WriteErr(w, http.StatusServiceUnavailable, "banco inacessível")
+			return
+		}
+		httpx.WriteOK(w, map[string]any{"status": "ok", "service": "affiliates"})
+	}
+}
+
+// readyzHandler é o probe de readiness — separado de /health.
+// readiness = pool.Ping → 200 (pronto) / 503 (banco inacessível).
+func readyzHandler(p dbPinger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := p.Ping(r.Context()); err != nil {
+			slog.Warn("[readyz] banco inacessível — não pronto", "err", err)
+			httpx.WriteErr(w, http.StatusServiceUnavailable, "not_ready: banco inacessível")
+			return
+		}
+		httpx.WriteOK(w, map[string]any{"status": "ready", "service": "affiliates"})
+	}
+}
+
 // ── Middlewares inline ────────────────────────────────────────────────────────
 
 // slogMiddleware registra cada requisição com slog (sem dependência externa).
@@ -201,21 +267,47 @@ func slogMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// corsMiddleware permite requisições cross-origin do portal SPA.
-// Ecoa o Origin do request (necessário ao usar Allow-Credentials: true).
-// Sem dependência externa — stdlib puro.
+// corsAllowedOrigins lê AFFILIATES_CORS_ORIGINS uma vez (lista separada por vírgula).
+// Ex.: "https://painel.senderzz.com,https://app.senderzz.com".
+// Vazio → nenhum origin é permitido para requisições credenciais (fail-closed).
+func corsAllowedOrigins() map[string]struct{} {
+	raw := os.Getenv("AFFILIATES_CORS_ORIGINS")
+	allowed := make(map[string]struct{})
+	for _, o := range strings.Split(raw, ",") {
+		o = strings.TrimSpace(o)
+		if o != "" {
+			allowed[o] = struct{}{}
+		}
+	}
+	return allowed
+}
+
+// SEC-GO-01: CORS com allowlist explícita (CWE-942).
+// Antes o middleware ecoava QUALQUER Origin do request junto com
+// Access-Control-Allow-Credentials: true — qualquer site malicioso podia fazer
+// leituras cross-origin credenciadas. Agora só ecoa o Origin (e habilita
+// credentials) quando ele está na allowlist AFFILIATES_CORS_ORIGINS.
+// Origens fora da lista não recebem cabeçalhos credenciados de CORS.
+// Comportamento dos clientes Bearer (SPA atual) preservado: o token Bearer não
+// é anexado automaticamente pelo browser, então o aperto não os quebra; basta
+// listar a(s) origem(ns) do painel em AFFILIATES_CORS_ORIGINS.
 func corsMiddleware(next http.Handler) http.Handler {
+	allowed := corsAllowedOrigins()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
-		if origin == "" {
-			origin = "*"
-		}
-		w.Header().Set("Access-Control-Allow-Origin", origin)
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Senderzz-Token, X-Internal-Sig, X-Request-ID")
-		w.Header().Set("Access-Control-Allow-Credentials", "true")
 		w.Header().Set("Vary", "Origin")
+
+		_, ok := allowed[origin]
+		if origin != "" && ok {
+			// Origin confiável — ecoa explicitamente e libera credenciais.
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Senderzz-Token, X-Internal-Sig, X-Request-ID")
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+		}
+
 		if r.Method == http.MethodOptions {
+			// Preflight: 204 mesmo para origens não permitidas (sem cabeçalhos CORS = browser bloqueia).
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}

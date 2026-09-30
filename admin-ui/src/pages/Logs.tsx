@@ -9,6 +9,7 @@ import FilterTopPanel, {
 } from '../components/FilterTopPanel'
 import TableSkeleton from '../components/TableSkeleton'
 import EmptyState from '../components/EmptyState'
+import FalkDatePicker from '../components/FalkDatePicker'
 
 type Tab = 'webhooks' | 'integrations' | 'motoboy'
 type WH = { id: number; webhook_id: number | null; event_type: string; response_code: number | null; response_body: string | null; created_at: string }
@@ -185,7 +186,7 @@ export default function Logs() {
               {au.map(a => (
                 <tr key={a.id}>
                   <td style={{ fontSize: '12px', color: 'var(--szv2-text-muted)' }}>#{a.id}</td>
-                  <td style={{ fontSize: '13px' }}>{a.pedido_id ? `#${a.pedido_id}` : '—'}</td>
+                  <td style={{ fontSize: '13px' }}>{a.pedido_id ? `${a.pedido_id}` : '—'}</td>
                   <td><span style={{ background: 'var(--szv2-brand-light)', color: 'var(--szv2-brand)', fontSize: '11px', fontWeight: 700, padding: '2px 8px', borderRadius: '6px' }}>{a.acao}</span></td>
                   <td style={{ fontSize: '13px', color: 'var(--szv2-text-soft)', maxWidth: '300px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.de_status && a.para_status ? `${a.de_status} → ${a.para_status}` : (a.meta_json ?? '—')}</td>
                   <td style={{ fontSize: '12px', color: 'var(--szv2-text-muted)' }}>{a.created_at.slice(0, 16).replace('T', ' ')}</td>
@@ -205,21 +206,19 @@ export default function Logs() {
         title="Filtros"
       >
         <FilterField label="Data inicial">
-          <input
-            type="date"
-            style={filterInputStyle}
+          <FalkDatePicker
             value={draftIni}
             max={draftFim || undefined}
-            onChange={e => setDraftIni(e.target.value)}
+            onChange={v => setDraftIni(v)}
+            placeholder="dd/mm/aaaa"
           />
         </FilterField>
         <FilterField label="Data final">
-          <input
-            type="date"
-            style={filterInputStyle}
+          <FalkDatePicker
             value={draftFim}
             min={draftIni || undefined}
-            onChange={e => setDraftFim(e.target.value)}
+            onChange={v => setDraftFim(v)}
+            placeholder="dd/mm/aaaa"
           />
         </FilterField>
         <FilterField label="Busca">

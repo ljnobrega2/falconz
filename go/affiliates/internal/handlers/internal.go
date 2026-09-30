@@ -124,11 +124,12 @@ func (h *InternalHandler) CommissionCreated(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	valorStr := toString(p["valor"])
-	if valorStr == "" {
-		valorStr = "0.00"
-	}
-	valor, err := decimal.NewFromString(valorStr)
+	// AUDIT TEST-AFFILIATE-COMMISSION-CALC-PARTIAL: a comissão (take 4,99%) é
+	// calculada upstream (PHP + triggers em infra/postgres/schema-revenue*.sql);
+	// aqui o serviço apenas replica o valor já assinado por HMAC. O parsing/
+	// normalização desse valor é extraído em parseCommissionValor para ser
+	// coberto por teste unitário sem DB (internal_commission_test.go).
+	valor, err := parseCommissionValor(toString(p["valor"]))
 	if err != nil {
 		httpx.WriteErr(w, http.StatusBadRequest, "valor inválido")
 		return
@@ -367,6 +368,25 @@ func toString(v any) string {
 	}
 	s, _ := v.(string)
 	return s
+}
+
+// parseCommissionValor normaliza o valor de comissão recebido do double-write PHP.
+//
+// AUDIT TEST-AFFILIATE-COMMISSION-CALC-PARTIAL: o "take" de 4,99% NÃO é calculado
+// neste serviço — chega pronto e assinado por HMAC do PHP/triggers Postgres. Este
+// helper reflete EXATAMENTE o que é persistido em senderzz_affiliate_commissions:
+//   - string vazia → "0.00" (default; mantém comportamento de ingest existente);
+//   - string inválida → erro (handler responde 400, comissão NÃO é gravada);
+//   - válida → decimal arredondado a 2 casas (StringFixed faz half-up no insert).
+//
+// Mantém-se isolado para regressão sem DB. Não rejeita valores ≤ 0 de propósito:
+// estornos/ajustes de comissão podem ser zerados pelo PHP (diferente do ledger COD,
+// que rejeita ≤ 0). Essa assimetria é intencional e está documentada aqui.
+func parseCommissionValor(raw string) (decimal.Decimal, error) {
+	if raw == "" {
+		raw = "0.00"
+	}
+	return decimal.NewFromString(raw)
 }
 
 // ── helper de geração de token aleatório ─────────────────────────────────────

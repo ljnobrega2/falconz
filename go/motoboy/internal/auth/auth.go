@@ -1,6 +1,8 @@
 // Package auth implementa os middlewares de autenticação dos 4 grupos do OpenAPI:
 //
-//   - motoboy_token  → Header X-MB-Token (sz_motoboys.token_app)
+//   - motoboy_token  → Header X-MB-Token / Authorization: Bearer
+//                      (lookup em sz_motoboys.token_app, que guarda o HASH
+//                       HMAC-SHA256(token_raw, WP_SALT_AUTH) — AUDIT #6)
 //   - alan_token     → Header X-Alan-Token (token estático em env ALAN_TOKEN)
 //   - portal_session → Cookie senderzz_portal_session ou Header X-Senderzz-Token
 //                      (token HMAC-SHA256 com WP_SALT_AUTH, lookup em senderzz_portal_sessions)
@@ -62,23 +64,43 @@ func PortalUserFromCtx(ctx context.Context) *PortalUser {
 // Falha com 401 se token ausente, inválido ou motoboy inativo.
 // O Motoboy autenticado é armazenado no contexto via ctxKeyMotoboy.
 func AuthMotoboy(pool *pgxpool.Pool) func(http.Handler) http.Handler {
+	// AUDIT-2026-06-21 #6: o token_app é guardado HASHEADO no banco —
+	// HMAC-SHA256(token_raw, WP_SALT_AUTH) em hex. Mesma derivação do PHP
+	// (sz_mb_hash_token_app em rest-api.php). O app envia o RAW; aqui hasheamos
+	// e fazemos lookup pelo hash, aceitando também o RAW legado durante a transição.
+	wpSalt := os.Getenv("WP_SALT_AUTH")
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			token := r.Header.Get("X-MB-Token")
+			// AUDIT-2026-06-21 #7: aceita também Authorization: Bearer (PWA envia ambos),
+			// nunca query param.
+			if token == "" {
+				if h := r.Header.Get("Authorization"); len(h) > 7 && (h[:7] == "Bearer " || h[:7] == "bearer ") {
+					token = h[7:]
+				}
+			}
 			if token == "" {
 				httpx.WriteErr(w, http.StatusUnauthorized, "token ausente")
 				return
 			}
+			if wpSalt == "" {
+				slog.Error("[auth] WP_SALT_AUTH não configurado — auth de motoboy rejeitada (fail-closed)")
+				httpx.WriteErr(w, http.StatusServiceUnavailable, "serviço não configurado")
+				return
+			}
+
+			tokenHash := hmacSHA256Hex(token, wpSalt)
 
 			var mb Motoboy
-			// ativo é TINYINT(1) no MySQL → smallint no Postgres após pgloader.
-			// Comparar contra 1 (não true) até o schema ser migrado para boolean.
+			// QA-FIX P0: sz_motoboys.ativo É boolean no Postgres (o schema já migrou).
+			// `ativo = 1` lançava "operator does not exist: boolean = integer" → a
+			// query falhava → middleware 401 → app do motoboy inteiro fora após login.
 			err := pool.QueryRow(r.Context(),
 				`SELECT id, cd_id, zona_id, nome
 				   FROM sz_motoboys
-				  WHERE token_app = $1 AND ativo = 1
+				  WHERE token_app IN ($1, $2) AND ativo = true
 				  LIMIT 1`,
-				token,
+				tokenHash, token,
 			).Scan(&mb.ID, &mb.CdID, &mb.ZonaID, &mb.Nome)
 			if err != nil {
 				slog.Warn("[auth] token_app inválido ou motoboy inativo", "err", err)
@@ -93,7 +115,19 @@ func AuthMotoboy(pool *pgxpool.Pool) func(http.Handler) http.Handler {
 }
 
 // AuthAlan valida o header X-Alan-Token contra a variável de ambiente ALAN_TOKEN.
-// Responde 401 se ausente ou não corresponder.
+//
+// ENV-REQUIRED, fail-closed (SEGREDOS/AUTH-CONFIG): o segredo vem EXCLUSIVAMENTE
+// de os.Getenv("ALAN_TOKEN") — sem fallback literal/hardcoded. Se a env estiver
+// vazia, TODA requisição Alan recebe 503 (nunca "aberto por engano"). A
+// comparação é constant-time (subtle.ConstantTimeCompare) para não vazar o
+// segredo por timing.
+//
+// LIMITAÇÃO conhecida (P3, design): ALAN_TOKEN é um token único e compartilhado
+// — autentica todas as chamadas de expedição sem identidade por chamador nem
+// rotação parcial. Endurecimento futuro: tokens por-operador (lookup em tabela,
+// como X-MB-Token). Mitigação atual: o gate fail-closed acima é o único controle
+// de acesso à PII de expedição (nome/endereço do destinatário nas etiquetas).
+// Por isso ele NUNCA pode degradar para "aberto" — manter o 503 em env vazia.
 func AuthAlan() func(http.Handler) http.Handler {
 	expectedToken := os.Getenv("ALAN_TOKEN")
 	return func(next http.Handler) http.Handler {
@@ -186,6 +220,30 @@ func RequireAuth(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// RequireRole retorna 403 se o PortalUser autenticado não tiver um dos papéis
+// permitidos. Deve ser encadeado APÓS AuthPortal (que popula o PortalUser).
+// SEC-GO-02: fecha o anti-padrão "qualquer sessão portal" nas rotas /ol/*.
+func RequireRole(roles ...string) func(http.Handler) http.Handler {
+	allowed := make(map[string]struct{}, len(roles))
+	for _, role := range roles {
+		allowed[role] = struct{}{}
+	}
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			u := PortalUserFromCtx(r.Context())
+			if u == nil {
+				httpx.WriteErr(w, http.StatusUnauthorized, "não autorizado")
+				return
+			}
+			if _, ok := allowed[u.Role]; !ok {
+				httpx.WriteErr(w, http.StatusForbidden, "acesso restrito ao operador logístico")
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 // ── Helpers internos ──────────────────────────────────────────────────────────

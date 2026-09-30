@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api'
+import FalkSelect from '../components/FalkSelect'
 
 type ApiEndpoint = {
   method: string
@@ -53,6 +54,8 @@ function CopyButton({ text }: { text: string }) {
     navigator.clipboard.writeText(text).then(() => {
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
+    }).catch(() => {
+      // clipboard indisponível (contexto inseguro) — falha silenciosa, não quebra a tela
     })
   }
   return (
@@ -134,7 +137,7 @@ export default function ApiDocs() {
           <div>
             <h2>Documentação de API</h2>
             <p className="szv2-card-sub">
-              Endpoints REST do Senderzz disponíveis para integração externa.
+              Endpoints REST da FALK LOG disponíveis para integração externa.
             </p>
           </div>
           <span
@@ -187,6 +190,11 @@ export default function ApiDocs() {
       ) : (
         <>
           {/* Cards por namespace */}
+          {!err && namespaces.length === 0 && (
+            <div className="szv2-card" style={{ marginBottom: 24, padding: 32, textAlign: 'center', color: 'var(--szv2-text-muted)' }}>
+              Nenhum namespace de API disponível no momento.
+            </div>
+          )}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 16, marginBottom: 24 }}>
             {namespaces.map((ns, nsIdx) => (
               <details key={ns.namespace} className="szv2-card" style={{ padding: 0 }}>
@@ -216,7 +224,7 @@ export default function ApiDocs() {
                   </div>
                   <span
                     className="sz-badge"
-                    style={{ fontSize: 11, background: 'rgba(234,88,12,.1)', color: 'var(--szv2-brand)' }}
+                    style={{ fontSize: 11, background: 'rgba(30, 111, 242,.1)', color: 'var(--szv2-brand)' }}
                   >
                     {ns.auth}
                   </span>
@@ -321,27 +329,21 @@ curl -X POST "https://seusite.com.br${ns.base_url}/auth/token" \\
               {curNs && curEp && (
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                   {/* Select namespace */}
-                  <select
-                    value={selectedNs}
-                    onChange={e => { setSelectedNs(Number(e.target.value)); setSelectedEp(0) }}
-                    className="szv2-select"
-                  >
-                    {namespaces.map((ns, i) => (
-                      <option key={ns.namespace} value={i}>{ns.label}</option>
-                    ))}
-                  </select>
+                  <FalkSelect
+                    value={String(selectedNs)}
+                    onChange={v => { setSelectedNs(Number(v)); setSelectedEp(0) }}
+                    aria-label="Namespace"
+                    style={{ width: 220 }}
+                    options={namespaces.map((ns, i) => ({ value: String(i), label: ns.label }))}
+                  />
                   {/* Select endpoint */}
-                  <select
-                    value={selectedEp}
-                    onChange={e => setSelectedEp(Number(e.target.value))}
-                    className="szv2-select"
-                  >
-                    {curNs.endpoints.map((ep, i) => (
-                      <option key={`${ep.method}-${ep.path}`} value={i}>
-                        {ep.method} {ep.path}
-                      </option>
-                    ))}
-                  </select>
+                  <FalkSelect
+                    value={String(selectedEp)}
+                    onChange={v => setSelectedEp(Number(v))}
+                    aria-label="Endpoint"
+                    style={{ width: 280 }}
+                    options={curNs.endpoints.map((ep, i) => ({ value: String(i), label: `${ep.method} ${ep.path}` }))}
+                  />
                   <CopyButton text={curlSnippet} />
                 </div>
               )}

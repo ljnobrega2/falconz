@@ -1,4 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { confirmAsync } from '../components/ConfirmDialog'
+import { useToast } from '../hooks/useToast'
 import { api } from '../api'
 import FilterButton from '../components/FilterButton'
 import FilterTopPanel, {
@@ -9,6 +12,11 @@ import FilterTopPanel, {
 } from '../components/FilterTopPanel'
 import TableSkeleton from '../components/TableSkeleton'
 import EmptyState from '../components/EmptyState'
+import FalkDatePicker from '../components/FalkDatePicker'
+import FilterDrawer from '../components/FilterDrawer'
+import DetailDrawer from '../components/DetailDrawer'
+import StatusBadge from '../components/StatusBadge'
+import { drawerTabsStyle, drawerTabBtnStyle } from '../components/drawerTabs'
 
 // ----- Tipos retornados pelo handler Go ---------------------------------------
 
@@ -89,24 +97,18 @@ const STATUS_CLS: Record<string, string> = {
   expirado: 's-expirado',
 }
 
-const BADGE_CLS: Record<string, string> = {
-  pendente: 'szv2-badge-warning',
-  confirmado: 'szv2-badge-success',
-  pago: 'szv2-badge-success',
-  cancelado: 'szv2-badge-danger',
-  expirado: 'szv2-badge-neutral',
-}
 
 // ----- Página principal -------------------------------------------------------
 
 export default function TpcClientes() {
+  const navigate = useNavigate()
   const [items, setItems] = useState<ClienteRow[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
   const [perPage] = useState(100)
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState('')
-  const [toast, setToast] = useState<{ kind: 'ok' | 'err'; msg: string } | null>(null)
+  const showToast = useToast() // AUDIT-2026-06-18 Onda3
 
   // Filtros aplicados.
   const [q, setQ] = useState('')
@@ -151,10 +153,6 @@ export default function TpcClientes() {
 
   useEffect(() => { load() /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [q, dataIni, dataFim, page])
 
-  function showToast(kind: 'ok' | 'err', msg: string) {
-    setToast({ kind, msg })
-    setTimeout(() => setToast(null), 5000)
-  }
 
   function openPanel() {
     setDraftQ(q); setDraftIni(dataIni); setDraftFim(dataFim)
@@ -204,14 +202,6 @@ export default function TpcClientes() {
       <ActiveFilterChips chips={chips} onClearAll={clearFilters} />
 
       {err && <div className="sz-alert-danger" style={{ marginBottom: 16 }}>{err}</div>}
-      {toast && (
-        <div
-          className={toast.kind === 'ok' ? 'sz-alert-success' : 'sz-alert-danger'}
-          style={{ marginBottom: 16 }}
-        >
-          {toast.msg}
-        </div>
-      )}
 
       {/* Tabela principal */}
       {loading && items.length === 0 ? (
@@ -259,6 +249,13 @@ export default function TpcClientes() {
                       onClick={() => setExtratoModal(c)}
                     >
                       Ver extrato
+                    </button>
+                    <button
+                      type="button"
+                      className="szv2-btn szv2-btn-sm szv2-btn-secondary"
+                      onClick={() => navigate(`/orders?produtor_id=${c.user_id}`)}
+                    >
+                      Ver pedidos
                     </button>
                     <button
                       type="button"
@@ -341,21 +338,19 @@ export default function TpcClientes() {
         title="Filtros"
       >
         <FilterField label="Data inicial">
-          <input
-            type="date"
-            style={filterInputStyle}
+          <FalkDatePicker
             value={draftIni}
             max={draftFim || undefined}
-            onChange={e => setDraftIni(e.target.value)}
+            onChange={v => setDraftIni(v)}
+            placeholder="dd/mm/aaaa"
           />
         </FilterField>
         <FilterField label="Data final">
-          <input
-            type="date"
-            style={filterInputStyle}
+          <FalkDatePicker
             value={draftFim}
             min={draftIni || undefined}
-            onChange={e => setDraftFim(e.target.value)}
+            onChange={v => setDraftFim(v)}
+            placeholder="dd/mm/aaaa"
           />
         </FilterField>
         <FilterField label="Busca (email / nome / user_id)">
@@ -487,13 +482,34 @@ function PixModal({
   const displayCliente = resolvedCliente || (cliente?.user_id ? cliente : null)
 
   return (
-    <div className="szv2-modal-overlay szv2-open" onClick={onClose}>
-      <div className="szv2-modal szv2-modal-lg" onClick={e => e.stopPropagation()}>
-        <div className="szv2-modal-head">
-          <h3>Emitir PIX{displayCliente ? ` para ${displayCliente.nome || `#${displayCliente.user_id}`}` : ''}</h3>
-          <button className="szv2-modal-x" onClick={onClose}>✕</button>
-        </div>
-        <div className="szv2-modal-body">
+    <DetailDrawer
+      open
+      onClose={onClose}
+      large
+      title={`Emitir PIX${displayCliente ? ` para ${displayCliente.nome || `#${displayCliente.user_id}`}` : ''}`}
+      footer={
+        !result ? (
+          <>
+            <button type="button" className="szv2-btn szv2-btn-secondary" onClick={onClose}>
+              Cancelar
+            </button>
+            <button
+              type="button"
+              className="szv2-btn szv2-btn-brand"
+              onClick={submit as any}
+              disabled={busy}
+            >
+              {busy ? 'Gerando…' : 'Gerar PIX'}
+            </button>
+          </>
+        ) : (
+          <button type="button" className="szv2-btn szv2-btn-brand" onClick={onClose}>
+            Fechar
+          </button>
+        )
+      }
+    >
+      <div>
           {!result ? (
             <form onSubmit={submit}>
               {err && <div className="sz-alert-danger" style={{ marginBottom: 12 }}>{err}</div>}
@@ -635,30 +651,8 @@ function PixModal({
               </div>
             </div>
           )}
-        </div>
-        <div className="szv2-modal-foot">
-          {!result ? (
-            <>
-              <button type="button" className="szv2-btn szv2-btn-secondary" onClick={onClose}>
-                Cancelar
-              </button>
-              <button
-                type="button"
-                className="szv2-btn szv2-btn-brand"
-                onClick={submit as any}
-                disabled={busy}
-              >
-                {busy ? 'Gerando…' : 'Gerar PIX'}
-              </button>
-            </>
-          ) : (
-            <button type="button" className="szv2-btn szv2-btn-brand" onClick={onClose}>
-              Fechar
-            </button>
-          )}
-        </div>
       </div>
-    </div>
+    </DetailDrawer>
   )
 }
 
@@ -695,7 +689,7 @@ function ExtratoModal({
   useEffect(() => { load() }, [cliente.user_id])
 
   async function cancelarRecarga(recargaID: number) {
-    if (!window.confirm(`Cancelar recarga #${recargaID}?`)) return
+    if (!await confirmAsync({ message: `Cancelar recarga #${recargaID}?`, danger: true })) return
     setCancelling(recargaID)
     try {
       await api(`/tpc-clientes/${cliente.user_id}/cancelar-recarga/${recargaID}`, {
@@ -711,173 +705,156 @@ function ExtratoModal({
   }
 
   return (
-    <div className="szv2-modal-overlay szv2-open" onClick={onClose}>
-      <div className="szv2-modal szv2-modal-lg" onClick={e => e.stopPropagation()}>
-        <div className="szv2-modal-head">
-          <h3>
-            Extrato — {cliente.nome || `Usuário #${cliente.user_id}`}
-            {cliente.email && (
-              <span style={{ fontWeight: 400, fontSize: 13, color: 'var(--szv2-text-muted)', marginLeft: 8 }}>
-                {cliente.email}
-              </span>
-            )}
-          </h3>
-          <button className="szv2-modal-x" onClick={onClose}>✕</button>
+    <FilterDrawer
+      open
+      onClose={onClose}
+      onApply={onClose}
+      applyLabel="Fechar"
+      width={620}
+      title={`Extrato — ${cliente.nome || `Usuário #${cliente.user_id}`}${cliente.email ? ` · ${cliente.email}` : ''}`}
+    >
+      {/* Resumo de saldo */}
+      {!!detail && (
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(3, 1fr)',
+            gap: 12,
+          }}
+        >
+          <KpiMini label="Saldo total" value={fmt(detail.cliente.saldo)} />
+          <KpiMini label="Reservado" value={fmt(detail.cliente.saldo_reservado)} warning />
+          <KpiMini label="Disponível" value={fmt(detail.cliente.saldo_disponivel)} success />
         </div>
+      )}
 
-        <div className="szv2-modal-body">
-          {/* Resumo de saldo */}
-          {detail && (
-            <div
-              style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(3, 1fr)',
-                gap: 12,
-                marginBottom: 16,
-              }}
-            >
-              <KpiMini label="Saldo total" value={fmt(detail.cliente.saldo)} />
-              <KpiMini label="Reservado" value={fmt(detail.cliente.saldo_reservado)} warning />
-              <KpiMini label="Disponível" value={fmt(detail.cliente.saldo_disponivel)} success />
-            </div>
-          )}
-
-          {/* Tabs */}
-          <div className="szv2-tabs" style={{ marginBottom: 12 }}>
-            <button
-              className="szv2-tab"
-              aria-selected={tab === 'transacoes'}
-              onClick={() => setTab('transacoes')}
-            >
-              Transações
-            </button>
-            <button
-              className="szv2-tab"
-              aria-selected={tab === 'recargas'}
-              onClick={() => setTab('recargas')}
-            >
-              Recargas
-            </button>
-          </div>
-
-          {err && <div className="sz-alert-danger" style={{ marginBottom: 12 }}>{err}</div>}
-
-          {loading ? (
-            <div className="szv2-empty"><h3>Carregando…</h3></div>
-          ) : tab === 'transacoes' ? (
-            <div className="szv2-table-wrap">
-              <table className="szv2-table">
-                <thead>
-                  <tr>
-                    <th>Data</th>
-                    <th>Tipo</th>
-                    <th className="szv2-td-num">Valor</th>
-                    <th>Status</th>
-                    <th>Descrição</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(detail?.transacoes || []).map(t => (
-                    <tr key={t.id}>
-                      <td style={{ fontSize: 12, color: 'var(--szv2-text-muted)' }}>{fmtDate(t.created_at)}</td>
-                      <td>
-                        <span
-                          className={`szv2-status-badge ${
-                            t.tipo === 'credito' || t.tipo === 'recarga' ? 's-confirmado'
-                            : t.tipo === 'debito' ? 's-cancelado'
-                            : 's-pendente'
-                          }`}
-                        >
-                          {t.tipo}
-                        </span>
-                      </td>
-                      <td
-                        className="szv2-td-num"
-                        style={{
-                          fontWeight: 700,
-                          color:
-                            t.tipo === 'credito' || t.tipo === 'recarga' ? 'var(--szv2-success)'
-                            : t.tipo === 'debito' ? 'var(--szv2-danger)'
-                            : 'inherit',
-                        }}
-                      >
-                        {fmt(t.valor)}
-                      </td>
-                      <td>
-                        <span className={`sz-badge ${BADGE_CLS[t.status] || 'szv2-badge-neutral'}`}>{t.status}</span>
-                      </td>
-                      <td style={{ fontSize: 12, color: 'var(--szv2-text-soft)' }}>{t.descricao}</td>
-                    </tr>
-                  ))}
-                  {(detail?.transacoes || []).length === 0 && (
-                    <tr><td colSpan={5}><div className="szv2-empty"><h3>Sem transações</h3></div></td></tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <div className="szv2-table-wrap">
-              <table className="szv2-table">
-                <thead>
-                  <tr>
-                    <th>Data</th>
-                    <th className="szv2-td-num">Valor</th>
-                    <th>Status</th>
-                    <th>PIX ID</th>
-                    <th style={{ width: 140 }}>Ação</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(detail?.recargas || []).map(r => (
-                    <tr key={r.id}>
-                      <td style={{ fontSize: 12, color: 'var(--szv2-text-muted)' }}>{fmtDate(r.created_at)}</td>
-                      <td className="szv2-td-num" style={{ fontWeight: 700 }}>{fmt(r.valor)}</td>
-                      <td>
-                        <span className={`sz-badge ${BADGE_CLS[r.status] || 'szv2-badge-neutral'}`}>{r.status}</span>
-                      </td>
-                      <td
-                        style={{
-                          fontFamily: 'var(--szv2-font-mono)',
-                          fontSize: 11,
-                          color: 'var(--szv2-text-muted)',
-                          maxWidth: 160,
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                          whiteSpace: 'nowrap',
-                        }}
-                      >
-                        {r.me_pix_id ?? '—'}
-                      </td>
-                      <td>
-                        {r.status === 'pendente' && (
-                          <button
-                            type="button"
-                            className="szv2-btn szv2-btn-sm szv2-btn-danger"
-                            disabled={cancelling === r.id}
-                            onClick={() => cancelarRecarga(r.id)}
-                          >
-                            {cancelling === r.id ? '…' : 'Cancelar'}
-                          </button>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                  {(detail?.recargas || []).length === 0 && (
-                    <tr><td colSpan={5}><div className="szv2-empty"><h3>Sem recargas</h3></div></td></tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-
-        <div className="szv2-modal-foot">
-          <button type="button" className="szv2-btn szv2-btn-secondary" onClick={onClose}>
-            Fechar
+      {/* Abas */}
+      <div style={drawerTabsStyle}>
+        {([
+          ['transacoes', 'Transações'],
+          ['recargas', 'Recargas'],
+        ] as const).map(([key, label]) => (
+          <button
+            key={key}
+            type="button"
+            onClick={() => setTab(key)}
+            style={drawerTabBtnStyle(tab === key)}
+          >
+            {label}
           </button>
-        </div>
+        ))}
       </div>
-    </div>
+
+      {err && <div className="sz-alert-danger">{err}</div>}
+
+      {loading ? (
+        <div className="szv2-empty"><h3>Carregando…</h3></div>
+      ) : tab === 'transacoes' ? (
+        <div className="szv2-table-wrap">
+          <table className="szv2-table">
+            <thead>
+              <tr>
+                <th>Data</th>
+                <th>Tipo</th>
+                <th className="szv2-td-num">Valor</th>
+                <th>Status</th>
+                <th>Descrição</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(detail?.transacoes || []).map(t => (
+                <tr key={t.id}>
+                  <td style={{ fontSize: 12, color: 'var(--szv2-text-muted)' }}>{fmtDate(t.created_at)}</td>
+                  <td>
+                    <span
+                      className={`szv2-status-badge ${
+                        t.tipo === 'credito' || t.tipo === 'recarga' ? 's-confirmado'
+                        : t.tipo === 'debito' ? 's-cancelado'
+                        : 's-pendente'
+                      }`}
+                    >
+                      {t.tipo}
+                    </span>
+                  </td>
+                  <td
+                    className="szv2-td-num"
+                    style={{
+                      fontWeight: 700,
+                      color:
+                        t.tipo === 'credito' || t.tipo === 'recarga' ? 'var(--szv2-success)'
+                        : t.tipo === 'debito' ? 'var(--szv2-danger)'
+                        : 'inherit',
+                    }}
+                  >
+                    {fmt(t.valor)}
+                  </td>
+                  <td>
+                    <StatusBadge status={t.status} />
+                  </td>
+                  <td style={{ fontSize: 12, color: 'var(--szv2-text-soft)' }}>{t.descricao}</td>
+                </tr>
+              ))}
+              {(detail?.transacoes || []).length === 0 && (
+                <tr><td colSpan={5}><div className="szv2-empty"><h3>Sem transações</h3></div></td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <div className="szv2-table-wrap">
+          <table className="szv2-table">
+            <thead>
+              <tr>
+                <th>Data</th>
+                <th className="szv2-td-num">Valor</th>
+                <th>Status</th>
+                <th>PIX ID</th>
+                <th style={{ width: 140 }}>Ação</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(detail?.recargas || []).map(r => (
+                <tr key={r.id}>
+                  <td style={{ fontSize: 12, color: 'var(--szv2-text-muted)' }}>{fmtDate(r.created_at)}</td>
+                  <td className="szv2-td-num" style={{ fontWeight: 700 }}>{fmt(r.valor)}</td>
+                  <td>
+                    <StatusBadge status={r.status} />
+                  </td>
+                  <td
+                    style={{
+                      fontFamily: 'var(--szv2-font-mono)',
+                      fontSize: 11,
+                      color: 'var(--szv2-text-muted)',
+                      maxWidth: 160,
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {r.me_pix_id ?? '—'}
+                  </td>
+                  <td>
+                    {r.status === 'pendente' && (
+                      <button
+                        type="button"
+                        className="szv2-btn szv2-btn-sm szv2-btn-danger"
+                        disabled={cancelling === r.id}
+                        onClick={() => cancelarRecarga(r.id)}
+                      >
+                        {cancelling === r.id ? '…' : 'Cancelar'}
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+              {(detail?.recargas || []).length === 0 && (
+                <tr><td colSpan={5}><div className="szv2-empty"><h3>Sem recargas</h3></div></td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </FilterDrawer>
   )
 }
 
@@ -896,7 +873,7 @@ function ResetWalletPanel({
 
   async function reset() {
     if (!ready) return
-    if (!window.confirm('Tem ABSOLUTA certeza? Essa ação apaga TODAS as carteiras, transações e recargas.')) return
+    if (!await confirmAsync({ message: 'Tem ABSOLUTA certeza? Essa ação apaga TODAS as carteiras, transações e recargas.', danger: true })) return
     setBusy(true)
     try {
       const r = await api<ResetResponse>('/tpc-clientes/reset-wallet-all', {

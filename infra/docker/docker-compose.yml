@@ -16,6 +16,33 @@
 # Para Fase 1 apenas: docker compose up -d postgres redis motoboy-service
 # Para todas as Fases: docker compose up -d
 # =============================================================================
+#
+# AUDIT INFRA-healthcheck-readiness — readiness dos 7 serviços Go
+# -----------------------------------------------------------------------------
+# Os serviços Go expõem endpoint de readiness HTTP:
+#   motoboy-service     GET :8080/health   (faz pool.Ping → 503 se DB down)
+#   wallet-service      GET :8081/health
+#   affiliates-service  GET :8083/health
+#   labels-service      GET :8084/health
+#   portal-service      GET :8085/health
+#   orders-service      GET :8086/health
+#   admin-service       GET :8087/healthz
+#
+# POR QUE NÃO HÁ bloco `healthcheck:` em CADA serviço Go aqui:
+#   6 dos 7 binários são `FROM scratch` (ver go/<svc>/Dockerfile) — imagem SEM
+#   shell, curl ou wget. Um `healthcheck:` com test CMD/CMD-SHELL curl rodaria
+#   DENTRO do container e falharia sempre (binário ausente) → marcaria o serviço
+#   'unhealthy' permanentemente. Como há dependências `condition: service_healthy`
+#   /`service_completed_successfully` na cadeia, isso causaria DEADLOCK de startup.
+#   (admin é `alpine` e teria shell, mas mantemos a convenção uniforme.)
+#
+# ONDE a readiness É verificada (externamente, do host, onde curl existe):
+#   infra/scripts/deploy-service.sh:99-108 e deploy-admin.sh:90-96 fazem
+#   `curl -sf http://localhost:<porta><HEALTH_PATH>` em loop após `up -d`.
+#   Em prod (nginx/LB) o gateway pode sondar os mesmos /health.
+# postgres e redis MANTÊM healthcheck (imagens oficiais têm pg_isready/redis-cli)
+# pois os serviços Go dependem deles via service_healthy.
+# =============================================================================
 
 services:
 
@@ -32,16 +59,17 @@ services:
       TZ:   America/Sao_Paulo
       PGTZ: America/Sao_Paulo
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      # AUDIT-2026-06-21 H5: bind só em loopback — Docker publica passando por cima da UFW.
+      # Postgres é puramente interno; nginx/host alcança via 127.0.0.1. Nunca expor na pública.
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
-      # Ordem importa — referências FK entre schemas
-      - ../postgres/schema-motoboy.sql:/docker-entrypoint-initdb.d/01-motoboy.sql:ro
-      - ../postgres/schema-wallet.sql:/docker-entrypoint-initdb.d/02-wallet.sql:ro
-      - ../postgres/schema-affiliates.sql:/docker-entrypoint-initdb.d/03-affiliates.sql:ro
-      - ../postgres/schema-labels.sql:/docker-entrypoint-initdb.d/04-labels.sql:ro
-      - ../postgres/schema-portal.sql:/docker-entrypoint-initdb.d/05-portal.sql:ro
-      - ../postgres/schema-orders.sql:/docker-entrypoint-initdb.d/06-orders.sql:ro
+      # AUDIT INFRA-docker-compose-schema-divergence: removidos os mounts em
+      # /docker-entrypoint-initdb.d. Aplicavam só 7 de ~29 schemas (drift dev/prod)
+      # e initdb.d SÓ roda na 1ª criação do volume (nunca em restart / volume já
+      # existente → schemas novos jamais aplicados). Os schemas agora são aplicados
+      # pelo serviço 'migrate-runner' (scripts/db-migrate.sh, versionado em
+      # schema_migrations, idempotente, TODOS os .sql em ordem de dependência).
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-senderzz} -d ${POSTGRES_DB:-senderzz}"]
       interval: 5s
@@ -55,12 +83,43 @@ services:
     image: redis:7-alpine
     restart: unless-stopped
     ports:
-      - "${REDIS_PORT:-6379}:6379"
+      # AUDIT-2026-06-21 H5: loopback-only (Redis interno; Docker fura a UFW se 0.0.0.0).
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 3s
       retries: 5
+
+  # ---------------------------------------------------------------------------
+  # AUDIT INFRA-docker-compose-schema-divergence
+  # migrate-runner — aplica TODOS os schemas via scripts/db-migrate.sh e SAI 0.
+  # Substitui os mounts initdb.d (que aplicavam só 7 de 29 e só na 1ª criação do
+  # volume). Os serviços Go esperam este job completar (service_completed_successfully).
+  # Imagem postgres:16 (Debian) tem bash+psql; db-migrate.sh usa arrays bash.
+  # DATABASE_URL aponta p/ host de serviço 'postgres' (NÃO localhost) dentro da rede.
+  # ---------------------------------------------------------------------------
+  migrate-runner:
+    image: postgres:16
+    restart: "no"
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-senderzz}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-senderzz}?sslmode=disable
+      TZ: America/Sao_Paulo
+      # FAIL-CLOSED: default = 0 (NÃO aplica seeds de demo). Os seeds demo
+      # (910-seed-dev-demo, seed-demo-*, seed-cod-wallet-*) só entram com
+      # APPLY_SEEDS=1 EXPLÍCITO no .env — necessário porque:
+      #   a) seed-demo-producer46.sql tem FK quebrada (zona_id ausente) → faria o
+      #      migrate-runner SAIR != 0 e travar todos os serviços Go
+      #      (service_completed_successfully) se rodasse por default;
+      #   b) em prod nunca se quer demo data. Antes era `:-1` (ligava por engano).
+      # Para popular demo em DEV: APPLY_SEEDS=1 no infra/docker/.env.
+      APPLY_SEEDS: ${APPLY_SEEDS:-0}
+    volumes:
+      # repo montado read-only: o runner lê scripts/db-migrate.sh + infra/postgres/*.sql
+      - ../../:/repo:ro
+    entrypoint: ["bash", "/repo/infra/docker/migrate-entrypoint.sh"]
+    depends_on:
+      postgres: { condition: service_healthy }
 
   # ---------------------------------------------------------------------------
   # Fase 1: Motoboy (sz-motoboy/v1)
@@ -79,10 +138,14 @@ services:
       MOTOBOY_INTERNAL_SECRET:   ${MOTOBOY_INTERNAL_SECRET:-}
       TZ:                        America/Sao_Paulo
       APP_ENV:                   ${APP_ENV:-development}
+      # AUDIT-2026-06-18: allowlist CORS (CSV). Vazio = nega CORS credentialed cross-origin.
+      ALLOWED_ORIGINS:           ${ALLOWED_ORIGINS:-}
     ports:
-      - "${MOTOBOY_PORT:-8080}:8080"
+      # AUDIT-2026-06-21 H5: serviços Go atrás do nginx do host → loopback-only, fora da pública.
+      - "127.0.0.1:${MOTOBOY_PORT:-8080}:8080"
     depends_on:
       postgres: { condition: service_healthy }
+      migrate-runner: { condition: service_completed_successfully }
       redis:    { condition: service_healthy }
 
   # ---------------------------------------------------------------------------
@@ -99,13 +162,17 @@ services:
       PORT:                     ${WALLET_PORT:-8081}
       JWT_SECRET:               ${JWT_SECRET:?}
       WEBHOOK_SECRET:           ${WEBHOOK_SECRET:?}
+      # G3: wallet lê WP_SALT_AUTH (handlers/auth.go) p/ validar sessão de painel.
+      # Fail-closed: vazio = rejeita sessão. Cabeado via ${VAR:?}.
+      WP_SALT_AUTH:             ${WP_SALT_AUTH:?}
       WALLET_INTERNAL_SECRET:   ${WALLET_INTERNAL_SECRET:-}
       ME_TOKEN:                 ${ME_TOKEN:-}
       TZ:                       America/Sao_Paulo
     ports:
-      - "${WALLET_PORT:-8081}:8081"
+      - "127.0.0.1:${WALLET_PORT:-8081}:8081"
     depends_on:
       postgres: { condition: service_healthy }
+      migrate-runner: { condition: service_completed_successfully }
       redis:    { condition: service_healthy }
 
   # ---------------------------------------------------------------------------
@@ -121,12 +188,16 @@ services:
       REDIS_URL:                     redis://redis:6379/2
       PORT:                          ${AFFILIATES_PORT:-8083}
       JWT_SECRET:                    ${JWT_SECRET:?}
+      # G2: affiliates lê WP_SALT_AUTH (auth/auth.go) p/ validar sessão portal.
+      # Fail-closed: vazio = rejeita toda sessão portal. Cabeado via ${VAR:?}.
+      WP_SALT_AUTH:                  ${WP_SALT_AUTH:?}
       AFFILIATES_INTERNAL_SECRET:    ${AFFILIATES_INTERNAL_SECRET:-}
       TZ:                            America/Sao_Paulo
     ports:
-      - "${AFFILIATES_PORT:-8083}:8083"
+      - "127.0.0.1:${AFFILIATES_PORT:-8083}:8083"
     depends_on:
       postgres: { condition: service_healthy }
+      migrate-runner: { condition: service_completed_successfully }
       redis:    { condition: service_healthy }
 
   # ---------------------------------------------------------------------------
@@ -144,11 +215,16 @@ services:
       JWT_SECRET:      ${JWT_SECRET:?}
       ME_TOKEN:        ${ME_TOKEN:?}
       ME_BASE_URL:     ${ME_BASE_URL:-https://melhorenvio.com.br/api/v2}
+      # G5: labels lê TRACKING_WEBHOOK_SECRET (handlers/labels.go) p/ verificar
+      # HMAC do webhook de rastreio. Fail-closed: vazio = recusa o webhook.
+      # Cabeado via ${VAR:?} → exige TRACKING_WEBHOOK_SECRET no .env.
+      TRACKING_WEBHOOK_SECRET: ${TRACKING_WEBHOOK_SECRET:?}
       TZ:              America/Sao_Paulo
     ports:
-      - "${LABELS_PORT:-8084}:8084"
+      - "127.0.0.1:${LABELS_PORT:-8084}:8084"
     depends_on:
       postgres: { condition: service_healthy }
+      migrate-runner: { condition: service_completed_successfully }
       redis:    { condition: service_healthy }
 
   # ---------------------------------------------------------------------------
@@ -170,10 +246,13 @@ services:
       SMTP_USER:       ${SMTP_USER:-}
       SMTP_PASS:       ${SMTP_PASS:-}
       TZ:              America/Sao_Paulo
+      # AUDIT-2026-06-18: allowlist CORS (CSV). Vazio = nega CORS credentialed cross-origin.
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
     ports:
-      - "${PORTAL_PORT:-8085}:8085"
+      - "127.0.0.1:${PORTAL_PORT:-8085}:8085"
     depends_on:
       postgres: { condition: service_healthy }
+      migrate-runner: { condition: service_completed_successfully }
       redis:    { condition: service_healthy }
 
   # ---------------------------------------------------------------------------
@@ -189,13 +268,19 @@ services:
       REDIS_URL:       redis://redis:6379/5
       PORT:            ${ORDERS_PORT:-8086}
       JWT_SECRET:      ${JWT_SECRET:?}
+      # G1: orders lê WP_SALT_AUTH (auth/auth.go → sessão portal) e WEBHOOK_SECRET
+      # (handlers/payments.go → HMAC do webhook de pagamento). Ambos fail-closed:
+      # vazio = rejeita sessão / recusa webhook. Cabeados via ${VAR:?}.
+      WP_SALT_AUTH:    ${WP_SALT_AUTH:?}
+      WEBHOOK_SECRET:  ${WEBHOOK_SECRET:?}
       WALLET_URL:      http://wallet-service:8081
       MOTOBOY_URL:     http://motoboy-service:8080
       TZ:              America/Sao_Paulo
     ports:
-      - "${ORDERS_PORT:-8086}:8086"
+      - "127.0.0.1:${ORDERS_PORT:-8086}:8086"
     depends_on:
       postgres:         { condition: service_healthy }
+      migrate-runner: { condition: service_completed_successfully }
       redis:            { condition: service_healthy }
       wallet-service:   { condition: service_started }
       motoboy-service:  { condition: service_started }
@@ -211,13 +296,18 @@ services:
     environment:
       DATABASE_URL:    postgresql://${POSTGRES_USER:-senderzz}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-senderzz}?sslmode=disable
       ADMIN_JWT_SECRET: ${ADMIN_JWT_SECRET:?}
+      JWT_SECRET:      ${JWT_SECRET:?}
       APP_BASE_URL:    ${APP_BASE_URL:-https://app.senderzz.com.br}
+      LABELS_SERVICE_URL: ${LABELS_SERVICE_URL:-http://labels-service:8084}
+      ME_TOKEN:        ${ME_TOKEN:?}
+      ME_API_URL:      ${ME_API_URL:-https://melhorenvio.com.br/api/v2}
       PORT:            ${ADMIN_PORT:-8087}
       TZ:              America/Sao_Paulo
     ports:
-      - "${ADMIN_PORT:-8087}:8087"
+      - "127.0.0.1:${ADMIN_PORT:-8087}:8087"
     depends_on:
       postgres: { condition: service_healthy }
+      migrate-runner: { condition: service_completed_successfully }
 
   # ---------------------------------------------------------------------------
   # Admin UI (React SPA via nginx) — serve estático na porta 8089
@@ -228,7 +318,7 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     ports:
-      - "${ADMIN_UI_PORT:-8089}:80"
+      - "127.0.0.1:${ADMIN_UI_PORT:-8089}:80"
 
 volumes:
   pg_data:

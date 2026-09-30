@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
+import { confirmAsync } from '../components/ConfirmDialog'
+import { useToast } from '../hooks/useToast'
 import { api } from '../api'
 import FilterButton from '../components/FilterButton'
 import FilterTopPanel, {
@@ -9,6 +11,11 @@ import FilterTopPanel, {
 } from '../components/FilterTopPanel'
 import TableSkeleton from '../components/TableSkeleton'
 import EmptyState from '../components/EmptyState'
+import FilterDrawer from '../components/FilterDrawer'
+import FalkSelect from '../components/FalkSelect'
+import FalkDatePicker from '../components/FalkDatePicker'
+import { drawerTabsStyle, drawerTabBtnStyle } from '../components/drawerTabs'
+import StatusBadge from '../components/StatusBadge'
 
 // ---------------------------------------------------------------------------
 // Tipos espelhados de internal/handlers/affiliate_wallet.go
@@ -64,16 +71,153 @@ const TX_TYPE_BADGE: Record<string, string> = {
   frustration_reversal: 'szv2-badge-warning',
 }
 
-// Badge color por status de transação.
-const TX_STATUS_BADGE: Record<string, string> = {
-  pending:   'szv2-badge-warning',
-  available: 'szv2-badge-info',
-  paid:      'szv2-badge-success',
-  cancelled: 'szv2-badge-danger',
-}
-
 // Sinal exibido junto ao valor (saída/entrada).
 const TX_NEGATIVE = new Set(['penalty', 'manual_debit', 'withdrawal'])
+
+// ---------------------------------------------------------------------------
+// Rótulos PT-BR para tipo/status do livro razão (não exibir o termo cru em
+// inglês). Espelha os enums de go/admin/.../affiliate_wallet.go e os valores
+// gravados em includes/senderzz-affiliates.php.
+// ---------------------------------------------------------------------------
+
+const TX_TYPE_LABEL: Record<string, string> = {
+  commission:           'Comissão',
+  penalty:              'Penalidade',
+  withdrawal:           'Saque',
+  approval:             'Liberação',
+  manual_credit:        'Crédito manual',
+  manual_debit:         'Débito manual',
+  frustration_reversal: 'Estorno (frustrado)',
+  senderzz_fee:         'Taxa FALK',
+}
+
+// "manual_credit" → "Manual credit" como fallback humano (sem underscore).
+function txTypeLabel(type: string): string {
+  const t = (type || '').trim().toLowerCase()
+  if (!t) return '—'
+  if (TX_TYPE_LABEL[t]) return TX_TYPE_LABEL[t]
+  const s = t.replace(/_/g, ' ')
+  return s.charAt(0).toUpperCase() + s.slice(1)
+}
+
+const TX_STATUS_LABEL: Record<string, string> = {
+  pending:    'Pendente',
+  pendente:   'Pendente',
+  available:  'Disponível',
+  disponivel: 'Disponível',
+  approved:   'Aprovado',
+  aprovado:   'Aprovado',
+  applied:    'Aplicado',
+  aplicado:   'Aplicado',
+  paid:       'Pago',
+  pago:       'Pago',
+  cancelled:  'Cancelado',
+  cancelado:  'Cancelado',
+  reversed:   'Estornado',
+  estornado:  'Estornado',
+  rejected:   'Rejeitado',
+  rejeitado:  'Rejeitado',
+}
+
+function txStatusLabel(status: string): string {
+  const s = (status || '').trim().toLowerCase()
+  if (!s) return '—'
+  if (TX_STATUS_LABEL[s]) return TX_STATUS_LABEL[s]
+  const v = s.replace(/_/g, ' ')
+  return v.charAt(0).toUpperCase() + v.slice(1)
+}
+
+// ---------------------------------------------------------------------------
+// Resumo legível do meta_json — NÃO exibir o JSON cru ao operador.
+// Conhece os campos gravados pela comissão (gross/fees/net/transaction_fee_*),
+// penalidade (count) e ajustes de auditoria (source/prev_amount). Campos
+// desconhecidos viram "rótulo: valor" formatado, sem chaves/aspas.
+// ---------------------------------------------------------------------------
+
+const META_FIELD_LABEL: Record<string, string> = {
+  gross:                      'Bruto',
+  fees:                       'Taxas',
+  net:                        'Líquido',
+  commission_pct:             'Comissão',
+  commission_gross:           'Comissão bruta',
+  transaction_fee_affiliate:  'Taxa transação (afiliado)',
+  transaction_fee_producer:   'Taxa transação (produtor)',
+  transaction_fee_total:      'Taxa transação',
+  prev_amount:                'Valor anterior',
+  count:                      'Ocorrências',
+  source:                     'Origem',
+}
+
+// Campos internos/técnicos que não agregam para o operador na tabela.
+const META_HIDDEN = new Set([
+  'transaction_fee_mode', 'calc_mode', 'phone_hash',
+])
+
+const META_PCT_FIELDS = new Set(['commission_pct'])
+const META_MONEY_FIELDS = new Set([
+  'gross', 'fees', 'net', 'commission_gross', 'prev_amount',
+  'transaction_fee_affiliate', 'transaction_fee_producer', 'transaction_fee_total',
+])
+
+// Mapa de origens (source) para PT legível.
+const META_SOURCE_LABEL: Record<string, string> = {
+  admin_audit_fix:       'Ajuste de auditoria',
+  admin_audit_fix_order: 'Ajuste de auditoria (pedido)',
+  admin_orders:          'Ajuste de pedido',
+}
+
+type MetaPair = { label: string; value: string }
+
+// Converte o meta_json bruto numa lista de pares "rótulo: valor" legíveis.
+function parseMetaPairs(raw: string | null): MetaPair[] {
+  if (!raw) return []
+  let obj: Record<string, unknown>
+  try {
+    const p = JSON.parse(raw)
+    if (!p || typeof p !== 'object' || Array.isArray(p)) return []
+    obj = p as Record<string, unknown>
+  } catch {
+    return []
+  }
+  const pairs: MetaPair[] = []
+  for (const [k, v] of Object.entries(obj)) {
+    if (META_HIDDEN.has(k)) continue
+    if (v === null || v === undefined || v === '') continue
+    const label = META_FIELD_LABEL[k] || (k.charAt(0).toUpperCase() + k.slice(1).replace(/_/g, ' '))
+    let value: string
+    if (k === 'source' && typeof v === 'string') {
+      value = META_SOURCE_LABEL[v] || v.replace(/_/g, ' ')
+    } else if (META_MONEY_FIELDS.has(k) && typeof v === 'number') {
+      value = money(v)
+    } else if (META_PCT_FIELDS.has(k) && typeof v === 'number') {
+      value = `${fmt(v)}%`
+    } else if (typeof v === 'number') {
+      value = String(v)
+    } else {
+      value = String(v)
+    }
+    pairs.push({ label, value })
+  }
+  return pairs
+}
+
+// Resumo de 1 linha (ex.: "Líquido R$ 238,25 · Taxas R$ 37,…") para a célula.
+function metaSummary(raw: string | null): string {
+  const pairs = parseMetaPairs(raw)
+  if (!pairs.length) return '—'
+  // Prioriza os campos mais relevantes para o resumo curto.
+  const order = ['net', 'gross', 'fees', 'transaction_fee_total', 'count', 'source']
+  const byLabel = (k: string) => META_FIELD_LABEL[k]
+  const picked: MetaPair[] = []
+  for (const k of order) {
+    const lbl = byLabel(k)
+    const found = lbl ? pairs.find(p => p.label === lbl) : undefined
+    if (found && !picked.includes(found)) picked.push(found)
+    if (picked.length >= 2) break
+  }
+  const list = picked.length ? picked : pairs.slice(0, 2)
+  return list.map(p => `${p.label} ${p.value}`).join(' · ')
+}
 
 // ---------------------------------------------------------------------------
 // KPI card (mesma estética do AuditEngine)
@@ -123,6 +267,7 @@ function TxDrawer({
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState('')
   const [filterType, setFilterType] = useState<string>('')
+  const [tab, setTab] = useState<'resumo' | 'transacoes'>('resumo')
 
   useEffect(() => {
     let active = true
@@ -140,60 +285,80 @@ function TxDrawer({
   }, [items, filterType])
 
   return (
-    <div
-      className="szv2-modal-overlay szv2-open"
-      onClick={(e) => { if (e.target === e.currentTarget) onClose() }}
+    <FilterDrawer
+      open
+      onClose={onClose}
+      onApply={onClose}
+      applyLabel="Fechar"
+      width={640}
+      title={`Transações de ${affiliate.nome || affiliate.email || `#${affiliate.affiliate_id}`}`}
     >
-      <div className="szv2-modal szv2-modal-lg" style={{ maxWidth: 960 }}>
-        <div className="szv2-modal-head">
-          <h3>Transações de {affiliate.nome || affiliate.email || `#${affiliate.affiliate_id}`}</h3>
-          <button className="szv2-modal-x" onClick={onClose} aria-label="Fechar">✕</button>
-        </div>
-
-        <div className="szv2-modal-body">
-          {/* Resumo do afiliado */}
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(5, minmax(0,1fr))',
-              gap: 12,
-              marginBottom: 16,
-            }}
+      {/* Abas */}
+      <div style={drawerTabsStyle}>
+        {([
+          ['resumo', 'Resumo'],
+          ['transacoes', 'Transações'],
+        ] as const).map(([key, label]) => (
+          <button
+            key={key}
+            type="button"
+            onClick={() => setTab(key)}
+            style={drawerTabBtnStyle(tab === key)}
           >
-            <div style={{ padding: 12, background: 'var(--szv2-warning-bg)', borderRadius: 8 }}>
-              <div style={{ fontSize: 11, color: 'var(--szv2-text-muted)' }}>Pendente</div>
-              <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--szv2-warning)' }}>
-                {money(affiliate.pending_balance)}
-              </div>
-            </div>
-            <div style={{ padding: 12, background: 'var(--szv2-success-bg)', borderRadius: 8 }}>
-              <div style={{ fontSize: 11, color: 'var(--szv2-text-muted)' }}>Disponível</div>
-              <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--szv2-success)' }}>
-                {money(affiliate.balance)}
-              </div>
-            </div>
-            <div style={{ padding: 12, background: 'var(--szv2-danger-bg)', borderRadius: 8 }}>
-              <div style={{ fontSize: 11, color: 'var(--szv2-text-muted)' }}>Dívida</div>
-              <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--szv2-danger)' }}>
-                {money(affiliate.debt_amount)}
-              </div>
-            </div>
-            <div style={{ padding: 12, background: 'var(--szv2-danger-bg)', borderRadius: 8 }}>
-              <div style={{ fontSize: 11, color: 'var(--szv2-text-muted)' }}>Penalidades</div>
-              <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--szv2-danger)' }}>
-                {money(affiliate.penalidades_total)}
-              </div>
-            </div>
-            <div style={{ padding: 12, background: 'var(--szv2-info-bg)', borderRadius: 8 }}>
-              <div style={{ fontSize: 11, color: 'var(--szv2-text-muted)' }}>Saques</div>
-              <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--szv2-info)' }}>
-                {money(affiliate.saques_total)}
-              </div>
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {err && <div className="sz-alert-danger">{err}</div>}
+
+      {/* ── Aba: Resumo (KPIs) ─────────────────────────────── */}
+      {tab === 'resumo' && (
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(2, minmax(0,1fr))',
+            gap: 12,
+          }}
+        >
+          <div style={{ padding: 12, background: 'var(--szv2-warning-bg)', borderRadius: 8 }}>
+            <div style={{ fontSize: 11, color: 'var(--szv2-text-muted)' }}>Pendente</div>
+            <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--szv2-warning)' }}>
+              {money(affiliate.pending_balance)}
             </div>
           </div>
+          <div style={{ padding: 12, background: 'var(--szv2-success-bg)', borderRadius: 8 }}>
+            <div style={{ fontSize: 11, color: 'var(--szv2-text-muted)' }}>Disponível</div>
+            <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--szv2-success)' }}>
+              {money(affiliate.balance)}
+            </div>
+          </div>
+          <div style={{ padding: 12, background: 'var(--szv2-danger-bg)', borderRadius: 8 }}>
+            <div style={{ fontSize: 11, color: 'var(--szv2-text-muted)' }}>Dívida</div>
+            <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--szv2-danger)' }}>
+              {money(affiliate.debt_amount)}
+            </div>
+          </div>
+          <div style={{ padding: 12, background: 'var(--szv2-danger-bg)', borderRadius: 8 }}>
+            <div style={{ fontSize: 11, color: 'var(--szv2-text-muted)' }}>Penalidades</div>
+            <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--szv2-danger)' }}>
+              {money(affiliate.penalidades_total)}
+            </div>
+          </div>
+          <div style={{ padding: 12, background: 'var(--szv2-info-bg)', borderRadius: 8 }}>
+            <div style={{ fontSize: 11, color: 'var(--szv2-text-muted)' }}>Saques</div>
+            <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--szv2-info)' }}>
+              {money(affiliate.saques_total)}
+            </div>
+          </div>
+        </div>
+      )}
 
+      {/* ── Aba: Transações (chips + tabela) ───────────────── */}
+      {tab === 'transacoes' && (
+        <>
           {/* Chips de filtro por tipo */}
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 12 }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
             <button
               type="button"
               className={`sz-badge ${filterType === '' ? 'szv2-badge-brand' : 'szv2-badge-neutral'}`}
@@ -212,13 +377,11 @@ function TxDrawer({
                   style={{ cursor: 'pointer', border: 'none', opacity: n === 0 ? 0.5 : 1 }}
                   onClick={() => setFilterType(t)}
                 >
-                  {t} ({n})
+                  {txTypeLabel(t)} ({n})
                 </button>
               )
             })}
           </div>
-
-          {err && <div className="sz-alert-danger" style={{ marginBottom: 12 }}>{err}</div>}
 
           {loading ? (
             <div style={{ padding: 40, textAlign: 'center', color: 'var(--szv2-text-muted)' }}>
@@ -230,7 +393,7 @@ function TxDrawer({
               <p>{filterType ? 'Nenhum registro para esse tipo.' : 'O afiliado ainda não tem movimentações.'}</p>
             </div>
           ) : (
-            <div style={{ overflowX: 'auto', maxHeight: '50vh' }}>
+            <div style={{ overflowX: 'auto' }}>
               <table className="szv2-table">
                 <thead>
                   <tr>
@@ -251,16 +414,14 @@ function TxDrawer({
                         <td style={{ color: 'var(--szv2-text-muted)', fontSize: 12 }}>
                           {t.created_at?.slice(0, 16).replace('T', ' ') ?? '—'}
                         </td>
-                        <td style={{ fontWeight: 600 }}>{t.order_id ? `#${t.order_id}` : '—'}</td>
+                        <td style={{ fontWeight: 600 }}>{t.order_id ? `${t.order_id}` : '—'}</td>
                         <td>
                           <span className={`sz-badge ${TX_TYPE_BADGE[t.type] || 'szv2-badge-neutral'}`}>
-                            {t.type}
+                            {txTypeLabel(t.type)}
                           </span>
                         </td>
                         <td>
-                          <span className={`sz-badge ${TX_STATUS_BADGE[t.status] || 'szv2-badge-neutral'}`}>
-                            {t.status}
-                          </span>
+                          <StatusBadge status={t.status} label={txStatusLabel(t.status)} />
                         </td>
                         <td
                           style={{
@@ -276,17 +437,20 @@ function TxDrawer({
                         </td>
                         <td
                           style={{
-                            fontFamily: 'var(--szv2-font-mono)',
-                            fontSize: 11,
+                            fontSize: 11.5,
                             color: 'var(--szv2-text-muted)',
-                            maxWidth: 220,
+                            maxWidth: 240,
                             overflow: 'hidden',
                             textOverflow: 'ellipsis',
                             whiteSpace: 'nowrap',
                           }}
-                          title={t.meta_json ?? ''}
+                          title={
+                            parseMetaPairs(t.meta_json)
+                              .map(p => `${p.label}: ${p.value}`)
+                              .join('\n') || (t.meta_json ?? '')
+                          }
                         >
-                          {t.meta_json ?? '—'}
+                          {metaSummary(t.meta_json)}
                         </td>
                       </tr>
                     )
@@ -295,13 +459,9 @@ function TxDrawer({
               </table>
             </div>
           )}
-        </div>
-
-        <div className="szv2-modal-foot">
-          <button className="szv2-btn szv2-btn-secondary" onClick={onClose}>Fechar</button>
-        </div>
-      </div>
-    </div>
+        </>
+      )}
+    </FilterDrawer>
   )
 }
 
@@ -309,7 +469,17 @@ function TxDrawer({
 // Página principal
 // ---------------------------------------------------------------------------
 
-export default function AffiliateWallet() {
+// `embedded` esconde o cabeçalho interno (título) e a faixa de KPIs — usados
+// quando a tela única (AfiliadosFinHub) promove esses elementos para uma faixa
+// unificada. A barra de ações (filtro + Sync TODAS) e a lista permanecem.
+// `onChanged` é disparado após sync/liberação para o pai re-buscar seu resumo.
+export default function AffiliateWallet({
+  embedded = false,
+  onChanged,
+}: {
+  embedded?: boolean
+  onChanged?: () => void
+} = {}) {
   const [summary, setSummary] = useState<Summary | null>(null)
   const [rows, setRows] = useState<Row[]>([])
   const [types, setTypes] = useState<string[]>([])
@@ -317,7 +487,7 @@ export default function AffiliateWallet() {
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState<number | 'all' | null>(null)
   const [drawer, setDrawer] = useState<Row | null>(null)
-  const [toast, setToast] = useState<{ kind: 'ok' | 'err'; msg: string } | null>(null)
+  const showToast = useToast() // AUDIT-2026-06-18 Onda3
 
   // Filtros aplicados.
   const [q, setQ] = useState('')
@@ -354,10 +524,6 @@ export default function AffiliateWallet() {
   if (dataFim) chips.push({ key: 'fim', label: `Até: ${dataFim}`, onRemove: () => setDataFim('') })
   const activeCount = chips.length
 
-  function showToast(kind: 'ok' | 'err', msg: string) {
-    setToast({ kind, msg })
-    setTimeout(() => setToast(null), 5000)
-  }
 
   async function loadSummary() {
     try {
@@ -408,12 +574,13 @@ export default function AffiliateWallet() {
   }, [q, statusFilter, dataIni, dataFim])
 
   async function handleSync(affID: number) {
-    if (!window.confirm(`Sincronizar carteira do afiliado #${affID}?`)) return
+    if (!await confirmAsync({ message: `Sincronizar carteira do afiliado #${affID}?` })) return
     setBusy(affID)
     try {
       await api(`/affiliates-wallet/${affID}/wallet-fix`, { method: 'POST' })
       showToast('ok', `Carteira do afiliado #${affID} sincronizada.`)
       await Promise.all([loadSummary(), loadList()])
+      onChanged?.()
     } catch (e: any) {
       showToast('err', e.message || 'Falha ao sincronizar')
     } finally {
@@ -421,16 +588,31 @@ export default function AffiliateWallet() {
     }
   }
 
-  async function handleRelease(affID: number) {
-    if (!window.confirm(`Liberar transações pendentes vencidas do afiliado #${affID}?`)) return
+  async function handleRelease(affID: number, force = false) {
+    const msg = force
+      ? `FORÇAR liberação de TODAS as comissões pendentes do afiliado #${affID} AGORA, ignorando o prazo de retenção?\n\nLibera dinheiro real antes do vencimento e fica registrado na auditoria.`
+      : `Liberar transações pendentes vencidas do afiliado #${affID}?`
+    if (!await confirmAsync({ message: msg })) return
     setBusy(affID)
     try {
-      const r = await api<{ ok: boolean; released: number }>(
-        `/affiliates-wallet/${affID}/release-pending`,
+      const r = await api<{ ok: boolean; released: number; still_pending?: number; next_release_at?: string | null; forced?: boolean }>(
+        `/affiliates-wallet/${affID}/release-pending${force ? '?force=1' : ''}`,
         { method: 'POST' },
       )
-      showToast('ok', `${r.released ?? 0} transação(ões) liberada(s) para o afiliado #${affID}.`)
+      const rel = r.released ?? 0
+      const still = r.still_pending ?? 0
+      if (rel > 0) {
+        showToast('ok', `${rel} comissão(ões) liberada(s) para o afiliado #${affID}.`)
+      } else if (still > 0) {
+        const when = r.next_release_at ? new Date(r.next_release_at).toLocaleDateString('pt-BR') : null
+        showToast('warn', when
+          ? `0 liberadas — ${still} ainda em retenção (libera a partir de ${when}). Use "Forçar" para antecipar.`
+          : `0 liberadas — ${still} ainda em retenção. Use "Forçar" para antecipar.`)
+      } else {
+        showToast('ok', `Nenhuma comissão pendente para o afiliado #${affID}.`)
+      }
       await Promise.all([loadSummary(), loadList()])
+      onChanged?.()
     } catch (e: any) {
       showToast('err', e.message || 'Falha ao liberar')
     } finally {
@@ -440,7 +622,7 @@ export default function AffiliateWallet() {
 
   async function handleSyncAll() {
     if (!rows.length) return
-    if (!window.confirm(`Sincronizar TODAS as ${rows.length} carteiras de afiliados?\n\nEssa operação re-agrega balance e pending_balance a partir do livro razão.\n\nContinuar?`)) return
+    if (!await confirmAsync({ message: `Sincronizar TODAS as ${rows.length} carteiras de afiliados?\n\nEssa operação re-agrega balance e pending_balance a partir do livro razão.\n\nContinuar?` })) return
     setBusy('all')
     let ok = 0, fail = 0
     for (const r of rows) {
@@ -455,6 +637,7 @@ export default function AffiliateWallet() {
       `Sync em lote: ${ok} sucesso(s), ${fail} falha(s) de ${rows.length}.`)
     setBusy(null)
     await Promise.all([loadSummary(), loadList()])
+    onChanged?.()
   }
 
   // Heurística client-side de "status carteira":
@@ -473,13 +656,27 @@ export default function AffiliateWallet() {
     return 'ok'
   }
 
+  // Filtro "Status carteira" é uma heurística client-side (mesma que pinta o
+  // badge), então aplicamos aqui — o backend de /affiliates-wallet ainda não
+  // honra `status`. Derivamos UMA lista para contagem, branch vazia e map.
+  const visibleRows = statusFilter
+    ? rows.filter(r => statusCarteira(r) === statusFilter)
+    : rows
+
   return (
     <div>
-      <div className="szv2-section-head">
-        <div>
-          <h1>Carteira de Afiliados</h1>
-          <p>Saldos consolidados, liberações e correções</p>
-        </div>
+      {/* Em modo embedded o título sai (o pai tem um header único), mas a barra
+          de ações (filtro + Sync TODAS) é mantida como toolbar acima da tabela. */}
+      <div
+        className="szv2-section-head"
+        style={embedded ? { marginBottom: 12, justifyContent: 'flex-end' } : undefined}
+      >
+        {!embedded && (
+          <div>
+            <h1>Carteira de Afiliados</h1>
+            <p>Saldos consolidados, liberações e correções</p>
+          </div>
+        )}
         <div style={{ display: 'flex', gap: 8 }}>
           <FilterButton active={activeCount > 0} count={activeCount} onClick={openPanel} />
           <button
@@ -496,17 +693,8 @@ export default function AffiliateWallet() {
 
       {err && <div className="sz-alert-danger" style={{ marginBottom: 16 }}>{err}</div>}
 
-      {toast && (
-        <div
-          className={toast.kind === 'ok' ? 'sz-alert-success' : 'sz-alert-danger'}
-          style={{ marginBottom: 16 }}
-        >
-          {toast.msg}
-        </div>
-      )}
-
-      {/* KPIs */}
-      {summary && (
+      {/* KPIs — ocultos em embedded (promovidos para a faixa unificada do pai) */}
+      {!embedded && summary && (
         <div
           className="szv2-kpi-grid"
           style={{ gridTemplateColumns: 'repeat(3, minmax(0,1fr))', marginBottom: 16 }}
@@ -554,7 +742,7 @@ export default function AffiliateWallet() {
           <div>
             <h2>Afiliados</h2>
             <p className="szv2-card-sub">
-              {rows.length} afiliado(s){summary ? ` de ${summary.affiliates_count}` : ''}
+              {visibleRows.length} afiliado(s){summary ? ` de ${summary.affiliates_count}` : ''}
             </p>
           </div>
         </div>
@@ -563,11 +751,13 @@ export default function AffiliateWallet() {
       {/* Tabela */}
       {loading && rows.length === 0 ? (
         <TableSkeleton rows={6} cols={9} />
-      ) : !loading && rows.length === 0 ? (
+      ) : !loading && visibleRows.length === 0 ? (
         <EmptyState
           icon="💼"
-          title="Nenhum afiliado com carteira encontrado."
-          description="Carteiras de afiliados aparecem aqui assim que houver comissões."
+          title={statusFilter ? 'Nenhum afiliado para esse filtro.' : 'Nenhum afiliado com carteira encontrado.'}
+          description={statusFilter
+            ? 'Ajuste ou limpe o filtro de status da carteira.'
+            : 'Carteiras de afiliados aparecem aqui assim que houver comissões.'}
         />
       ) : (
       <div className="szv2-table-wrap">
@@ -586,7 +776,7 @@ export default function AffiliateWallet() {
             </tr>
           </thead>
           <tbody>
-            {rows.map(r => {
+            {visibleRows.map(r => {
               const st = statusCarteira(r)
               return (
                 <tr key={r.affiliate_id}>
@@ -628,10 +818,21 @@ export default function AffiliateWallet() {
                         className="szv2-btn szv2-btn-sm szv2-btn-secondary"
                         onClick={() => handleRelease(r.affiliate_id)}
                         disabled={busy !== null}
-                        title="Promove pending → available para comissões vencidas"
+                        title="Promove pending → available para comissões já vencidas (respeita a retenção)"
                       >
                         {busy === r.affiliate_id ? '…' : 'Liberar pendentes'}
                       </button>
+                      {r.pending_balance > 0 && (
+                        <button
+                          type="button"
+                          className="szv2-btn szv2-btn-sm szv2-btn-danger"
+                          onClick={() => handleRelease(r.affiliate_id, true)}
+                          disabled={busy !== null}
+                          title="OVERRIDE do dono: libera AGORA ignorando a retenção (auditado)"
+                        >
+                          {busy === r.affiliate_id ? '…' : 'Forçar'}
+                        </button>
+                      )}
                       <button
                         type="button"
                         className="szv2-btn szv2-btn-sm szv2-btn-brand"
@@ -667,33 +868,32 @@ export default function AffiliateWallet() {
         title="Filtros"
       >
         <FilterField label="Data inicial">
-          <input
-            type="date"
-            style={filterInputStyle}
+          <FalkDatePicker
             value={draftIni}
             max={draftFim || undefined}
-            onChange={e => setDraftIni(e.target.value)}
+            onChange={v => setDraftIni(v)}
+            placeholder="dd/mm/aaaa"
           />
         </FilterField>
         <FilterField label="Data final">
-          <input
-            type="date"
-            style={filterInputStyle}
+          <FalkDatePicker
             value={draftFim}
             min={draftIni || undefined}
-            onChange={e => setDraftFim(e.target.value)}
+            onChange={v => setDraftFim(v)}
+            placeholder="dd/mm/aaaa"
           />
         </FilterField>
         <FilterField label="Status carteira">
-          <select
-            style={filterInputStyle}
+          <FalkSelect
             value={draftStatus}
-            onChange={e => setDraftStatus(e.target.value)}
-          >
-            <option value="">Todos</option>
-            <option value="ok">OK</option>
-            <option value="divergente">Divergente</option>
-          </select>
+            onChange={v => setDraftStatus(v)}
+            options={[
+              { value: '', label: 'Todos' },
+              { value: 'ok', label: 'OK' },
+              { value: 'divergente', label: 'Divergente' },
+            ]}
+            aria-label="Status carteira"
+          />
         </FilterField>
         <FilterField label="Busca (email / nome)">
           <input

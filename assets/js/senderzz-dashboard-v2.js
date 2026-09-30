@@ -918,17 +918,11 @@
   });
 
   // ── Salvar comissão ──────────────────────────────────────────
-  root.addEventListener("click", function (e) {
-    var btn = e.target.closest(".szv2-link-comm-save");
-    if (!btn) return;
-    var lid   = btn.dataset.linkId;
-    var nonce = btn.dataset.nonce;
-    var input = root.querySelector("#szv2-link-comm-" + lid);
-    if (!input) return;
-    var pct = parseFloat(input.value);
-    if (isNaN(pct) || pct < 0 || pct > 100) {
-      toastLinks("Comissão deve ser entre 0 e 100.", "warning"); return;
-    }
+  // FEAT-AFF-COMMISSION: a % salva no LINK é o que o checkout usa para resolver a
+  // comissão do afiliado (a OFERTA dita). Se o produtor ALTERAR o valor para algo
+  // != padrão do produto (data-default-pct), pedimos confirmação szV2Confirm antes
+  // de salvar — deixando claro que aquilo SOBRESCREVE o padrão do produto p/ este link.
+  function doCommSave(btn, input, lid, nonce, pct) {
     if (lkInFlight["comm_" + lid]) return;
     lkInFlight["comm_" + lid] = true;
     btn.disabled = true; input.disabled = true;
@@ -943,6 +937,36 @@
       toastLinks("Erro de conexão.", "danger");
       btn.disabled = false; input.disabled = false; delete lkInFlight["comm_" + lid];
     });
+  }
+
+  root.addEventListener("click", function (e) {
+    var btn = e.target.closest(".szv2-link-comm-save");
+    if (!btn) return;
+    var lid   = btn.dataset.linkId;
+    var nonce = btn.dataset.nonce;
+    var input = root.querySelector("#szv2-link-comm-" + lid);
+    if (!input) return;
+    var pct = parseFloat(input.value);
+    if (isNaN(pct) || pct < 0 || pct > 100) {
+      toastLinks("Comissão deve ser entre 0 e 100.", "warning"); return;
+    }
+
+    // Padrão do produto/produtor (data-default-pct). Se o produtor mudou a comissão
+    // para um valor diferente do padrão, confirma o override antes de salvar.
+    var defPct = parseFloat(input.dataset.defaultPct);
+    var isOverride = !isNaN(defPct) && Math.abs(pct - defPct) >= 0.005;
+    if (isOverride && typeof window.szV2Confirm === "function") {
+      window.szV2Confirm({
+        title: "Sobrescrever comissão padrão?",
+        message: "Isto sobrescreve a comissão padrão do produto para este link de checkout. "
+               + "O afiliado que usar este link receberá " + pct.toFixed(2).replace(".", ",") + "% (padrão: "
+               + defPct.toFixed(2).replace(".", ",") + "%).",
+        btn: "Salvar comissão",
+        danger: false,
+      }, function () { doCommSave(btn, input, lid, nonce, pct); });
+      return;
+    }
+    doCommSave(btn, input, lid, nonce, pct);
   });
 
 })();

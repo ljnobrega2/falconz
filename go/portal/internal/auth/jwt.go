@@ -66,6 +66,14 @@ func contextWithUser(ctx context.Context, u *PortalUser) context.Context {
 	return context.WithValue(ctx, ctxKeyPortalUser{}, u)
 }
 
+// ContextWithUser injeta um PortalUser no contexto usando a MESMA chave opaca do
+// middleware (ctxKeyPortalUser). Exportado para que testes de handler montem um
+// request "autenticado" sem passar por AuthPortalJWT/JWT/DB — a chave continua
+// privada (não vaza para outros pacotes). Não é usado no caminho de produção.
+func ContextWithUser(ctx context.Context, u *PortalUser) context.Context {
+	return contextWithUser(ctx, u)
+}
+
 // ── Emissão de tokens ─────────────────────────────────────────────────────────
 
 // EmitJWT emite um JWT completo (pós-2FA) com validade de 24h.
@@ -137,7 +145,7 @@ func ParseJWT(tokenStr string) (*PortalClaims, error) {
 			return nil, fmt.Errorf("[jwt] algoritmo inesperado: %v", t.Header["alg"])
 		}
 		return []byte(secret), nil
-	}, jwt.WithValidMethods([]string{"HS256"}))
+	}, jwt.WithValidMethods([]string{"HS256"}), jwt.WithExpirationRequired())
 
 	if err != nil {
 		return nil, fmt.Errorf("[jwt] token inválido: %w", err)
@@ -169,7 +177,7 @@ func ParsePartialJWT(tokenStr string) (*PortalClaims, error) {
 			return nil, fmt.Errorf("[jwt] algoritmo inesperado: %v", t.Header["alg"])
 		}
 		return []byte(secret), nil
-	}, jwt.WithValidMethods([]string{"HS256"}))
+	}, jwt.WithValidMethods([]string{"HS256"}), jwt.WithExpirationRequired())
 
 	if err != nil {
 		return nil, fmt.Errorf("[jwt] token parcial inválido: %w", err)

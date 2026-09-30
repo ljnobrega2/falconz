@@ -20,6 +20,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"os"
 	"regexp"
@@ -52,13 +53,7 @@ type onboardingRequest struct {
 }
 
 func (h *OnboardingHandler) tableExists(ctx context.Context, name string) bool {
-	var ok bool
-	_ = h.Pool.QueryRow(ctx,
-		`SELECT EXISTS (
-			SELECT FROM information_schema.tables
-			WHERE table_schema='public' AND table_name=$1
-		)`, name).Scan(&ok)
-	return ok
+	return tableExistsCached(ctx, h.Pool, name) // AUDIT-2026-06-18 Onda2 (go-infoschema-cache)
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -304,6 +299,182 @@ func (h *OnboardingHandler) Create(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, 201, map[string]any{"id": newID, "token": tok, "ok": true})
 }
 
+// ── Signup (cadastro público auto-serviço) ──────────────────────────────────
+
+type onbSignupReq struct {
+	Nome     string `json:"nome"`
+	Email    string `json:"email"`
+	WhatsApp string `json:"whatsapp"`
+	Document string `json:"documento"` // MED44: CPF/CNPJ enviado pelo cadastro público (Login.tsx).
+	Senha    string `json:"senha"`
+	// REF-PAYOUT 463: referral_code do INDICADOR (link /r/{code}). Opcional — quando
+	// vier preenchido, o Signup resolve → portal id e grava em referred_by. Nunca
+	// derruba o cadastro se não resolver.
+	Ref string `json:"ref"`
+}
+
+// Signup — cadastro PÚBLICO. SEM APROVAÇÃO (regra do dono 2026-06-22): cria DIRETO
+// um senderzz_portal_users ATIVO com role='cliente' (acesso COD + vitrine, igual
+// afiliado; sem produtor/fulfillment) e AUTO-LOGA (retorna token portal). A linha em
+// senderzz_onboarding_requests vira só TRILHA/auditoria (status 'approved'), não
+// bloqueia mais o acesso. Promoção cliente→afiliado acontece quando um produtor
+// aprova a afiliação (affiliates_portal.go). Mantém dedup, bcrypt(12), sanitização
+// CPF/CNPJ e resolução de indicação (referred_by).
+// POST /onboarding/signup (sem auth, rate-limited).
+func (h *OnboardingHandler) Signup(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	var body onbSignupReq
+	if err := httpx.DecodeJSON(r, &body); err != nil {
+		httpx.Err(w, 400, "bad_request", "json inválido")
+		return
+	}
+	body.Nome = strings.TrimSpace(body.Nome)
+	body.Email = strings.ToLower(strings.TrimSpace(body.Email))
+	body.WhatsApp = strings.TrimSpace(body.WhatsApp)
+	// MED44: só dígitos (CPF=11 / CNPJ=14). A contagem é validada no front (Login.tsx);
+	// aqui apenas sanitizamos e persistimos — sem checksum p/ não rejeitar CNPJ.
+	body.Document = onlyDigits(body.Document)
+
+	if body.Nome == "" {
+		httpx.Err(w, 400, "validation", "nome é obrigatório")
+		return
+	}
+	if !emailRegex.MatchString(body.Email) {
+		httpx.Err(w, 400, "validation", "e-mail inválido")
+		return
+	}
+	if len(body.Senha) < 8 {
+		httpx.Err(w, 400, "validation", "a senha deve ter ao menos 8 caracteres")
+		return
+	}
+	if !h.tableExists(ctx, "senderzz_onboarding_requests") {
+		httpx.Err(w, 503, "table_missing", "schema de onboarding ausente")
+		return
+	}
+
+	// Dedup: e-mail já é usuário ativo, ou já tem solicitação não-rejeitada.
+	if h.tableExists(ctx, "senderzz_portal_users") {
+		var exists bool
+		_ = h.Pool.QueryRow(ctx,
+			`SELECT EXISTS(SELECT 1 FROM senderzz_portal_users WHERE LOWER(email)=LOWER($1))`,
+			body.Email).Scan(&exists)
+		if exists {
+			httpx.Err(w, 409, "duplicate", "e-mail já cadastrado")
+			return
+		}
+	}
+	var dup int
+	_ = h.Pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM senderzz_onboarding_requests
+		 WHERE LOWER(email)=LOWER($1) AND status <> 'rejected'`, body.Email).Scan(&dup)
+	if dup > 0 {
+		httpx.Err(w, 409, "duplicate", "já existe uma solicitação para esse e-mail")
+		return
+	}
+
+	tok, err := generateToken()
+	if err != nil {
+		httpx.Err(w, 500, "rand_error", "falha ao gerar token")
+		return
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(body.Senha), 12)
+	if err != nil {
+		httpx.Err(w, 500, "bcrypt_error", err.Error())
+		return
+	}
+
+	// REF-PAYOUT 463: resolve o indicador (link /r/{code}). Best-effort — se o código
+	// não resolver, refArg fica nil e o cadastro segue SEM indicação. NUNCA derruba o
+	// signup. referral_code no banco é UPPER (md5 upper, 8 chars) → normalizamos.
+	// pwArg-style: refArg = nil quando não há indicação válida.
+	var refArg any
+	if ref := strings.ToUpper(strings.TrimSpace(body.Ref)); ref != "" && h.tableExists(ctx, "senderzz_portal_users") {
+		var referrerID int64
+		if errRef := h.Pool.QueryRow(ctx,
+			`SELECT id FROM senderzz_portal_users WHERE referral_code = UPPER($1) LIMIT 1`,
+			ref).Scan(&referrerID); errRef == nil && referrerID > 0 {
+			refArg = referrerID
+		}
+	}
+
+	// (1) TRILHA/auditoria — registra a solicitação como já 'approved' (auto). NÃO
+	// bloqueia acesso; serve só de log. ON CONFLICT mantém idempotência por e-mail.
+	_, _ = h.Pool.Exec(ctx,
+		`INSERT INTO senderzz_onboarding_requests
+		   (nome, email, document, telefone, status, token, password_hash, referred_by, created_at, approved_at)
+		 VALUES ($1, $2, NULLIF($3,''), NULLIF($4,''), 'approved', $5, $6, $7, NOW(), NOW())
+		 ON CONFLICT (email) DO UPDATE SET
+		   nome         = EXCLUDED.nome,
+		   document     = EXCLUDED.document,
+		   telefone     = EXCLUDED.telefone,
+		   status       = 'approved',
+		   token        = EXCLUDED.token,
+		   password_hash= EXCLUDED.password_hash,
+		   referred_by  = EXCLUDED.referred_by,
+		   created_at   = NOW(),
+		   approved_at  = NOW(),
+		   notes        = NULL`,
+		body.Nome, body.Email, body.Document, body.WhatsApp, tok, string(hash), refArg)
+
+	// (2) Cria o usuário ATIVO direto como 'cliente'. referred_by = indicador (se houver).
+	// Self-referral impossível no signup (o indicador é um usuário PRÉ-EXISTENTE).
+	var newID int64
+	err = h.Pool.QueryRow(ctx,
+		`INSERT INTO senderzz_portal_users
+		   (email, nome, role, plano, ativo, password_hash, document, phone, referred_by, created_at)
+		 VALUES ($1, $2, 'cliente', 'free', TRUE, $3, NULLIF($4,''), NULLIF($5,''), $6, NOW())
+		 RETURNING id`,
+		body.Email, body.Nome, string(hash), body.Document, body.WhatsApp, refArg).Scan(&newID)
+	if err != nil {
+		httpx.Err(w, 500, "db_error", err.Error())
+		return
+	}
+
+	// (3) AUTO-LOGIN: sessão portal + token (iss=senderzz-portal). Best-effort — se a
+	// emissão falhar, a conta já existe e o usuário pode logar normalmente.
+	resp := map[string]any{"id": newID, "ok": true, "role": "cliente"}
+	if sid, sErr := auth.IssuePortalSession(ctx, h.Pool, newID, r); sErr == nil {
+		if jwtTok, tErr := auth.IssuePortalToken(newID, body.Email, "cliente", sid); tErr == nil {
+			resp["token"] = jwtTok
+			resp["user"] = map[string]any{"id": newID, "email": body.Email, "nome": body.Nome, "role": "cliente"}
+		}
+	}
+	httpx.JSON(w, 201, resp)
+}
+
+// ── ResolveReferral (público — valida link /r/{code}) ───────────────────────
+
+// ResolveReferral resolve um referral_code para o NOME do indicador, para a LP /
+// landing validar o link /r/{code} e exibir "Indicado por …".
+// GET /onboarding/referral/{code} — PÚBLICO, sem auth, rate-limited.
+//
+// referral_code no banco é UPPER (md5 upper, 8 chars) → normalizamos com UPPER.
+// Privacidade/LGPD: devolve SOMENTE {ok, nome}. Nunca e-mail/telefone/PII.
+// Degradação graciosa: código inexistente, dono inativo, OU tabela/coluna ausente
+// → 200 {ok:false} (a LP segue sem indicação; nunca 404/500 que quebrem a landing).
+func (h *OnboardingHandler) ResolveReferral(w http.ResponseWriter, r *http.Request) {
+	code := strings.ToUpper(strings.TrimSpace(chi.URLParam(r, "code")))
+	if code == "" || !h.tableExists(r.Context(), "senderzz_portal_users") {
+		httpx.JSON(w, 200, map[string]any{"ok": false})
+		return
+	}
+
+	var nome string
+	err := h.Pool.QueryRow(r.Context(),
+		`SELECT COALESCE(nome,'')
+		   FROM senderzz_portal_users
+		  WHERE referral_code = UPPER($1)
+		    AND ativo = TRUE
+		  LIMIT 1`, code).Scan(&nome)
+	if err != nil {
+		// Sem linha / dono inativo / coluna ausente → resposta neutra (não vaza estado).
+		httpx.JSON(w, 200, map[string]any{"ok": false})
+		return
+	}
+
+	httpx.JSON(w, 200, map[string]any{"ok": true, "nome": nome})
+}
+
 // ── helpers de markup / shipping_class ─────────────────────────────────────
 
 // onbGetOption lê value bruto de senderzz_options. Retorna "" se tabela ou chave ausente.
@@ -313,7 +484,7 @@ func (h *OnboardingHandler) onbGetOption(ctx context.Context, key string) string
 	}
 	var raw string
 	if err := h.Pool.QueryRow(ctx,
-		`SELECT value FROM senderzz_options WHERE "key"=$1`, key).Scan(&raw); err != nil {
+		`SELECT value FROM senderzz_options WHERE name=$1`, key).Scan(&raw); err != nil {
 		return ""
 	}
 	return raw
@@ -326,9 +497,9 @@ func (h *OnboardingHandler) onbUpsertOption(ctx context.Context, key, value stri
 		return
 	}
 	_, _ = h.Pool.Exec(ctx,
-		`INSERT INTO senderzz_options ("key", value)
+		`INSERT INTO senderzz_options (name, value)
 		 VALUES ($1, $2)
-		 ON CONFLICT ("key") DO UPDATE SET value = EXCLUDED.value`, key, value)
+		 ON CONFLICT (name) DO UPDATE SET value = EXCLUDED.value`, key, value)
 }
 
 // onbCreateShippingClass insere uma classe em senderzz_shipping_classes e retorna o ID.
@@ -340,17 +511,20 @@ func (h *OnboardingHandler) onbCreateShippingClass(ctx context.Context, nome str
 	}
 	// nome exposto na UI: "Nome Produtor (Senderzz #N)" — mesma convenção do PHP.
 	classNome := nome + " (Senderzz #" + strconv.FormatInt(reqID, 10) + ")"
+	// slug é NOT NULL + UNIQUE — reqID já é único, evita colisão sem precisar
+	// normalizar acentos/espaços do nome livre.
+	classSlug := "senderzz-" + strconv.FormatInt(reqID, 10)
 	var classID int64
 	err := h.Pool.QueryRow(ctx,
-		`INSERT INTO senderzz_shipping_classes (name)
-		 VALUES ($1)
+		`INSERT INTO senderzz_shipping_classes (slug, name)
+		 VALUES ($1, $2)
 		 ON CONFLICT DO NOTHING
 		 RETURNING id`,
-		classNome).Scan(&classID)
+		classSlug, classNome).Scan(&classID)
 	if err != nil {
-		// Pode ter falhado o ON CONFLICT DO NOTHING (nome já existe): buscar o existente.
+		// Pode ter falhado o ON CONFLICT DO NOTHING (slug já existe): buscar o existente.
 		_ = h.Pool.QueryRow(ctx,
-			`SELECT id FROM senderzz_shipping_classes WHERE name=$1`, classNome).Scan(&classID)
+			`SELECT id FROM senderzz_shipping_classes WHERE slug=$1`, classSlug).Scan(&classID)
 	}
 	return classID
 }
@@ -404,6 +578,21 @@ func (h *OnboardingHandler) onbApplyMarkupDefault(ctx context.Context, classID i
 
 type onbNotesReq struct {
 	Notes string `json:"notes"`
+	// FEAT-RBAC-2026-06-21: o admin escolhe o nível (RBAC) do usuário ao aprovar.
+	// Default 'produtor' quando ausente. Validado em approveOne contra os destinos
+	// existentes (admin → admin_users; produtor|afiliado|operator|cliente → portal_users).
+	Role string `json:"role"`
+}
+
+// onbApproveRoles — roles aceitáveis na aprovação (FEAT-RBAC-2026-06-21).
+// 'admin' → senderzz_admin_users. Os demais → senderzz_portal_users (CHECK permite
+// apenas produtor|afiliado|operator|cliente). 'motoboy' NÃO tem destino aqui.
+var onbApproveRoles = map[string]bool{
+	"admin":    true,
+	"produtor": true,
+	"afiliado": true,
+	"operator": true,
+	"cliente":  true,
 }
 
 // Approve marca request como aprovada e cria portal_user.
@@ -425,98 +614,258 @@ func (h *OnboardingHandler) Approve(w http.ResponseWriter, r *http.Request) {
 	var body onbNotesReq
 	_ = httpx.DecodeJSON(r, &body)
 
+	// FEAT-RBAC-2026-06-21: role escolhido pelo admin (default 'produtor').
+	// A role vem do body porque é o admin AUTENTICADO (identidade provada pelo
+	// Middleware) ATRIBUINDO um nível a OUTRO usuário — operação privilegiada
+	// pretendida, não auto-elevação. Validação fail-closed contra destinos reais.
+	role := strings.ToLower(strings.TrimSpace(body.Role))
+	if role == "" {
+		role = "produtor"
+	}
+	if !onbApproveRoles[role] {
+		httpx.Err(w, 400, "validation", "nível inválido (use admin|produtor|afiliado|operator|cliente)")
+		return
+	}
+
 	ctx := r.Context()
 	if !h.tableExists(ctx, "senderzz_onboarding_requests") {
 		httpx.Err(w, 503, "table_missing", "tabela senderzz_onboarding_requests ausente")
 		return
 	}
 
-	// Buscar a request.
-	var req onboardingRequest
-	err = h.Pool.QueryRow(ctx,
-		`SELECT id, nome, email, document, telefone, empresa, status, token,
-		        created_at::text, approved_at::text, notes
-		 FROM senderzz_onboarding_requests WHERE id=$1`, id).
-		Scan(&req.ID, &req.Nome, &req.Email, &req.Document, &req.Telefone,
-			&req.Empresa, &req.Status, &req.Token, &req.CreatedAt, &req.ApprovedAt, &req.Notes)
+	res, err := h.approveOne(ctx, id, strings.TrimSpace(body.Notes), role)
 	if err != nil {
-		httpx.Err(w, 404, "not_found", "solicitação não encontrada")
-		return
-	}
-	if req.Status == "approved" {
-		httpx.Err(w, 409, "already_approved", "solicitação já aprovada")
+		switch err {
+		case errOnbNotFound:
+			httpx.Err(w, 404, "not_found", "solicitação não encontrada")
+		case errOnbAlreadyApproved:
+			httpx.Err(w, 409, "already_approved", "solicitação já aprovada")
+		case errOnbNoPassword:
+			httpx.Err(w, 400, "no_password", "solicitação sem senha definida — não é possível criar conta com login")
+		default:
+			httpx.Err(w, 500, "db_error", err.Error())
+		}
 		return
 	}
 
+	// 4. E-mail NÃO enviado (sem infraestrutura SMTP neste serviço).
+	//    email_pending=true indica que o admin deve acionar envio via WP ou manualmente.
+	httpx.JSON(w, 200, map[string]any{
+		"ok":             true,
+		"role":           role, // FEAT-RBAC-2026-06-21
+		"portal_user_id": res.portalUserID,
+		"admin_user_id":  res.adminUserID,
+		"class_id":       res.classID,
+		"id":             id,
+		"email_pending":  true,
+	})
+}
+
+// Sentinelas de aprovação — permitem que o caller (HTTP singular ou lote) mapeie
+// o motivo do erro para o status correto sem inspecionar strings.
+var (
+	errOnbNotFound        = errors.New("solicitação não encontrada")
+	errOnbAlreadyApproved = errors.New("solicitação já aprovada")
+	// FEAT-RBAC-2026-06-21: role=admin exige password_hash na solicitação
+	// (admin_users.password_hash é NOT NULL). Sem senha → não dá pra criar admin logável.
+	errOnbNoPassword = errors.New("solicitação sem senha — não é possível criar conta com login")
+)
+
+// onbApproveResult — saída do core de aprovação (ids criados).
+type onbApproveResult struct {
+	portalUserID int64
+	adminUserID  int64 // FEAT-RBAC-2026-06-21: preenchido quando role=admin.
+	classID      int64
+}
+
+// approveCore — versão "fire and forget" do core de aprovação para uso em lote.
+// Descarta os ids criados; propaga apenas o erro (errOnb* ou técnico).
+// Lote sempre aprova como 'produtor' (default) — o destino RBAC granular é via HTTP singular.
+func (h *OnboardingHandler) approveCore(ctx context.Context, id int64, notes string) error {
+	_, err := h.approveOne(ctx, id, notes, "produtor")
+	return err
+}
+
+// approveOne — CORE da aprovação de onboarding, compartilhado entre a handler HTTP
+// singular (Approve) e o lote (BulkQueuesHandler.OnboardingApprove). Replica os
+// efeitos colaterais de sz_onboarding_approve: shipping class + portal_user + markup.
+// Idempotência: já-aprovada devolve errOnbAlreadyApproved; ausente, errOnbNotFound.
+// FEAT-RBAC-2026-06-21: assinatura ganha `role` (nível escolhido pelo admin).
+// role=admin → cria/ativa em senderzz_admin_users (exige password_hash na solicitação).
+// demais (produtor|afiliado|operator|cliente) → senderzz_portal_users, gravando o
+// password_hash salvo na solicitação (do /signup) p/ o usuário conseguir logar.
+func (h *OnboardingHandler) approveOne(ctx context.Context, id int64, notes, role string) (onbApproveResult, error) {
+	var res onbApproveResult
+
+	if role == "" {
+		role = "produtor"
+	}
+
+	// Buscar a request (inclui password_hash — necessário p/ criar conta logável).
+	var req onboardingRequest
+	var pwHash string
+	err := h.Pool.QueryRow(ctx,
+		`SELECT id, nome, email, document, telefone, empresa, status, token,
+		        created_at::text, approved_at::text, notes, COALESCE(password_hash,'')
+		 FROM senderzz_onboarding_requests WHERE id=$1`, id).
+		Scan(&req.ID, &req.Nome, &req.Email, &req.Document, &req.Telefone,
+			&req.Empresa, &req.Status, &req.Token, &req.CreatedAt, &req.ApprovedAt, &req.Notes, &pwHash)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return res, errOnbNotFound
+		}
+		return res, err
+	}
+	if req.Status == "approved" {
+		return res, errOnbAlreadyApproved
+	}
+
+	// role=admin exige senha (admin_users.password_hash é NOT NULL).
+	if role == "admin" && pwHash == "" {
+		return res, errOnbNoPassword
+	}
+
+	// ── Destino ADMIN ─────────────────────────────────────────────────────────
+	if role == "admin" {
+		return h.approveAsAdmin(ctx, id, req, pwHash, notes)
+	}
+
+	// REF-PAYOUT 463: indicador capturado no signup (best-effort, FORA do SELECT
+	// principal — se a coluna/migração 463 não existir, o erro é engolido e
+	// referredBy fica nil → a aprovação segue normalmente, sem quebrar).
+	var referredBy *int64
+	_ = h.Pool.QueryRow(ctx,
+		`SELECT referred_by FROM senderzz_onboarding_requests WHERE id=$1`, id).Scan(&referredBy)
+
+	// ── Destino PORTAL (produtor|afiliado|operator|cliente) ───────────────────
 	// 1. Criar shipping class FORA da transação (sem FK para portal_user).
 	// Degradação graciosa: retorna 0 se senderzz_shipping_classes não existir.
 	classID := h.onbCreateShippingClass(ctx, req.Nome, req.ID)
+	res.classID = classID
 
 	// Transação: cria portal_user + marca approved.
 	tx, err := h.Pool.Begin(ctx)
 	if err != nil {
-		httpx.Err(w, 500, "tx_error", err.Error())
-		return
+		return res, err
 	}
 	defer tx.Rollback(ctx)
 
-	// 2. Criar portal_user com shipping_class_id quando disponível.
+	// 2. Criar portal_user com o role escolhido + password_hash da solicitação.
+	// pwArg = NULL quando não há senha (conta WP-only); COALESCE no conflito não
+	// sobrescreve uma senha já existente com NULL.
+	var pwArg any
+	if pwHash == "" {
+		pwArg = nil
+	} else {
+		pwArg = pwHash
+	}
 	var portalUserID int64
 	if h.tableExists(ctx, "senderzz_portal_users") {
 		if classID > 0 {
 			err = tx.QueryRow(ctx,
-				`INSERT INTO senderzz_portal_users (email, nome, role, plano, ativo, shipping_class_id, created_at)
-				 VALUES ($1, $2, 'produtor', 'free', TRUE, $3, NOW())
-				 ON CONFLICT (email) DO UPDATE SET nome=EXCLUDED.nome, ativo=TRUE, shipping_class_id=EXCLUDED.shipping_class_id
+				`INSERT INTO senderzz_portal_users (email, nome, role, plano, ativo, shipping_class_id, password_hash, created_at)
+				 VALUES ($1, $2, $3, 'free', TRUE, $4, $5, NOW())
+				 ON CONFLICT (email) DO UPDATE SET nome=EXCLUDED.nome, role=EXCLUDED.role, ativo=TRUE,
+				     shipping_class_id=EXCLUDED.shipping_class_id,
+				     password_hash=COALESCE(EXCLUDED.password_hash, senderzz_portal_users.password_hash)
 				 RETURNING id`,
-				req.Email, req.Nome, classID).Scan(&portalUserID)
+				req.Email, req.Nome, role, classID, pwArg).Scan(&portalUserID)
 		} else {
 			err = tx.QueryRow(ctx,
-				`INSERT INTO senderzz_portal_users (email, nome, role, plano, ativo, created_at)
-				 VALUES ($1, $2, 'produtor', 'free', TRUE, NOW())
-				 ON CONFLICT (email) DO UPDATE SET nome=EXCLUDED.nome, ativo=TRUE
+				`INSERT INTO senderzz_portal_users (email, nome, role, plano, ativo, password_hash, created_at)
+				 VALUES ($1, $2, $3, 'free', TRUE, $4, NOW())
+				 ON CONFLICT (email) DO UPDATE SET nome=EXCLUDED.nome, role=EXCLUDED.role, ativo=TRUE,
+				     password_hash=COALESCE(EXCLUDED.password_hash, senderzz_portal_users.password_hash)
 				 RETURNING id`,
-				req.Email, req.Nome).Scan(&portalUserID)
+				req.Email, req.Nome, role, pwArg).Scan(&portalUserID)
 		}
 		if err != nil {
-			httpx.Err(w, 500, "db_error_portal_user", err.Error())
-			return
+			return res, err
 		}
 	}
+	res.portalUserID = portalUserID
 
-	notes := strings.TrimSpace(body.Notes)
 	var notesArg any
 	if notes == "" {
 		notesArg = nil
 	} else {
 		notesArg = notes
 	}
-	_, err = tx.Exec(ctx,
+	if _, err = tx.Exec(ctx,
 		`UPDATE senderzz_onboarding_requests
 		 SET status='approved', approved_at=NOW(), notes=COALESCE($2, notes)
-		 WHERE id=$1`, id, notesArg)
-	if err != nil {
-		httpx.Err(w, 500, "db_error_update", err.Error())
-		return
+		 WHERE id=$1`, id, notesArg); err != nil {
+		return res, err
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		httpx.Err(w, 500, "tx_commit", err.Error())
-		return
+		return res, err
 	}
 
 	// 3. Aplicar markup padrão para a classe (fora da tx — é um UPSERT tolerante a falha).
 	h.onbApplyMarkupDefault(ctx, classID)
 
-	// 4. E-mail NÃO enviado (sem infraestrutura SMTP neste serviço).
-	//    email_pending=true indica que o admin deve acionar envio via WP ou manualmente.
-	httpx.JSON(w, 200, map[string]any{
-		"ok":             true,
-		"portal_user_id": portalUserID,
-		"class_id":       classID,
-		"id":             id,
-		"email_pending":  true,
-	})
+	// 4. REF-PAYOUT 463: propaga o indicador (referred_by) para o portal_user recém-criado.
+	// FORA da tx e best-effort — uma falha aqui NUNCA desfaz a criação do usuário (espelha
+	// onbApplyMarkupDefault). IMUTÁVEL: só seta se ainda NULL (referred_by IS NULL).
+	// SELF-REFERRAL barrado por $1 <> $2. Coluna/migração ausente → erro engolido.
+	if referredBy != nil && *referredBy > 0 && portalUserID > 0 {
+		_, _ = h.Pool.Exec(ctx,
+			`UPDATE senderzz_portal_users
+			    SET referred_by = $1
+			  WHERE id = $2 AND referred_by IS NULL AND $1 <> $2`,
+			*referredBy, portalUserID)
+	}
+
+	return res, nil
+}
+
+// approveAsAdmin — FEAT-RBAC-2026-06-21. Cria/ativa um admin em senderzz_admin_users
+// usando o password_hash salvo na solicitação (bcrypt do /signup), e marca a request
+// como approved. admin_users tem UNIQUE(email) → ON CONFLICT (email) é seguro.
+// Não cria portal_user nem shipping class (admin não é produtor).
+func (h *OnboardingHandler) approveAsAdmin(ctx context.Context, id int64, req onboardingRequest, pwHash, notes string) (onbApproveResult, error) {
+	var res onbApproveResult
+
+	if !h.tableExists(ctx, "senderzz_admin_users") {
+		return res, errors.New("tabela senderzz_admin_users ausente")
+	}
+
+	tx, err := h.Pool.Begin(ctx)
+	if err != nil {
+		return res, err
+	}
+	defer tx.Rollback(ctx)
+
+	var adminID int64
+	err = tx.QueryRow(ctx,
+		`INSERT INTO senderzz_admin_users (nome, email, password_hash, role, ativo, created_at)
+		 VALUES ($1, $2, $3, 'admin', TRUE, NOW())
+		 ON CONFLICT (email) DO UPDATE SET nome=EXCLUDED.nome, password_hash=EXCLUDED.password_hash, ativo=TRUE
+		 RETURNING id`,
+		req.Nome, req.Email, pwHash).Scan(&adminID)
+	if err != nil {
+		return res, err
+	}
+	res.adminUserID = adminID
+
+	var notesArg any
+	if notes == "" {
+		notesArg = nil
+	} else {
+		notesArg = notes
+	}
+	if _, err = tx.Exec(ctx,
+		`UPDATE senderzz_onboarding_requests
+		 SET status='approved', approved_at=NOW(), notes=COALESCE($2, notes)
+		 WHERE id=$1`, id, notesArg); err != nil {
+		return res, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return res, err
+	}
+	return res, nil
 }
 
 // Reject marca request como rejeitada.
@@ -680,6 +1029,21 @@ func (h *OnboardingHandler) CreateAdmin(w http.ResponseWriter, r *http.Request) 
 		`SELECT COUNT(*) FROM senderzz_admin_users WHERE ativo=TRUE`).Scan(&count)
 	if count > 0 {
 		httpx.Err(w, 409, "already_setup", "sistema já possui admin ativo; setup foi finalizado")
+		return
+	}
+
+	// AUDIT-DEEP-2026-06-18 P2: integridade de cadastro. A trava acima só conta
+	// admins ATIVOS — um registro com o MESMO e-mail mas inativo (ou criado numa
+	// corrida) não seria pego, e o INSERT abaixo duplicaria o e-mail. Checagem
+	// explícita de duplicado (case-insensitive) antes do INSERT → 409 claro.
+	// (O UNIQUE em email é a defesa definitiva, mas exige migração de schema +
+	//  varredura de duplicatas pré-existentes; fica como follow-up.)
+	var emailExists bool
+	_ = h.Pool.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM senderzz_admin_users WHERE LOWER(email)=LOWER($1))`,
+		body.Email).Scan(&emailExists)
+	if emailExists {
+		httpx.Err(w, 409, "duplicate", "e-mail já cadastrado em senderzz_admin_users")
 		return
 	}
 

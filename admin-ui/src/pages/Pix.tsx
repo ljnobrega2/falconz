@@ -7,8 +7,13 @@ import FilterTopPanel, {
   ActiveFilterChips,
   type ActiveChip,
 } from '../components/FilterTopPanel'
+import FalkSelect from '../components/FalkSelect'
+import FalkDatePicker from '../components/FalkDatePicker'
 import TableSkeleton from '../components/TableSkeleton'
 import EmptyState from '../components/EmptyState'
+import StatusBadge from '../components/StatusBadge'
+import DetailDrawer from '../components/DetailDrawer'
+import { emitToast } from '../hooks/useToast'
 
 // Linha da listagem de recargas (inclui nome/email via JOIN com portal_users)
 type R = {
@@ -43,13 +48,6 @@ type ReconcileStatus = {
   recent_errors: string[]
 }
 
-const STATUS_CLS: Record<string, string> = {
-  pendente:   's-pendente',
-  analise:    's-pendente',  // mesmo estilo visual de pendente
-  confirmado: 's-confirmado',
-  expirado:   's-expirado',
-  cancelado:  's-cancelado',
-}
 
 const ALL_STATUSES = ['pendente', 'analise', 'confirmado', 'expirado', 'cancelado']
 
@@ -150,9 +148,10 @@ export default function Pix() {
     setActing(id)
     try {
       await api(`/pix/${id}/status`, { method: 'PUT', body: JSON.stringify({ status: s }) })
+      emitToast('ok', s === 'confirmado' ? 'Recarga confirmada.' : 'Recarga cancelada.')
       load()
       loadReconcile()
-    } catch (e: any) { setErr(e.message) }
+    } catch (e: any) { setErr(e.message); emitToast('err', e.message || 'Falha ao atualizar recarga.') }
     finally { setActing(null) }
   }
 
@@ -161,10 +160,12 @@ export default function Pix() {
     setVerifyMsg(null)
     try {
       const r = await api<{ ok: boolean; queued: number }>('/pix/verificar', { method: 'POST', body: '{}' })
-      setVerifyMsg(`Verificação iniciada. ${r.queued} recarga(s) pendente(s) na fila.`)
+      const msg = `Verificação iniciada. ${r.queued} recarga(s) pendente(s) na fila.`
+      setVerifyMsg(msg)
+      emitToast('ok', msg)
       load()
       loadReconcile()
-    } catch (e: any) { setErr(e.message) }
+    } catch (e: any) { setErr(e.message); emitToast('err', e.message || 'Falha ao verificar PIX pendentes.') }
     finally { setVerifying(false) }
   }
 
@@ -282,30 +283,30 @@ export default function Pix() {
         title="Filtros"
       >
         <FilterField label="Data inicial">
-          <input
-            type="date"
-            style={filterInputStyle}
+          <FalkDatePicker
             value={draftIni}
-            onChange={e => setDraftIni(e.target.value)}
+            onChange={v => setDraftIni(v)}
+            placeholder="dd/mm/aaaa"
           />
         </FilterField>
         <FilterField label="Data final">
-          <input
-            type="date"
-            style={filterInputStyle}
+          <FalkDatePicker
             value={draftFim}
-            onChange={e => setDraftFim(e.target.value)}
+            onChange={v => setDraftFim(v)}
+            placeholder="dd/mm/aaaa"
           />
         </FilterField>
         <FilterField label="Status">
-          <select
-            style={filterInputStyle}
+          <FalkSelect
             value={draftStatus}
-            onChange={e => setDraftStatus(e.target.value)}
-          >
-            <option value="">Todos status</option>
-            {ALL_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
-          </select>
+            onChange={v => setDraftStatus(v)}
+            options={[
+              { value: '', label: 'Todos status' },
+              ...ALL_STATUSES.map(s => ({ value: s, label: s })),
+            ]}
+            placeholder="Todos status"
+            aria-label="Status"
+          />
         </FilterField>
         <FilterField label="Busca (User ID)">
           <input
@@ -361,7 +362,7 @@ export default function Pix() {
                   }
                 </td>
                 <td className="szv2-td-num" style={{ fontWeight: 700, color: 'var(--szv2-success)' }}>{fmt(r.valor)}</td>
-                <td><span className={`szv2-status-badge ${STATUS_CLS[r.status] || 's-pendente'}`}>{r.status}</span></td>
+                <td><StatusBadge status={r.status} /></td>
                 <td style={{ maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', fontSize: 11, color: 'var(--szv2-text-muted)' }}>{r.me_pix_id ?? '—'}</td>
                 <td style={{ fontSize: 12, color: 'var(--szv2-text-muted)' }}>{fmtDate(r.expires_at)}</td>
                 <td style={{ fontSize: 12, color: r.paid_at ? 'var(--szv2-success)' : 'var(--szv2-text-muted)' }}>{fmtDate(r.paid_at)}</td>
@@ -412,23 +413,28 @@ export default function Pix() {
 
       {/* Modal de detalhe da recarga */}
       {detail && (
-        <div
-          style={{
-            position: 'fixed', inset: 0, background: 'rgba(0,0,0,.5)', zIndex: 9999,
-            display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24,
-          }}
-          onClick={e => { if (e.target === e.currentTarget) setDetail(null) }}
+        <DetailDrawer
+          open
+          onClose={() => setDetail(null)}
+          large
+          title={`Recarga #${detail.id}`}
+          footer={
+            (detail.status === 'pendente' || detail.status === 'analise') ? (
+              <>
+                <button
+                  disabled={acting === detail.id}
+                  onClick={() => { setPixStatus(detail.id, 'confirmado'); setDetail(null) }}
+                  className="szv2-btn-brand"
+                >✓ Confirmar recarga</button>
+                <button
+                  disabled={acting === detail.id}
+                  onClick={() => { setPixStatus(detail.id, 'cancelado'); setDetail(null) }}
+                  className="szv2-btn szv2-btn-danger"
+                >✕ Cancelar recarga</button>
+              </>
+            ) : undefined
+          }
         >
-          <div className="szv2-card" style={{ maxWidth: 640, width: '100%', maxHeight: '90vh', overflowY: 'auto' }}>
-            <div className="szv2-card-head" style={{ marginBottom: 16 }}>
-              <h2>Recarga #{detail.id}</h2>
-              <button
-                className="szv2-btn szv2-btn-sm"
-                onClick={() => setDetail(null)}
-                style={{ height: 28, fontSize: 11 }}
-              >✕ Fechar</button>
-            </div>
-
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px 16px', marginBottom: 16 }}>
               <div><span className="szv2-label">Usuário</span>
                 <p style={{ margin: '2px 0', fontWeight: 600 }}>{detail.nome || `#${detail.user_id}`}</p>
@@ -438,7 +444,7 @@ export default function Pix() {
                 <p style={{ margin: '2px 0', fontWeight: 700, color: 'var(--szv2-success)' }}>{fmt(detail.valor)}</p>
               </div>
               <div><span className="szv2-label">Status</span>
-                <p style={{ margin: '2px 0' }}><span className={`szv2-status-badge ${STATUS_CLS[detail.status] || 's-pendente'}`}>{detail.status}</span></p>
+                <p style={{ margin: '2px 0' }}><StatusBadge status={detail.status} /></p>
               </div>
               <div><span className="szv2-label">PIX ID (ME)</span>
                 <p style={{ margin: '2px 0', fontSize: 12, wordBreak: 'break-all' }}>{detail.me_pix_id ?? '—'}</p>
@@ -480,23 +486,7 @@ export default function Pix() {
                 }
               </div>
             )}
-
-            {(detail.status === 'pendente' || detail.status === 'analise') && (
-              <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
-                <button
-                  disabled={acting === detail.id}
-                  onClick={() => { setPixStatus(detail.id, 'confirmado'); setDetail(null) }}
-                  className="szv2-btn-brand"
-                >✓ Confirmar recarga</button>
-                <button
-                  disabled={acting === detail.id}
-                  onClick={() => { setPixStatus(detail.id, 'cancelado'); setDetail(null) }}
-                  className="szv2-btn szv2-btn-danger"
-                >✕ Cancelar recarga</button>
-              </div>
-            )}
-          </div>
-        </div>
+        </DetailDrawer>
       )}
 
       {detailLoading && (

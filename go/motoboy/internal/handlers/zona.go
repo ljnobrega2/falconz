@@ -91,8 +91,8 @@ func (h *ZonaHandler) resolveZona(ctx context.Context, cep string) (map[string]a
 			c.cidade,
 			c.uf
 		 FROM sz_motoboy_cep_zonas cz
-		 JOIN sz_motoboy_zonas z ON z.id = cz.zona_id AND z.ativo = 1
-		 JOIN sz_motoboy_cds   c ON c.id = z.cd_id   AND c.ativo = 1
+		 JOIN sz_motoboy_zonas z ON z.id = cz.zona_id AND z.ativo = true
+		 JOIN sz_motoboy_cds   c ON c.id = z.cd_id   AND c.ativo = true
 		WHERE cz.cep_inicio <= $1 AND cz.cep_fim >= $1
 		ORDER BY cz.id ASC
 		LIMIT 1`,

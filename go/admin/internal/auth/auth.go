@@ -8,9 +8,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
+	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -71,7 +75,16 @@ func Middleware(pool *pgxpool.Pool) func(http.Handler) http.Handler {
 					return nil, errors.New("alg inválido")
 				}
 				return secret(), nil
-			})
+			},
+				jwt.WithValidMethods([]string{"HS256"}),
+				// SEC-GO-04: exige iss=senderzz-admin. Mesmo que ADMIN_JWT_SECRET caia
+				// no JWT_SECRET compartilhado, tokens de portal (iss=senderzz-portal) /
+				// wallet / orders (iss vazio) são rejeitados — fecha o privesc por
+				// confusão de token entre serviços.
+				jwt.WithIssuer("senderzz-admin"),
+				// SEC-GO-09: token sem exp não é aceito como eterno.
+				jwt.WithExpirationRequired(),
+			)
 			if err != nil || !tok.Valid {
 				writeErr(w, http.StatusUnauthorized, "token inválido")
 				return
@@ -89,6 +102,77 @@ func Middleware(pool *pgxpool.Pool) func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
+}
+
+// P0-04: rate-limit opcional do POST /login — janela de 15min por IP.
+// Defesa contra brute-force de credenciais. Mapa em memória + mutex, com janela
+// deslizante por IP; chave = IP do RealIP (o middleware RealIP roda antes e já
+// normalizou r.RemoteAddr). Excedeu → 429 (não chega ao handler, então uma
+// tentativa legítima conta no máximo como 1 de 5 — não quebra login válido).
+// A configuração explícita fica disponível via ADMIN_LOGIN_RATE_MAX. Sem valor,
+// o limite é efetivamente desativado para não bloquear logins legítimos.
+const (
+	loginRateWindow = 15 * time.Minute
+)
+
+// loginRateMax é variável de pacote inicializada do ambiente no startup.
+var loginRateMax = loadLoginRateMax()
+
+// loadLoginRateMax lê ADMIN_LOGIN_RATE_MAX: se setado e parseável p/ int positivo,
+// usa-o; caso contrário devolve um teto efetivamente infinito.
+func loadLoginRateMax() int {
+	if v := os.Getenv("ADMIN_LOGIN_RATE_MAX"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	// OWNER-2026-06-23: rate-limit de login DESLIGADO em definitivo (ordem do dono —
+	// "muitas tentativas" travava logins legítimos). Default efetivamente infinito.
+	return 1 << 30
+}
+
+// LoginRateLimit devolve um middleware com estado compartilhado (mapa+mutex
+// capturados no closure, criados uma única vez quando montado em main.go).
+func LoginRateLimit() func(http.Handler) http.Handler {
+	var mu sync.Mutex
+	hits := make(map[string][]time.Time)
+
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ip := clientIP(r)
+			now := time.Now()
+
+			mu.Lock()
+			// Poda timestamps fora da janela (mapa não cresce sem limite).
+			win := hits[ip][:0]
+			for _, t := range hits[ip] {
+				if now.Sub(t) < loginRateWindow {
+					win = append(win, t)
+				}
+			}
+			if len(win) >= loginRateMax {
+				hits[ip] = win
+				mu.Unlock()
+				slog.Warn("[auth] P0-04 rate-limit de login excedido", "ip", ip, "tentativas", len(win))
+				w.Header().Set("Retry-After", "900")
+				writeErr(w, http.StatusTooManyRequests, "muitas tentativas de login — tente novamente em alguns minutos")
+				return
+			}
+			hits[ip] = append(win, now)
+			mu.Unlock()
+
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// clientIP extrai o IP de r.RemoteAddr (já normalizado pelo middleware RealIP),
+// removendo a porta de forma defensiva.
+func clientIP(r *http.Request) string {
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return host
+	}
+	return r.RemoteAddr
 }
 
 func FromCtx(ctx context.Context) *Admin {

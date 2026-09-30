@@ -1,25 +1,25 @@
 // MotoboyEtiquetas — listagem de pedidos motoboy formatados como etiquetas
 // para impressão. Espelha sz_mb_tab_etiquetas() (admin.php:1383, §2.5).
 //
-// Pontos relevantes:
-//   • Grid auto-fill minmax(280px,1fr); cada card é uma etiqueta com QR.
-//   • Botão "Imprimir etiquetas" chama window.print(). O CSS @media print
-//     esconde tudo exceto #sz-etiq-print (cards) e usa border 1.5px.
-//   • CEP renderizado como XXXXX-XXX (paridade PHP: substr 0..5 + "-" + 5..).
-//   • QR via api.qrserver.com (mesma URL do PHP); package_code chega pronto
-//     do backend e já é HMAC-SHA256 compatível com o leitor do PWA.
+// Mudanças 2026-06-18 (pedido do dono):
+//   • Sem "A cobrar"; sem +55 no telefone; mostra qtd+nome do produto.
+//   • Sem zona/cidade no topo direito; sem label "QR ROTA / DEVOLUÇÃO".
+//   • Impressão INDIVIDUAL por etiqueta (além de imprimir todas).
+//   • Filtro por DATA DE ENTREGA (não data do pedido).
 
 import { useEffect, useState } from 'react'
 import { api } from '../api'
+import FalkSelect from '../components/FalkSelect'
+import FalkDatePicker from '../components/FalkDatePicker'
 import FilterButton from '../components/FilterButton'
 import FilterTopPanel, {
   FilterField,
-  filterInputStyle,
   ActiveFilterChips,
   type ActiveChip,
 } from '../components/FilterTopPanel'
 import TableSkeleton from '../components/TableSkeleton'
 import EmptyState from '../components/EmptyState'
+import ErrorState from '../components/ErrorState'
 
 // ─── Tipos ────────────────────────────────────────────────────────────────
 
@@ -37,6 +37,7 @@ type Etiqueta = {
   dest_uf: string
   dest_cep: string
   dest_telefone: string
+  produto_label: string // "2x Nome do Produto" (qtd + nome, uma vez só)
   valor_pedido: number
   pgto_dinheiro: number
   pgto_pix: number
@@ -51,7 +52,16 @@ type StatusFiltro = 'agendado' | 'embalado' | 'em_rota'
 const fmtMoney = (v: number) =>
   v.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
-const todayISO = () => new Date().toISOString().slice(0, 10)
+// Data "hoje" no fuso America/Sao_Paulo (UTC-3). Usar toISOString() devolve UTC
+// e, das ~21h às 23h59 BRT, retorna o dia seguinte — fazendo a etiqueta cair na
+// data de entrega errada e parecer vazia. Intl/en-CA garante o dia local correto.
+const todayISO = () => {
+  const fmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Sao_Paulo',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+  })
+  return fmt.format(new Date()) // en-CA → "YYYY-MM-DD"
+}
 
 // CEP "12345678" → "12345-678" (paridade PHP). Tolera CEP curto/longo.
 function formatCep(cep: string): string {
@@ -61,17 +71,24 @@ function formatCep(cep: string): string {
   return d.slice(0, 5) + '-' + d.slice(5, 8)
 }
 
-// Concatena o que tiver valor > 0 nas três formas de pagamento.
+// Telefone SEM +55 (paridade $sz4mb_fmt_phone): remove DDI 55 quando 12-13 dígitos.
+function fmtPhone(tel: string): string {
+  let d = (tel || '').replace(/\D+/g, '')
+  if ((d.length === 12 || d.length === 13) && d.startsWith('55')) d = d.slice(2)
+  if (d.length === 11) return `(${d.slice(0, 2)}) ${d.slice(2, 7)}-${d.slice(7)}`
+  if (d.length === 10) return `(${d.slice(0, 2)}) ${d.slice(2, 6)}-${d.slice(6)}`
+  return d
+}
+
+// Formas de pagamento com valor > 0. SEM "A cobrar" (vazio quando nada).
 function pgtoString(e: Etiqueta): string {
   const parts: string[] = []
   if (e.pgto_dinheiro > 0) parts.push(`Dinheiro R$ ${fmtMoney(e.pgto_dinheiro)}`)
-  if (e.pgto_pix > 0)      parts.push(`PIX R$ ${fmtMoney(e.pgto_pix)}`)
-  if (e.pgto_cartao > 0)   parts.push(`Cartão R$ ${fmtMoney(e.pgto_cartao)}`)
-  return parts.length ? parts.join(' + ') : 'A cobrar'
+  if (e.pgto_pix > 0) parts.push(`PIX R$ ${fmtMoney(e.pgto_pix)}`)
+  if (e.pgto_cartao > 0) parts.push(`Cartão R$ ${fmtMoney(e.pgto_cartao)}`)
+  return parts.join(' + ')
 }
 
-// URL do QR. O backend já gera o package_code com HMAC-SHA256; aqui só
-// fazemos o encoding do parâmetro `data`.
 function qrUrl(code: string): string {
   return `https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=${encodeURIComponent(code)}`
 }
@@ -79,7 +96,7 @@ function qrUrl(code: string): string {
 const STATUS_LIST: { key: StatusFiltro; label: string }[] = [
   { key: 'agendado', label: 'Agendados' },
   { key: 'embalado', label: 'Embalados' },
-  { key: 'em_rota',  label: 'Em rota'   },
+  { key: 'em_rota', label: 'Em rota' },
 ]
 
 // ─── Página ───────────────────────────────────────────────────────────────
@@ -92,7 +109,9 @@ export default function MotoboyEtiquetas() {
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState('')
 
-  // Drafts no painel.
+  // Impressão individual: quando setado, só essa etiqueta aparece no @media print.
+  const [soloPrint, setSoloPrint] = useState<number | null>(null)
+
   const [draftDate, setDraftDate] = useState<string>(date)
   const [draftStatus, setDraftStatus] = useState<StatusFiltro>(status)
   const [filterOpen, setFilterOpen] = useState(false)
@@ -113,10 +132,21 @@ export default function MotoboyEtiquetas() {
     setFilterOpen(false)
   }
 
-  // Chips ativos.
+  function printAll() {
+    setSoloPrint(null)
+    setTimeout(() => window.print(), 30)
+  }
+  function printOne(pedidoId: number) {
+    setSoloPrint(pedidoId)
+    setTimeout(() => {
+      window.print()
+      setTimeout(() => setSoloPrint(null), 400)
+    }, 30)
+  }
+
   const today = todayISO()
   const chips: ActiveChip[] = []
-  if (date !== today) chips.push({ key: 'date', label: `Data: ${date}`, onRemove: () => setDate(today) })
+  if (date !== today) chips.push({ key: 'date', label: `Entrega: ${date}`, onRemove: () => setDate(today) })
   if (status !== 'agendado') {
     const lbl = STATUS_LIST.find(s => s.key === status)?.label ?? status
     chips.push({ key: 'status', label: `Status: ${lbl}`, onRemove: () => setStatus('agendado') })
@@ -143,7 +173,6 @@ export default function MotoboyEtiquetas() {
 
   useEffect(() => { load() /* eslint-disable-next-line */ }, [date, status])
 
-  // Data formatada para o título auxiliar (DD/MM/YYYY).
   const dateLabel = (() => {
     const [y, m, d] = date.split('-')
     return y && m && d ? `${d}/${m}/${y}` : date
@@ -151,10 +180,10 @@ export default function MotoboyEtiquetas() {
 
   return (
     <div>
-      {err && <div className="sz-alert-danger" style={{ marginBottom: 16 }}>{err}</div>}
+      {/* Banner só com dados na tela (erro de refresh/ação). Falha de
+          carregamento inicial vira ErrorState na área das etiquetas. */}
+      {err && items.length > 0 && <div className="sz-alert-danger" style={{ marginBottom: 16 }}>{err}</div>}
 
-      {/* CSS print-only e cards. Mantemos no próprio componente para não
-          poluir o CSS global e permitir uso em outras telas. */}
       <style>{`
         .sz-etiq-grid {
           display: grid;
@@ -178,108 +207,52 @@ export default function MotoboyEtiquetas() {
           margin-bottom: 8px;
           gap: 8px;
         }
-        .sz-etiq-num {
-          font-size: 18px;
-          font-weight: 700;
-          color: #E8650A;
-        }
+        .sz-etiq-num { font-size: 18px; font-weight: 700; color: #1E6FF2; }
         .sz-etiq-mb {
-          font-size: 12px;
-          background: #f3f4f6;
-          padding: 3px 8px;
-          border-radius: 6px;
-          color: #374151;
-          text-align: right;
+          font-size: 12px; background: #f3f4f6; padding: 3px 8px;
+          border-radius: 6px; color: #374151; text-align: right;
         }
-        .sz-etiq-dest {
-          font-size: 14px;
-          font-weight: 700;
-          margin-bottom: 4px;
-          color: #111827;
+        .sz-etiq-print-one {
+          font-size: 11px; border: 1px solid #d1d5db; background: #fff;
+          border-radius: 6px; padding: 2px 8px; cursor: pointer; color: #374151;
         }
-        .sz-etiq-addr {
-          color: #374151;
-          margin-bottom: 8px;
-          line-height: 1.4;
-          font-size: 13px;
-        }
+        .sz-etiq-print-one:hover { border-color: #1E6FF2; color: #1E6FF2; }
+        .sz-etiq-dest { font-size: 14px; font-weight: 700; margin-bottom: 2px; color: #111827; }
+        .sz-etiq-prod { font-size: 13px; font-weight: 700; color: #1E6FF2; margin-bottom: 6px; }
+        .sz-etiq-addr { color: #374151; margin-bottom: 8px; line-height: 1.4; font-size: 13px; }
         .sz-etiq-footer {
-          display: flex;
-          justify-content: space-between;
-          gap: 8px;
-          border-top: 1px dashed #d1d5db;
-          padding-top: 8px;
-          margin-top: 6px;
+          display: flex; justify-content: space-between; gap: 8px;
+          border-top: 1px dashed #d1d5db; padding-top: 8px; margin-top: 6px;
         }
-        .sz-etiq-val {
-          font-weight: 700;
-          font-size: 14px;
-          color: #111827;
-        }
-        .sz-etiq-pgto {
-          font-size: 12px;
-          color: #6b7280;
-          margin-top: 2px;
-        }
-        .sz-etiq-tel {
-          font-size: 12px;
-          color: #6b7280;
-          align-self: flex-end;
-        }
-        .sz-etiq-cep {
-          position: absolute;
-          bottom: 10px;
-          right: 14px;
-          font-size: 11px;
-          color: #9ca3af;
-        }
+        .sz-etiq-val { font-weight: 700; font-size: 14px; color: #111827; }
+        .sz-etiq-pgto { font-size: 12px; color: #6b7280; margin-top: 2px; }
+        .sz-etiq-tel { font-size: 12px; color: #6b7280; align-self: flex-end; }
+        .sz-etiq-cep { position: absolute; bottom: 10px; right: 14px; font-size: 11px; color: #9ca3af; }
         .sz-etiq-qr-wrap {
-          display: flex;
-          align-items: center;
-          gap: 10px;
-          margin-top: 10px;
-          border-top: 1px dashed #d1d5db;
-          padding-top: 8px;
+          display: flex; align-items: center; gap: 10px; margin-top: 10px;
+          border-top: 1px dashed #d1d5db; padding-top: 8px;
         }
-        .sz-etiq-qr-wrap img {
-          width: 64px;
-          height: 64px;
-          image-rendering: pixelated;
-        }
-        .sz-etiq-qr-code {
-          font-size: 10px;
-          line-height: 1.35;
-          word-break: break-all;
-          color: #111827;
-        }
+        .sz-etiq-qr-wrap img { width: 64px; height: 64px; image-rendering: pixelated; }
+        .sz-etiq-qr-code { font-size: 10px; line-height: 1.35; word-break: break-all; color: #111827; }
 
         @media print {
           body * { visibility: hidden !important; }
           #sz-etiq-print, #sz-etiq-print * { visibility: visible !important; }
           #sz-etiq-print {
-            position: fixed;
-            top: 0;
-            left: 0;
-            right: 0;
-            width: 100%;
-            padding: 0;
-            background: #fff;
+            position: fixed; top: 0; left: 0; right: 0; width: 100%; padding: 0; background: #fff;
           }
-          .sz-etiq {
-            border: 1.5px solid #000 !important;
-            page-break-inside: avoid;
-          }
+          .sz-etiq { border: 1.5px solid #000 !important; page-break-inside: avoid; }
+          .sz-etiq-print-one { display: none !important; }
+          .sz-etiq-hide-print { display: none !important; }
         }
       `}</style>
 
-      {/* Top bar: filtros + botão imprimir. Fica fora do #sz-etiq-print para
-          ser ocultado pelo @media print. */}
       <div className="szv2-card" style={{ marginBottom: 16 }}>
         <div className="szv2-card-head" style={{ flexWrap: 'wrap', gap: 12 }}>
           <div>
             <h2>Etiquetas Motoboy</h2>
             <p className="szv2-card-sub">
-              {items.length} etiqueta(s) • {dateLabel} — QR Code validado pelo PWA do motoboy ao iniciar rota.
+              {items.length} etiqueta(s) • entrega {dateLabel} — QR validado pelo PWA ao iniciar rota.
             </p>
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
@@ -287,38 +260,47 @@ export default function MotoboyEtiquetas() {
             <button
               type="button"
               className="szv2-btn szv2-btn-brand"
-              onClick={() => window.print()}
+              onClick={printAll}
               disabled={loading || items.length === 0}
             >
-              🖨️ Imprimir etiquetas
+              🖨️ Imprimir todas
             </button>
           </div>
         </div>
         <ActiveFilterChips chips={chips} onClearAll={clearFilters} />
       </div>
 
-      {/* Container que sobrevive ao @media print. */}
       <div id="sz-etiq-print">
         {loading && items.length === 0 ? (
           <TableSkeleton rows={4} cols={5} />
+        ) : err && items.length === 0 ? (
+          <ErrorState message={err} onRetry={load} />
         ) : !loading && items.length === 0 ? (
           <EmptyState
             icon="🏷️"
-            title={`Nenhum pedido ${STATUS_LIST.find(s => s.key === status)?.label.toLowerCase() ?? status} em ${dateLabel}.`}
-            description="Selecione outro dia ou outro status para gerar etiquetas."
+            title={`Nenhum pedido ${STATUS_LIST.find(s => s.key === status)?.label.toLowerCase() ?? status} com entrega em ${dateLabel}.`}
+            description="Selecione outro dia de entrega ou outro status."
           />
         ) : (
           <div className="sz-etiq-grid">
             {items.map((e) => (
-              <div key={e.pedido_id} className="sz-etiq">
+              <div
+                key={e.pedido_id}
+                className={'sz-etiq' + (soloPrint !== null && soloPrint !== e.pedido_id ? ' sz-etiq-hide-print' : '')}
+              >
                 <div className="sz-etiq-header">
-                  <div className="sz-etiq-num">#{e.wc_order_id}</div>
-                  <div className="sz-etiq-mb">
-                    {e.motoboy_nome || '—'}
-                    {e.zona_nome ? ` · ${e.zona_nome}` : ''}
-                  </div>
+                  <div className="sz-etiq-num">{e.wc_order_id}</div>
+                  <button
+                    type="button"
+                    className="sz-etiq-print-one"
+                    onClick={() => printOne(e.pedido_id)}
+                    title="Imprimir só esta etiqueta"
+                  >
+                    🖨️ Imprimir
+                  </button>
                 </div>
                 <div className="sz-etiq-dest">{e.dest_nome || '—'}</div>
+                {e.produto_label && <div className="sz-etiq-prod">{e.produto_label}</div>}
                 <div className="sz-etiq-addr">
                   {e.dest_endereco}
                   {e.dest_numero ? `, ${e.dest_numero}` : ''}
@@ -333,18 +315,15 @@ export default function MotoboyEtiquetas() {
                 <div className="sz-etiq-footer">
                   <div>
                     <div className="sz-etiq-val">R$ {fmtMoney(e.valor_pedido)}</div>
-                    <div className="sz-etiq-pgto">{pgtoString(e)}</div>
+                    {pgtoString(e) && <div className="sz-etiq-pgto">{pgtoString(e)}</div>}
                   </div>
                   {e.dest_telefone && (
-                    <div className="sz-etiq-tel">{e.dest_telefone}</div>
+                    <div className="sz-etiq-tel">{fmtPhone(e.dest_telefone)}</div>
                   )}
                 </div>
                 <div className="sz-etiq-qr-wrap">
                   <img src={qrUrl(e.package_code)} alt="QR Code do pacote" />
-                  <div>
-                    <strong>QR ROTA / DEVOLUÇÃO</strong>
-                    <div className="sz-etiq-qr-code">{e.package_code}</div>
-                  </div>
+                  <div className="sz-etiq-qr-code">{e.package_code}</div>
                 </div>
                 {e.dest_cep && (
                   <div className="sz-etiq-cep">CEP {formatCep(e.dest_cep)}</div>
@@ -362,24 +341,20 @@ export default function MotoboyEtiquetas() {
         onClear={clearFilters}
         title="Filtros"
       >
-        <FilterField label="Data">
-          <input
-            type="date"
-            style={filterInputStyle}
+        <FilterField label="Data de entrega">
+          <FalkDatePicker
             value={draftDate}
-            onChange={ev => setDraftDate(ev.target.value)}
+            onChange={v => setDraftDate(v)}
+            placeholder="dd/mm/aaaa"
           />
         </FilterField>
         <FilterField label="Status">
-          <select
-            style={filterInputStyle}
+          <FalkSelect
             value={draftStatus}
-            onChange={ev => setDraftStatus(ev.target.value as StatusFiltro)}
-          >
-            {STATUS_LIST.map(s => (
-              <option key={s.key} value={s.key}>{s.label}</option>
-            ))}
-          </select>
+            onChange={v => setDraftStatus(v as StatusFiltro)}
+            options={STATUS_LIST.map(s => ({ value: s.key, label: s.label }))}
+            aria-label="Status"
+          />
         </FilterField>
       </FilterTopPanel>
     </div>

@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>FALK LOG — Logística white-label & Cash on Delivery</title>
+<meta name="description" content="Plataforma white-label de Cash on Delivery e Pay After Delivery: rastreio, etiqueta, estoque dinâmico e comissões automáticas — com a sua marca em cada etapa." />
+<style>
+  :root{
+    --blue:#1E6FF2; --blue2:#5B97F9; --graph:#1F2937; --graph2:#0F172A; --ink:#111827;
+    --line:#E5E7EB; --mut:#6B7280; --mutd:rgba(255,255,255,.6);
+    font-family:'Space Grotesk',-apple-system,BlinkMacSystemFont,system-ui,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:#fff;color:var(--ink);-webkit-font-smoothing:antialiased;overflow-x:hidden}
+  a{color:inherit;text-decoration:none}
+  .wrap{max-width:1140px;margin:0 auto;padding:0 24px}
+  .blue{color:var(--blue)}
+  .logo{display:inline-flex;align-items:center;gap:10px}
+  .logo .wm{display:flex;flex-direction:column;line-height:.9}
+  .logo .wm b{font-weight:800;font-size:18px;letter-spacing:-.5px}
+  .logo .wm s{font-weight:700;font-size:9.5px;letter-spacing:5px;color:var(--blue);text-decoration:none}
+  .logo .div{width:1px;height:26px;background:rgba(0,0,0,.16)}
+  .logo.lt .wm b{color:#fff}.logo.lt .div{background:rgba(255,255,255,.22)}
+  .btn{display:inline-flex;align-items:center;justify-content:center;height:46px;padding:0 24px;border-radius:11px;font-weight:700;font-size:15px;cursor:pointer;border:none;transition:.15s}
+  .btn-p{background:var(--blue);color:#fff;box-shadow:0 10px 26px rgba(30,111,242,.30)}
+  .btn-p:hover{background:#1556CC}
+  .btn-g{background:transparent;color:#fff;border:1.5px solid rgba(255,255,255,.22)}
+  .btn-d{background:#fff;color:var(--graph2);border:1.5px solid var(--line)}
+  /* nav */
+  nav{position:sticky;top:0;z-index:30;background:rgba(255,255,255,.82);backdrop-filter:blur(12px);border-bottom:1px solid var(--line)}
+  nav .wrap{display:flex;align-items:center;justify-content:space-between;height:66px}
+  /* hero grafite */
+  .hero{position:relative;overflow:hidden;background:linear-gradient(165deg,var(--graph) 0%,var(--graph2) 70%,#0A0F1A 100%);color:#fff}
+  .grid{position:absolute;inset:0;background-image:linear-gradient(rgba(255,255,255,.04) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.04) 1px,transparent 1px);background-size:46px 46px;mask-image:radial-gradient(110% 90% at 70% 10%,#000 40%,transparent 100%)}
+  .glow{position:absolute;width:620px;height:620px;border-radius:50%;background:radial-gradient(circle,rgba(30,111,242,.34),transparent 64%);filter:blur(20px);right:-180px;top:-200px;animation:glow 7s ease-in-out infinite}
+  @keyframes glow{0%,100%{opacity:.55}50%{opacity:.95}}
+  .hero .wrap{position:relative;padding:90px 24px 76px;text-align:center}
+  .tag{display:inline-block;font-size:12.5px;font-weight:700;letter-spacing:.4px;color:var(--blue2);background:rgba(30,111,242,.14);border:1px solid rgba(30,111,242,.32);padding:7px 15px;border-radius:99px;margin-bottom:24px}
+  h1{font-size:62px;font-weight:800;line-height:1.02;letter-spacing:-1.6px}
+  .lead{font-size:18.5px;line-height:1.55;color:var(--mutd);margin:22px auto 32px;max-width:600px}
+  .cta-row{display:flex;gap:14px;justify-content:center;flex-wrap:wrap}
+  /* journey strip */
+  .journey{display:grid;grid-template-columns:repeat(4,1fr);gap:0;margin:64px auto 0;max-width:880px;border:1px solid rgba(255,255,255,.10);border-radius:18px;overflow:hidden;background:rgba(255,255,255,.03)}
+  .jstep{padding:22px 20px;text-align:left;border-right:1px solid rgba(255,255,255,.08)}
+  .jstep:last-child{border-right:none}
+  .jstep .ic{width:40px;height:40px;border-radius:10px;background:rgba(30,111,242,.16);display:flex;align-items:center;justify-content:center;font-size:20px;margin-bottom:12px}
+  .jstep b{font-size:14.5px}
+  .jstep p{font-size:12.5px;color:rgba(255,255,255,.5);margin-top:4px;line-height:1.4}
+  /* stats */
+  .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:24px;padding:38px 0;border-top:1px solid rgba(255,255,255,.10);margin-top:56px}
+  .stat b{display:block;font-size:34px;font-weight:800;letter-spacing:-1px}
+  .stat span{font-size:13px;color:var(--mutd)}
+  /* sections (branco) */
+  section{padding:78px 0}
+  .sec-h{text-align:center;max-width:660px;margin:0 auto 48px}
+  .sec-h .k{font-size:13px;font-weight:700;letter-spacing:1px;color:var(--blue);text-transform:uppercase}
+  .sec-h h2{font-size:40px;font-weight:800;letter-spacing:-1px;margin-top:10px}
+  .sec-h p{font-size:16px;color:var(--mut);margin-top:12px}
+  .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
+  .feat{background:#fff;border:1px solid var(--line);border-radius:18px;padding:28px;transition:.15s}
+  .feat:hover{border-color:#C7D2FE;box-shadow:0 14px 36px rgba(17,24,39,.07)}
+  .feat .ic{width:50px;height:50px;border-radius:13px;background:#EAF1FE;display:flex;align-items:center;justify-content:center;font-size:24px;margin-bottom:18px}
+  .feat h3{font-size:18.5px;font-weight:700;margin-bottom:8px}
+  .feat p{font-size:14px;color:var(--mut);line-height:1.55}
+  .feat.hot{background:linear-gradient(165deg,#0F172A,#1F2937);border:none;color:#fff}
+  .feat.hot .ic{background:rgba(30,111,242,.22)}.feat.hot p{color:rgba(255,255,255,.62)}
+  .badge-free{display:inline-block;font-size:11px;font-weight:800;letter-spacing:.5px;color:#5B97F9;background:rgba(30,111,242,.18);padding:4px 9px;border-radius:7px;margin-bottom:14px}
+  /* final */
+  .final{background:linear-gradient(165deg,var(--graph),#0A0F1A);border-radius:26px;padding:64px;text-align:center;color:#fff;position:relative;overflow:hidden}
+  .final h2{font-size:42px;font-weight:800;letter-spacing:-1px}
+  .final p{color:var(--mutd);font-size:17px;margin:14px 0 30px}
+  footer{padding:42px 0;border-top:1px solid var(--line);color:var(--mut);font-size:13px;text-align:center}
+  @media(max-width:900px){
+    h1{font-size:42px}.journey,.stats,.grid3{grid-template-columns:1fr}
+    .stats{grid-template-columns:repeat(2,1fr)}.jstep{border-right:none;border-bottom:1px solid rgba(255,255,255,.08)}.final{padding:34px}
+  }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute"><symbol id="fb" viewBox="0 0 48 48">
+  <path d="M24 5 L43 15.5 L24 26 L5 15.5 Z" fill="#4F8DF7"/>
+  <path d="M5 15.5 L24 26 L24 44 L5 33.5 Z" fill="#1E6FF2"/>
+  <path d="M43 15.5 L24 26 L24 44 L43 33.5 Z" fill="#1657C9"/>
+  <path d="M24 5 L43 15.5 L24 26 Z" fill="#5B97F9" opacity=".55"/>
+</symbol></svg>
+
+<nav><div class="wrap">
+  <span class="logo"><svg width="34" height="34"><use href="#fb"/></svg><span class="div"></span><span class="wm"><b>FALK</b><s>LOG</s></span></span>
+  <a class="btn btn-p" href="/portal/">Acessar plataforma</a>
+</div></nav>
+
+<header class="hero">
+  <div class="grid"></div><div class="glow"></div>
+  <div class="wrap">
+    <span class="tag">LOGÍSTICA WHITE-LABEL · CASH ON DELIVERY</span>
+    <h1>Receba na entrega.<br><span class="blue">Cresça sem risco.</span></h1>
+    <p class="lead">A plataforma white-label de Cash on Delivery e Pay After Delivery. Do checkout à comissão — rastreio, etiqueta, estoque e entregas com a <b style="color:#fff">sua marca</b> em cada etapa.</p>
+    <div class="cta-row">
+      <a class="btn btn-p" href="/portal/">Começar agora</a>
+      <a class="btn btn-g" href="#diferenciais">Ver diferenciais</a>
+    </div>
+
+    <div class="journey">
+      <div class="jstep"><div class="ic">🛒</div><b>Checkout</b><p>Sem CPF, sem cartão. Só nome e endereço.</p></div>
+      <div class="jstep"><div class="ic">📦</div><b>Rota inteligente</b><p>CEP → CD → motoboy da zona, com geofence.</p></div>
+      <div class="jstep"><div class="ic">🛰️</div><b>Entrega + pagamento</b><p>Recebe na hora. Bipe de SKU garante o certo.</p></div>
+      <div class="jstep"><div class="ic">💸</div><b>Comissão</b><p>Produtor e afiliado creditados automático.</p></div>
+    </div>
+
+    <div class="stats wrap" style="padding-left:0;padding-right:0">
+      <div class="stat"><b class="blue">+92%</b><span>taxa de completos</span></div>
+      <div class="stat"><b>D+0</b><span>pagamento na entrega</span></div>
+      <div class="stat"><b>100%</b><span>white-label da sua marca</span></div>
+      <div class="stat"><b>1ª</b><span>frustração por nossa conta</span></div>
+    </div>
+  </div>
+</header>
+
+<section id="diferenciais"><div class="wrap">
+  <div class="sec-h"><span class="k">Diferenciais</span><h2>Tudo numa plataforma só</h2><p>Da venda à entrega, com qualidade de excelência e a sua marca em cada ponto.</p></div>
+  <div class="grid3">
+    <div class="feat hot"><div class="badge-free">SEM CUSTO</div><div class="ic">🛡️</div><h3>1ª frustração é por nossa conta</h3><p>Entrega frustrada acontece. A primeira de cada produtor não tem taxa — você só paga pelo que converteu.</p></div>
+    <div class="feat"><div class="ic">🛰️</div><h3>Rastreio personalizado</h3><p>Página de acompanhamento com a sua marca, cores e domínio. O cliente nunca sai da sua identidade.</p></div>
+    <div class="feat"><div class="ic">🏷️</div><h3>Etiqueta personalizada</h3><p>Etiquetas brandadas com QR de validação. Bipe na saída e na entrega — padrão profissional.</p></div>
+    <div class="feat"><div class="ic">⚡</div><h3>Estoque dinâmico</h3><p>Reserva inteligente: pré-agendado não trava, agendado reserva, entregue baixa. Nunca venda o que não tem.</p></div>
+    <div class="feat"><div class="ic">🤝</div><h3>Afiliados & comissões</h3><p>Programa completo com vitrine, links de checkout e carteira liberada na entrega — sem planilha.</p></div>
+    <div class="feat"><div class="ic">🎨</div><h3>White-label premium</h3><p>Portal, checkout, rastreio e etiqueta com a sua marca de ponta a ponta. Do login ao recebimento.</p></div>
+  </div>
+</div></section>
+
+<section style="padding-top:0"><div class="wrap">
+  <div class="final">
+    <div class="glow" style="left:-150px;top:-180px"></div>
+    <h2>Pronto pra <span class="blue">vender com logística profissional</span>?</h2>
+    <p>Comece hoje na plataforma white-label de pagamento na entrega.</p>
+    <a class="btn btn-d" href="/portal/" style="height:52px;padding:0 34px;font-size:16px">Acessar o portal FALK LOG</a>
+  </div>
+</div></section>
+
+<footer><div class="wrap">
+  <span class="logo" style="justify-content:center"><svg width="28" height="28"><use href="#fb"/></svg><span class="div"></span><span class="wm"><b style="font-size:15px">FALK</b><s>LOG</s></span></span>
+  <p style="margin-top:14px">FALK LOG · Logística white-label · Cash on Delivery &amp; Pay After Delivery · © 2026</p>
+</div></footer>
+</body>
+</html>

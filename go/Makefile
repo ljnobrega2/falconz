@@ -22,14 +22,30 @@ build:
 
 test:
 	@echo "==> Testes todos os serviços"
-	@for svc in $(SERVICES); do \
+	@# Cada serviço é um MÓDULO Go separado (go.mod próprio) — precisa `cd` no dir.
+	@# Rodar `go test ./svc/...` da raiz go/ dá "[setup failed]" (cross-module). Por isso
+	@# entramos em cada dir. Testes que exigem DATABASE_URL fazem SKIP silencioso sem ela.
+	@fail=0; for svc in $(SERVICES); do \
 		echo "--- Test $$svc"; \
-		$(MAKE) -C $$svc test 2>/dev/null || $(GO) test ./$$svc/... -count=1 -timeout 60s; \
-	done
+		( cd $$svc && $(GO) test ./... -count=1 -timeout 120s ) || fail=1; \
+	done; \
+	if [ $$fail -ne 0 ]; then echo "==> ALGUM serviço FALHOU"; exit 1; fi; \
+	echo "==> Todos os serviços passaram"
 
 test-svc:
 	@if [ -z "$(SVC)" ]; then echo "Uso: make test-svc SVC=motoboy"; exit 1; fi
 	$(GO) test ./$(SVC)/... -v -count=1 -timeout 60s
+
+# Regressão SQL (núcleo financeiro/integração) — roda infra/postgres/tests/*.sql,
+# cada um ON_ERROR_STOP e auto-rollback. Exige DATABASE_URL exportado.
+test-sql:
+	@echo "==> Regressão SQL (infra/postgres/tests/*.sql)"
+	@if [ -z "$$DATABASE_URL" ]; then echo "Defina DATABASE_URL (postgresql://...)"; exit 1; fi
+	@for f in ../infra/postgres/tests/*.sql; do \
+		echo "--- $$f"; \
+		psql "$$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$$f" > /dev/null || { echo "FALHOU: $$f"; exit 1; }; \
+	done
+	@echo "==> Todos os testes SQL passaram"
 
 # ── Go módulo ─────────────────────────────────────────────────────────────────
 
@@ -126,6 +142,7 @@ help:
 	@echo "  build              — compila todos os serviços para bin/"
 	@echo "  test               — roda testes de todos os serviços"
 	@echo "  test-svc SVC=X     — testa um serviço específico"
+	@echo "  test-sql           — regressão SQL (financeiro/estoque/webhook), exige DATABASE_URL"
 	@echo "  tidy               — go mod tidy em todos"
 	@echo "  vet                — go vet em todos"
 	@echo "  docker-build       — build imagens Docker de todos"

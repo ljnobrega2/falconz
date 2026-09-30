@@ -1,0 +1,8 @@
+# Build determinístico: node_modules vem SÓ do `npm ci` no estágio builder.
+# Sem isto, o `COPY . .` traria um node_modules do host por cima do npm ci
+# (stale / sem dompurify) e o build falharia ou serviria deps erradas.
+node_modules
+dist
+*.log
+.git
+.DS_Store

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"regexp"
 	"strconv"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -108,6 +109,145 @@ func (h *ZonasHandler) Get(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, 200, z)
 }
 
+// zonaCreate — corpo aceito no POST /zonas.
+type zonaCreate struct {
+	Nome              string  `json:"nome"`
+	CDID              int64   `json:"cd_id"`
+	Descricao         *string `json:"descricao"`
+	DiasFuncionamento string  `json:"dias_funcionamento"`
+	CutoffHorarios    *string `json:"cutoff_horarios"`
+	Ativo             *bool   `json:"ativo"`
+}
+
+// POST /zonas
+// Cria uma nova zona de entrega vinculada a um CD.
+func (h *ZonasHandler) Create(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	if !h.zonaTableExists(ctx) {
+		httpx.Err(w, 404, "not_found", "tabela de zonas indisponível")
+		return
+	}
+
+	var in zonaCreate
+	if err := httpx.DecodeJSON(r, &in); err != nil {
+		httpx.Err(w, 400, "bad_request", "json inválido")
+		return
+	}
+	in.Nome = strings.TrimSpace(in.Nome)
+	if in.Nome == "" {
+		httpx.Err(w, 400, "bad_request", "nome é obrigatório")
+		return
+	}
+	if in.CDID <= 0 {
+		httpx.Err(w, 400, "bad_request", "cd_id é obrigatório")
+		return
+	}
+	if strings.TrimSpace(in.DiasFuncionamento) == "" {
+		in.DiasFuncionamento = "0,1,2,3,4,5,6"
+	}
+	ativo := true
+	if in.Ativo != nil {
+		ativo = *in.Ativo
+	}
+
+	var z zona
+	err := h.Pool.QueryRow(ctx,
+		`INSERT INTO sz_motoboy_zonas (cd_id, nome, descricao, dias_funcionamento, cutoff_horarios, ativo)
+		 VALUES ($1, $2, $3, $4, $5, $6)
+		 RETURNING id, cd_id, nome, descricao, dias_funcionamento, cutoff_horarios, ativo`,
+		in.CDID, in.Nome, in.Descricao, in.DiasFuncionamento, in.CutoffHorarios, ativo).
+		Scan(&z.ID, &z.CDID, &z.Nome, &z.Descricao, &z.DiasFuncionamento, &z.CutoffHorarios, &z.Ativo)
+	if err != nil {
+		httpx.Err(w, 500, "db_error", err.Error())
+		return
+	}
+	httpx.JSON(w, 201, z)
+}
+
+// zonaUpdate — corpo aceito no PUT. Apenas campos editáveis seguros.
+// id e created_at NUNCA são editáveis. Ponteiros = atualização parcial:
+// um campo ausente no JSON mantém o valor atual no banco.
+type zonaUpdate struct {
+	Nome              *string `json:"nome"`
+	CDID              *int64  `json:"cd_id"`
+	Descricao         *string `json:"descricao"`
+	DiasFuncionamento *string `json:"dias_funcionamento"`
+	CutoffHorarios    *string `json:"cutoff_horarios"`
+	Ativo             *bool   `json:"ativo"`
+}
+
+// PUT /zonas/{id}
+// Atualiza os campos editáveis de uma zona de entrega.
+// dias_funcionamento e cutoff_horarios são strings com formato fixo
+// (CSV de dias 0-6 e JSON de horários) lidas também pelo router PHP do
+// módulo motoboy — o front-end é responsável por enviá-las no formato correto.
+func (h *ZonasHandler) Update(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil || id <= 0 {
+		httpx.Err(w, 400, "bad_request", "id inválido")
+		return
+	}
+	if !h.zonaTableExists(ctx) {
+		httpx.Err(w, 404, "not_found", "zona não encontrada")
+		return
+	}
+
+	var in zonaUpdate
+	if err := httpx.DecodeJSON(r, &in); err != nil {
+		httpx.Err(w, 400, "bad_request", "json inválido")
+		return
+	}
+
+	if in.Nome != nil && strings.TrimSpace(*in.Nome) == "" {
+		httpx.Err(w, 400, "bad_request", "nome não pode ser vazio")
+		return
+	}
+
+	// UPDATE parametrizado: COALESCE mantém o valor atual quando o campo
+	// não foi enviado (ponteiro nil → NULL → COALESCE devolve a coluna).
+	res, err := h.Pool.Exec(ctx,
+		`UPDATE sz_motoboy_zonas SET
+		    nome               = COALESCE($1, nome),
+		    cd_id              = COALESCE($2, cd_id),
+		    descricao          = COALESCE($3, descricao),
+		    dias_funcionamento = COALESCE($4, dias_funcionamento),
+		    cutoff_horarios    = COALESCE($5, cutoff_horarios),
+		    ativo              = COALESCE($6, ativo)
+		 WHERE id = $7`,
+		trimPtr(in.Nome), in.CDID, in.Descricao, in.DiasFuncionamento, in.CutoffHorarios, in.Ativo, id)
+	if err != nil {
+		httpx.Err(w, 500, "db_error", err.Error())
+		return
+	}
+	if res.RowsAffected() == 0 {
+		httpx.Err(w, 404, "not_found", "zona não encontrada")
+		return
+	}
+
+	// Retorna a zona já atualizada, no mesmo shape de List/Get.
+	var z zona
+	err = h.Pool.QueryRow(ctx,
+		`SELECT id, COALESCE(cd_id,0), nome, descricao,
+		        COALESCE(dias_funcionamento,'0,1,2,3,4,5,6'), cutoff_horarios, ativo
+		 FROM sz_motoboy_zonas WHERE id=$1`, id).
+		Scan(&z.ID, &z.CDID, &z.Nome, &z.Descricao, &z.DiasFuncionamento, &z.CutoffHorarios, &z.Ativo)
+	if err != nil {
+		httpx.Err(w, 500, "db_error", err.Error())
+		return
+	}
+	httpx.JSON(w, 200, z)
+}
+
+// trimPtr aplica TrimSpace a um *string preservando o nil (para COALESCE).
+func trimPtr(s *string) *string {
+	if s == nil {
+		return nil
+	}
+	t := strings.TrimSpace(*s)
+	return &t
+}
+
 // GET /zonas/cep-check?cep=12345678
 // Verifica a qual zona e dias de operação um CEP pertence.
 // Retorna 200 com found=true|false; nunca 404 para facilitar o preview no React.
@@ -175,4 +315,173 @@ func (h *ZonasHandler) Ceps(w http.ResponseWriter, r *http.Request) {
 		out = append(out, c)
 	}
 	httpx.JSON(w, 200, map[string]any{"items": out})
+}
+
+// validCepDigits normaliza e valida um CEP (8 dígitos).
+func validCepDigits(s string) (string, bool) {
+	d := reSomenteDigitos.ReplaceAllString(s, "")
+	return d, len(d) == 8
+}
+
+type cepRangeCreate struct {
+	ZonaID    int64  `json:"zona_id"`
+	CepInicio string `json:"cep_inicio"`
+	CepFim    string `json:"cep_fim"`
+}
+
+// POST /zonas/ceps
+// Cria uma nova faixa de CEP vinculada a uma zona.
+func (h *ZonasHandler) CepsCreate(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	if !h.cepTableExists(ctx) {
+		httpx.Err(w, 404, "not_found", "tabela de faixas de CEP indisponível")
+		return
+	}
+
+	var in cepRangeCreate
+	if err := httpx.DecodeJSON(r, &in); err != nil {
+		httpx.Err(w, 400, "bad_request", "json inválido")
+		return
+	}
+	if in.ZonaID <= 0 {
+		httpx.Err(w, 400, "bad_request", "zona_id é obrigatório")
+		return
+	}
+	ini, ok1 := validCepDigits(in.CepInicio)
+	fim, ok2 := validCepDigits(in.CepFim)
+	if !ok1 || !ok2 {
+		httpx.Err(w, 400, "bad_request", "cep_inicio e cep_fim devem ter 8 dígitos")
+		return
+	}
+	if ini > fim {
+		httpx.Err(w, 400, "bad_request", "cep_inicio deve ser menor ou igual a cep_fim")
+		return
+	}
+
+	var c cepRange
+	err := h.Pool.QueryRow(ctx,
+		`INSERT INTO sz_motoboy_cep_zonas (zona_id, cep_inicio, cep_fim)
+		 VALUES ($1, $2, $3)
+		 RETURNING id, zona_id, cep_inicio, cep_fim`,
+		in.ZonaID, ini, fim).
+		Scan(&c.ID, &c.ZonaID, &c.CepInicio, &c.CepFim)
+	if err != nil {
+		httpx.Err(w, 500, "db_error", err.Error())
+		return
+	}
+	httpx.JSON(w, 201, c)
+}
+
+// PUT /zonas/ceps/{id}
+// Edita os limites de uma faixa de CEP existente.
+func (h *ZonasHandler) CepsUpdate(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil || id <= 0 {
+		httpx.Err(w, 400, "bad_request", "id inválido")
+		return
+	}
+	if !h.cepTableExists(ctx) {
+		httpx.Err(w, 404, "not_found", "faixa de CEP não encontrada")
+		return
+	}
+
+	var in cepRangeCreate
+	if err := httpx.DecodeJSON(r, &in); err != nil {
+		httpx.Err(w, 400, "bad_request", "json inválido")
+		return
+	}
+	ini, ok1 := validCepDigits(in.CepInicio)
+	fim, ok2 := validCepDigits(in.CepFim)
+	if !ok1 || !ok2 {
+		httpx.Err(w, 400, "bad_request", "cep_inicio e cep_fim devem ter 8 dígitos")
+		return
+	}
+	if ini > fim {
+		httpx.Err(w, 400, "bad_request", "cep_inicio deve ser menor ou igual a cep_fim")
+		return
+	}
+
+	var zonaID *int64
+	if in.ZonaID > 0 {
+		zonaID = &in.ZonaID
+	}
+	res, err := h.Pool.Exec(ctx,
+		`UPDATE sz_motoboy_cep_zonas SET
+		    zona_id    = COALESCE($1, zona_id),
+		    cep_inicio = $2,
+		    cep_fim    = $3
+		 WHERE id = $4`,
+		zonaID, ini, fim, id)
+	if err != nil {
+		httpx.Err(w, 500, "db_error", err.Error())
+		return
+	}
+	if res.RowsAffected() == 0 {
+		httpx.Err(w, 404, "not_found", "faixa de CEP não encontrada")
+		return
+	}
+
+	var c cepRange
+	err = h.Pool.QueryRow(ctx,
+		`SELECT id, zona_id, cep_inicio, cep_fim FROM sz_motoboy_cep_zonas WHERE id=$1`, id).
+		Scan(&c.ID, &c.ZonaID, &c.CepInicio, &c.CepFim)
+	if err != nil {
+		httpx.Err(w, 500, "db_error", err.Error())
+		return
+	}
+	httpx.JSON(w, 200, c)
+}
+
+// DELETE /zonas/ceps/{id}
+// Remove uma faixa de CEP.
+func (h *ZonasHandler) CepsDelete(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil || id <= 0 {
+		httpx.Err(w, 400, "bad_request", "id inválido")
+		return
+	}
+	if !h.cepTableExists(ctx) {
+		httpx.Err(w, 404, "not_found", "faixa de CEP não encontrada")
+		return
+	}
+	tag, err := h.Pool.Exec(ctx, `DELETE FROM sz_motoboy_cep_zonas WHERE id = $1`, id)
+	if err != nil {
+		httpx.Err(w, 500, "db_error", err.Error())
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		httpx.Err(w, 404, "not_found", "faixa de CEP não encontrada")
+		return
+	}
+	httpx.JSON(w, 200, map[string]any{"ok": true})
+}
+
+// DELETE /zonas/{id}
+// Remove a zona e suas faixas de CEP (CASCADE via FK ou delete explícito).
+func (h *ZonasHandler) Delete(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	idStr := chi.URLParam(r, "id")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil || id <= 0 {
+		httpx.Err(w, 400, "bad_request", "id inválido")
+		return
+	}
+	if !h.zonaTableExists(ctx) {
+		httpx.Err(w, 404, "not_found", "zona não encontrada")
+		return
+	}
+	// Remove faixas de CEP vinculadas (caso não haja FK CASCADE).
+	_, _ = h.Pool.Exec(ctx, `DELETE FROM sz_motoboy_cep_zonas WHERE zona_id = $1`, id)
+	tag, err := h.Pool.Exec(ctx, `DELETE FROM sz_motoboy_zonas WHERE id = $1`, id)
+	if err != nil {
+		httpx.Err(w, 500, "db_error", err.Error())
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		httpx.Err(w, 404, "not_found", "zona não encontrada")
+		return
+	}
+	httpx.JSON(w, 200, map[string]any{"ok": true})
 }

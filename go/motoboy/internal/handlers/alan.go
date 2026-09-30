@@ -30,7 +30,9 @@ type AlanHandler struct {
 // Localizacao — GET /alan/localizacao
 // Retorna todos os motoboys ativos com a última localização registrada.
 //
-// TODO: migration — criar tabela se não existir:
+// AUDIT CODE-MOTOBOY-TODOS-08: DDL de sz_motoboy_localizacoes em
+// infra/postgres/190-fixes-v471-motoboy-todos.sql — aplicar em staging+prod
+// antes de remover este aviso (schema pode estar incompleto até lá).
 //
 //	CREATE TABLE IF NOT EXISTS sz_motoboy_localizacoes (
 //	  motoboy_id BIGINT PRIMARY KEY REFERENCES sz_motoboys(id),
@@ -51,7 +53,7 @@ func (h *AlanHandler) Localizacao(w http.ResponseWriter, r *http.Request) {
 			TO_CHAR(l.updated_at, 'YYYY-MM-DD"T"HH24:MI:SS') AS ultima_atualizacao
 		FROM sz_motoboys m
 		LEFT JOIN sz_motoboy_localizacoes l ON l.motoboy_id = m.id
-		WHERE m.ativo = 1
+		WHERE m.ativo = true
 		ORDER BY m.nome`)
 	if err != nil {
 		slog.Error("[alan] falha ao buscar localizações", "err", err)
@@ -103,6 +105,9 @@ func (h *AlanHandler) Historico(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Taxa de cartão (uma vez por request) para expor valor_cartao por pedido.
+	feePct := ccFeePct(ctx, h.Pool)
+
 	rows, err := h.Pool.Query(ctx, `
 		SELECT
 			id,
@@ -134,6 +139,7 @@ func (h *AlanHandler) Historico(w http.ResponseWriter, r *http.Request) {
 		DestNome    *string `json:"dest_nome"`
 		DestProduto *string `json:"dest_produto"`
 		ValorPedido float64 `json:"valor_pedido"`
+		ValorCartao float64 `json:"valor_cartao"`
 		TsAprovado  *string `json:"ts_aprovado"`
 		TsEntregue  *string `json:"ts_entregue"`
 		TsFrustrado *string `json:"ts_frustrado"`
@@ -150,6 +156,7 @@ func (h *AlanHandler) Historico(w http.ResponseWriter, r *http.Request) {
 			slog.Error("[alan] erro ao scanear histórico", "err", err)
 			continue
 		}
+		p.ValorCartao = valorCartao(p.ValorPedido, feePct)
 		pedidos = append(pedidos, p)
 	}
 
@@ -175,6 +182,9 @@ func (h *AlanHandler) Etiquetas(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
+
+	// Taxa de cartão (uma vez por request) para expor valor_cartao por etiqueta.
+	feePct := ccFeePct(ctx, h.Pool)
 
 	rows, err := h.Pool.Query(ctx, `
 		SELECT
@@ -215,6 +225,7 @@ func (h *AlanHandler) Etiquetas(w http.ResponseWriter, r *http.Request) {
 		DestUF      *string `json:"dest_uf"`
 		DestProduto *string `json:"dest_produto"`
 		ValorPedido float64 `json:"valor_pedido"`
+		ValorCartao float64 `json:"valor_cartao"`
 		MotoboyNome string  `json:"motoboy_nome"`
 		// QRCode completo — pronto para gerar imagem via api.qrserver.com
 		// Mesmo formato de sz_mbc_package_code() no PHP.
@@ -233,6 +244,7 @@ func (h *AlanHandler) Etiquetas(w http.ResponseWriter, r *http.Request) {
 			slog.Error("[alan] erro ao scanear etiqueta", "err", err)
 			continue
 		}
+		e.ValorCartao = valorCartao(e.ValorPedido, feePct)
 		// Mesmo algoritmo de sz_mbc_package_code() em PHP:
 		// hmac_sha256(WP_SALT_AUTH, "{wc_order_id}-{pedido_id}") → primeiros 14 chars hex.
 		mac := hmac.New(sha256.New, []byte(salt))
@@ -249,7 +261,9 @@ func (h *AlanHandler) Etiquetas(w http.ResponseWriter, r *http.Request) {
 // Body: {token, plataforma}
 // Upsert token de push para o expedidor Alan.
 //
-// TODO: migration — criar tabela se não existir:
+// AUDIT CODE-MOTOBOY-TODOS-08: DDL de sz_alan_push_tokens em
+// infra/postgres/190-fixes-v471-motoboy-todos.sql — aplicar em staging+prod
+// antes de remover este aviso (schema pode estar incompleto até lá).
 //
 //	CREATE TABLE IF NOT EXISTS sz_alan_push_tokens (
 //	  id         BIGSERIAL PRIMARY KEY,
@@ -299,6 +313,9 @@ func (h *AlanHandler) Pedidos(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	statusFiltro := r.URL.Query().Get("status")
 
+	// Taxa de cartão (uma vez por request) para expor valor_cartao por pedido.
+	feePct := ccFeePct(ctx, h.Pool)
+
 	query := `
 		SELECT
 			p.id,
@@ -311,7 +328,10 @@ func (h *AlanHandler) Pedidos(w http.ResponseWriter, r *http.Request) {
 			TO_CHAR(p.ts_aprovado, 'YYYY-MM-DD"T"HH24:MI:SS') AS ts_aprovado
 		FROM sz_motoboy_pedidos p
 		LEFT JOIN sz_motoboys m ON m.id = p.motoboy_id
-		WHERE DATE(p.ts_aprovado) = CURRENT_DATE`
+		-- AUDIT-2026-06-18 Onda2 (go-date-sargable): range sargável no lugar de
+		-- DATE(p.ts_aprovado) = CURRENT_DATE (função na coluna impede índice). Mesmo resultado.
+		WHERE p.ts_aprovado >= CURRENT_DATE
+		  AND p.ts_aprovado <  CURRENT_DATE + interval '1 day'`
 
 	args := []any{}
 	if statusFiltro != "" {
@@ -339,6 +359,7 @@ func (h *AlanHandler) Pedidos(w http.ResponseWriter, r *http.Request) {
 		DestNome    *string `json:"dest_nome"`
 		DestProduto *string `json:"dest_produto"`
 		ValorPedido float64 `json:"valor_pedido"`
+		ValorCartao float64 `json:"valor_cartao"`
 		MotoboyNome string  `json:"motoboy_nome"`
 		TsAprovado  *string `json:"ts_aprovado"`
 	}
@@ -354,6 +375,7 @@ func (h *AlanHandler) Pedidos(w http.ResponseWriter, r *http.Request) {
 			slog.Error("[alan] erro ao scanear pedido", "err", err)
 			continue
 		}
+		p.ValorCartao = valorCartao(p.ValorPedido, feePct)
 		pedidos = append(pedidos, p)
 	}
 
@@ -392,8 +414,15 @@ func (h *AlanHandler) Embalar(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	tx, err := h.Pool.Begin(ctx)
+	if err != nil {
+		httpx.WriteErr(w, http.StatusInternalServerError, "erro ao embalar pedido")
+		return
+	}
+	defer tx.Rollback(ctx)
+
 	// Atualiza status e opcionalmente atribui motoboy.
-	_, err = h.Pool.Exec(ctx, `
+	_, err = tx.Exec(ctx, `
 		UPDATE sz_motoboy_pedidos
 		SET status = 'embalado',
 		    motoboy_id = COALESCE($2, motoboy_id)
@@ -406,11 +435,24 @@ func (h *AlanHandler) Embalar(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, _ = h.Pool.Exec(ctx, `
+	// BRIDGE motoboy → sz_orders (mesma tx) — inconsistente antes: bulk_actions.go
+	// já espelhava embalado, esse caminho (Alan) não.
+	if _, err := bridgeUpdatePedidoStatus(ctx, tx, req.PedidoID, "embalado"); err != nil {
+		slog.Error("[alan] falha no bridge sz_orders", "pedido_id", req.PedidoID, "err", err)
+		httpx.WriteErr(w, http.StatusInternalServerError, "erro ao embalar pedido")
+		return
+	}
+
+	_, _ = tx.Exec(ctx, `
 		INSERT INTO sz_motoboy_audit (pedido_id, acao, de_status, para_status, created_at)
 		VALUES ($1, 'embalado_alan', 'agendado', 'embalado', NOW())`,
 		req.PedidoID,
 	)
+
+	if err := tx.Commit(ctx); err != nil {
+		httpx.WriteErr(w, http.StatusInternalServerError, "erro ao embalar pedido")
+		return
+	}
 
 	slog.Info("[alan] pedido embalado", "pedido_id", req.PedidoID, "motoboy_id", req.MotoboyID)
 	httpx.WriteOK(w, map[string]any{"ok": true, "pedido_id": req.PedidoID, "status": "embalado"})
@@ -471,7 +513,10 @@ func (h *AlanHandler) Dashboard(w http.ResponseWriter, r *http.Request) {
 			COUNT(*) FILTER (WHERE status IN ('agendado','embalado') AND motoboy_id IS NULL) AS sem_motoboy,
 			COALESCE(SUM(valor_pedido) FILTER (WHERE status = 'entregue'), 0)        AS total_rs
 		FROM sz_motoboy_pedidos
-		WHERE DATE(ts_aprovado) = CURRENT_DATE`,
+		-- AUDIT-2026-06-18 Onda2 (go-date-sargable): range sargável no lugar de
+		-- DATE(ts_aprovado) = CURRENT_DATE (função na coluna impede índice). Mesmo resultado.
+		WHERE ts_aprovado >= CURRENT_DATE
+		  AND ts_aprovado <  CURRENT_DATE + interval '1 day'`,
 	).Scan(&entregues, &frustrados, &emRota, &pendentes, &semMotoboy, &totalRS)
 	if err != nil {
 		slog.Error("[alan] falha ao buscar dashboard", "err", err)

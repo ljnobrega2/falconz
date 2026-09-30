@@ -15,7 +15,13 @@
 //   GET    /expedicao-webhooks/classes            → lista de classes de envio (para select)
 
 import { useEffect, useState } from 'react'
+import { confirmAsync } from '../components/ConfirmDialog'
+import { useToast } from '../hooks/useToast'
 import { api } from '../api'
+import TableSkeleton from '../components/TableSkeleton'
+import EmptyState from '../components/EmptyState'
+import ErrorState from '../components/ErrorState'
+import FalkSelect from '../components/FalkSelect'
 
 // ----- tipos --------------------------------------------------------------
 
@@ -77,7 +83,7 @@ const emptyForm = (): FormState => ({
 // URL pública mostrada no topo (read-only). Pode ser sobrescrita por env Vite.
 const PUBLIC_INBOUND_URL: string =
   (import.meta.env.VITE_PUBLIC_WEBHOOK_URL as string | undefined) ||
-  'https://app.senderzz.com.br/wp-json/senderzz/v1/webhook'
+  'https://app.falklog.com.br/wp-json/senderzz/v1/webhook'
 
 // ----- helpers ------------------------------------------------------------
 
@@ -106,7 +112,7 @@ export default function ExpedicaoWebhooks() {
   const [items, setItems] = useState<WebhookRow[]>([])
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState('')
-  const [toast, setToast] = useState<{ kind: 'ok' | 'err'; msg: string } | null>(null)
+  const showToast = useToast() // AUDIT-2026-06-18 Onda3
 
   // form (modal inline)
   const [showForm, setShowForm] = useState(false)
@@ -161,10 +167,6 @@ export default function ExpedicaoWebhooks() {
 
   // ----- toast helper ----------------------------------------------------
 
-  function showToast(kind: 'ok' | 'err', msg: string) {
-    setToast({ kind, msg })
-    setTimeout(() => setToast(null), 5000)
-  }
 
   // ----- ações sobre items -----------------------------------------------
 
@@ -242,9 +244,7 @@ export default function ExpedicaoWebhooks() {
   }
 
   async function del(row: WebhookRow) {
-    if (!window.confirm(
-      `Excluir webhook #${row.id}?\n\nURL: ${row.url}\n\nA exclusão é soft (limpa URL e desativa).`,
-    )) return
+    if (!await confirmAsync({ message: `Excluir webhook #${row.id}? URL: ${row.url}. A exclusão é soft (limpa URL e desativa).`, danger: true })) return
     try {
       await api(`/expedicao-webhooks/${row.id}`, { method: 'DELETE' })
       showToast('ok', `Webhook #${row.id} excluído`)
@@ -330,16 +330,9 @@ export default function ExpedicaoWebhooks() {
         </button>
       </div>
 
-      {err && <div className="sz-alert-danger" style={{ marginBottom: 16 }}>{err}</div>}
-
-      {toast && (
-        <div
-          className={toast.kind === 'ok' ? 'sz-alert-success' : 'sz-alert-danger'}
-          style={{ marginBottom: 16 }}
-        >
-          {toast.msg}
-        </div>
-      )}
+      {/* Banner só com dados na tela (erro de refresh). Falha de carregamento
+          inicial vira ErrorState na tabela. Mutações usam toast, não `err`. */}
+      {err && items.length > 0 && <div className="sz-alert-danger" style={{ marginBottom: 16 }}>{err}</div>}
 
       {/* Top bar: URL pública + copiar */}
       <div className="szv2-card" style={{ marginBottom: 16 }}>
@@ -369,12 +362,15 @@ export default function ExpedicaoWebhooks() {
           <summary style={{ cursor: 'pointer', fontWeight: 600 }}>
             Payload exemplo (clique para expandir)
           </summary>
+          {/* #69: fundo ESCURO fixo (#0e1117) com texto CLARO explícito (#e2e8f0).
+              NÃO usar var(--szv2-text) — em tema claro resolve para cor escura e o
+              JSON fica ilegível (escuro-sobre-escuro). Cores fixadas dos dois lados. */}
           <pre
             style={{
               marginTop: 12,
               padding: 12,
-              background: 'var(--szv2-bg-soft, #0e1117)',
-              color: 'var(--szv2-text, #c9d1d9)',
+              background: '#0e1117',
+              color: '#e2e8f0',
               borderRadius: 6,
               fontFamily: 'var(--szv2-font-mono)',
               fontSize: 12,
@@ -399,16 +395,12 @@ export default function ExpedicaoWebhooks() {
               <div className="szv2-field">
                 <label className="szv2-label">Classe de envio *</label>
                 {shippingClasses.length > 0 ? (
-                  <select
-                    className="szv2-input"
-                    required
-                    value={form.class_id}
-                    onChange={e => setForm({ ...form, class_id: Number(e.target.value) })}
-                  >
-                    {shippingClasses.map(c => (
-                      <option key={c.id} value={c.id}>{c.name}</option>
-                    ))}
-                  </select>
+                  <FalkSelect
+                    aria-label="Classe de envio"
+                    value={String(form.class_id)}
+                    onChange={v => setForm({ ...form, class_id: Number(v) })}
+                    options={shippingClasses.map(c => ({ value: String(c.id), label: c.name }))}
+                  />
                 ) : (
                   <input
                     className="szv2-input"
@@ -450,7 +442,7 @@ export default function ExpedicaoWebhooks() {
                       borderRadius: 6,
                       cursor: 'pointer',
                       fontSize: 13,
-                      background: form.events.includes(ev) ? 'rgba(234,88,12,.10)' : 'transparent',
+                      background: form.events.includes(ev) ? 'rgba(30, 111, 242,.10)' : 'transparent',
                     }}
                   >
                     <input
@@ -503,14 +495,16 @@ export default function ExpedicaoWebhooks() {
           </div>
         </div>
 
-        {loading ? (
-          <div style={{ padding: 48, textAlign: 'center', color: 'var(--szv2-text-muted)' }}>
-            Carregando…
-          </div>
+        {loading && items.length === 0 ? (
+          <TableSkeleton rows={4} cols={5} />
+        ) : err && items.length === 0 ? (
+          <ErrorState message={err} onRetry={() => { setErr(''); load() }} />
         ) : items.length === 0 ? (
-          <div style={{ padding: 48, textAlign: 'center', color: 'var(--szv2-text-muted)' }}>
-            Nenhum webhook configurado ainda. Clique em "Adicionar webhook".
-          </div>
+          <EmptyState
+            icon="🔗"
+            title="Nenhum webhook configurado ainda."
+            description='Clique em "Adicionar webhook" para criar o primeiro.'
+          />
         ) : (
           <div className="szv2-table-wrap" style={{ overflowX: 'auto' }}>
             <table className="szv2-table">

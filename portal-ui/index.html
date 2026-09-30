@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- favicon FALK — FALCÃO da marca (ícone real, não o cubo genérico). Asset
+         servido em /portal/falk-falcon.png (verificado 200). Caminho ABSOLUTO =
+         independe da rota (single ou deep). O título é setado por PÁGINA no Layout.
+         ?v=2 — browsers cacheiam favicon por origem de forma muito agressiva
+         (ignora cache-control comum); só um novo caminho/query força refetch
+         (bug reportado 2026-07-14: aba seguia mostrando ícone antigo). -->
+    <link rel="icon" type="image/png" href="/portal/falk-falcon.png?v=2" />
+    <link rel="apple-touch-icon" href="/portal/falk-falcon.png?v=2" />
+    <!-- AUDIT-2026-07-31: manifest/PWA real (nunca existiu — ver sw.js). -->
+    <link rel="manifest" href="/portal/manifest.json" />
+    <meta name="theme-color" content="#F8FAFC" />
+    <title>FALK · Painel</title>
+    <!-- FOUC-FIX (#78): aplica a cor de fundo do tema ANTES do paint do React.
+         O data-theme vive na div React (.sz-dashboard-v2), montada só depois do
+         mount → usuários no tema escuro viam um flash BRANCO (fundo do browser)
+         até o React montar. Aqui pintamos o <html> direto pela localStorage.
+         Background via inline style (NÃO data-theme): os tokens dark são escopados
+         em .sz-dashboard-v2, então um atributo no <html> não dispararia o tema.
+         GATE por auth: a ÚNICA superfície com tema é o app autenticado. A tela de
+         login (.sz-login-page) é sempre clara e NÃO está em .sz-dashboard-v2 — pintar
+         dark deslogado criaria um flash dark→claro no login. Só escurece se houver
+         token (mesma chave de api.ts: sz_portal_token). -->
+    <script>
+      (function () {
+        try {
+          var t = localStorage.getItem('szV2Theme')
+          var authed = !!localStorage.getItem('sz_portal_token')
+          document.documentElement.style.background = (authed && t === 'dark') ? '#0B1220' : '#F8FAFC'
+        } catch (e) { /* localStorage indisponível (modo privado) — ignora */ }
+      })()
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

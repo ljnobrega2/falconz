@@ -4,21 +4,24 @@
 // em includes/senderzz-cod-wallet.php:858 (PHP legado) sobre Postgres.
 //
 // Surface:
-//   GET  /cod-saques/producer                    — lista sz_cod_withdrawals
-//   POST /cod-saques/producer/{id}/mark-paid     — completa saque (proof_url + admin_note)
-//   POST /cod-saques/producer/{id}/reject        — recusa saque
-//   POST /cod-saques/producer/{id}/upload-proof  — upload multipart do comprovante
-//   GET  /cod-saques/affiliate                   — lista senderzz_affiliate_withdrawals
-//   POST /cod-saques/affiliate/{id}/approve      — aprova (transação: debita wallet + insere tx)
-//   POST /cod-saques/affiliate/{id}/reject       — recusa
-//   GET  /cod-saques/global-rules                — lê senderzz_options (5 chaves)
-//   POST /cod-saques/global-rules                — UPSERT senderzz_options
-//   GET  /cod-saques/producer/overrides          — lista overrides COD por produtor
-//   POST /cod-saques/producer/overrides          — salva overrides COD por produtor
+//
+//	GET  /cod-saques/producer                    — lista sz_cod_withdrawals
+//	POST /cod-saques/producer/{id}/mark-paid     — completa saque (proof_url + admin_note)
+//	POST /cod-saques/producer/{id}/reject        — recusa saque
+//	POST /cod-saques/producer/{id}/upload-proof  — upload multipart do comprovante
+//	GET  /cod-saques/affiliate                   — lista senderzz_affiliate_withdrawals
+//	POST /cod-saques/affiliate/{id}/approve      — aprova (transação: debita wallet + insere tx)
+//	POST /cod-saques/affiliate/{id}/reject       — recusa
+//	GET  /cod-saques/global-rules                — lê senderzz_options (5 chaves)
+//	POST /cod-saques/global-rules                — UPSERT senderzz_options
+//	GET  /cod-saques/producer/overrides          — lista overrides COD por produtor
+//	POST /cod-saques/producer/overrides          — salva overrides COD por produtor
 package handlers
 
 import (
 	"context"
+	crand "crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
@@ -26,35 +29,94 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/senderzz/admin-service/internal/auth"
+	"github.com/senderzz/admin-service/internal/email"
 	"github.com/senderzz/admin-service/internal/httpx"
 )
 
 type CodSaquesHandler struct{ Pool *pgxpool.Pool }
 
+// operatorAllowed mantém a fila financeira disponível ao OL sem transformar as
+// rotas administrativas de saques em rotas públicas para qualquer usuário do
+// portal. Admin continua autorizado para preservar o comportamento existente.
+func operatorAllowed(r *http.Request) bool {
+	a := auth.ActorFromCtx(r.Context())
+	return a != nil && (a.Kind == auth.ActorAdmin || a.Kind == auth.ActorKind("operator") || a.Kind == auth.ActorKind("operador"))
+}
+
+func (h *CodSaquesHandler) operatorOrForbidden(w http.ResponseWriter, r *http.Request) bool {
+	if operatorAllowed(r) {
+		return true
+	}
+	httpx.Err(w, http.StatusForbidden, "forbidden", "acesso restrito ao operador logístico")
+	return false
+}
+
+// Wrappers do OL: somente a fila e as decisões de saque, sem regras globais ou
+// overrides de produtor.
+func (h *CodSaquesHandler) ListProducerOperator(w http.ResponseWriter, r *http.Request) {
+	if h.operatorOrForbidden(w, r) {
+		h.ListProducer(w, r)
+	}
+}
+func (h *CodSaquesHandler) MarkProducerPaidOperator(w http.ResponseWriter, r *http.Request) {
+	if h.operatorOrForbidden(w, r) {
+		h.MarkProducerPaid(w, r)
+	}
+}
+func (h *CodSaquesHandler) RejectProducerOperator(w http.ResponseWriter, r *http.Request) {
+	if h.operatorOrForbidden(w, r) {
+		h.RejectProducer(w, r)
+	}
+}
+func (h *CodSaquesHandler) UploadProducerProofOperator(w http.ResponseWriter, r *http.Request) {
+	if h.operatorOrForbidden(w, r) {
+		h.UploadProducerProof(w, r)
+	}
+}
+func (h *CodSaquesHandler) ListAffiliateOperator(w http.ResponseWriter, r *http.Request) {
+	if h.operatorOrForbidden(w, r) {
+		h.ListAffiliate(w, r)
+	}
+}
+func (h *CodSaquesHandler) ApproveAffiliateOperator(w http.ResponseWriter, r *http.Request) {
+	if h.operatorOrForbidden(w, r) {
+		h.ApproveAffiliate(w, r)
+	}
+}
+func (h *CodSaquesHandler) RejectAffiliateOperator(w http.ResponseWriter, r *http.Request) {
+	if h.operatorOrForbidden(w, r) {
+		h.RejectAffiliate(w, r)
+	}
+}
+func (h *CodSaquesHandler) UploadAffiliateProofOperator(w http.ResponseWriter, r *http.Request) {
+	if h.operatorOrForbidden(w, r) {
+		h.UploadAffiliateProof(w, r)
+	}
+}
+
 // ─── Tipos de resposta ───────────────────────────────────────────────────
 
 // ProducerWithdrawal — linha de sz_cod_withdrawals + email do dono (portal_users).
 type ProducerWithdrawal struct {
-	ID          int64    `json:"id"`
-	UserID      int64    `json:"user_id"`
-	UserEmail   string   `json:"user_email"`
-	Amount      float64  `json:"amount"`
-	Fee         float64  `json:"fee"`
-	Net         float64  `json:"net"`
-	PixKey      string   `json:"pix_key"`
-	PixType     string   `json:"pix_type"`
-	HolderName  string   `json:"holder_name"`
-	HolderCPF   string   `json:"holder_cpf"`
-	Status      string   `json:"status"`
-	AdminNote   *string  `json:"admin_note"`
-	ProofURL    *string  `json:"proof_url"`
-	CompletedAt *string  `json:"completed_at"`
-	CreatedAt   string   `json:"created_at"`
+	ID          int64   `json:"id"`
+	UserID      int64   `json:"user_id"`
+	UserEmail   string  `json:"user_email"`
+	Amount      float64 `json:"amount"`
+	Fee         float64 `json:"fee"`
+	Net         float64 `json:"net"`
+	PixKey      string  `json:"pix_key"`
+	PixType     string  `json:"pix_type"`
+	HolderName  string  `json:"holder_name"`
+	HolderCPF   string  `json:"holder_cpf"`
+	Status      string  `json:"status"`
+	AdminNote   *string `json:"admin_note"`
+	ProofURL    *string `json:"proof_url"`
+	CompletedAt *string `json:"completed_at"`
+	CreatedAt   string  `json:"created_at"`
 }
 
 // AffiliateWithdrawal — linha de senderzz_affiliate_withdrawals + nome do afiliado.
@@ -69,6 +131,7 @@ type AffiliateWithdrawal struct {
 	BankInfo      string  `json:"bank_info"`
 	Status        string  `json:"status"`
 	AdminNote     *string `json:"admin_note"`
+	ProofURL      *string `json:"proof_url"`
 	DecidedAt     *string `json:"decided_at"`
 	DecidedBy     *int64  `json:"decided_by"`
 	CreatedAt     string  `json:"created_at"`
@@ -76,24 +139,18 @@ type AffiliateWithdrawal struct {
 
 // GlobalRules — espelha senderzz_cod_finance_settings + sz_admin_motoboy_fee + sz_admin_operational_fund_fee.
 type GlobalRules struct {
-	RetentionDays       int     `json:"retention_days"`
-	WithdrawFee         float64 `json:"withdraw_fee"`
-	AnticipationFeePct  float64 `json:"anticipation_fee_pct"`
-	MotoboyFee          float64 `json:"motoboy_fee"`
-	OperationalFundFee  float64 `json:"operational_fund_fee"`
+	RetentionDays      int     `json:"retention_days"`
+	WithdrawFee        float64 `json:"withdraw_fee"`
+	AnticipationFeePct float64 `json:"anticipation_fee_pct"`
+	MotoboyFee         float64 `json:"motoboy_fee"`
+	OperationalFundFee float64 `json:"operational_fund_fee"`
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────
 
 // tableExists igual ao padrão de audit.go — checa schema "public".
 func (h *CodSaquesHandler) tableExists(ctx context.Context, name string) bool {
-	var ok bool
-	_ = h.Pool.QueryRow(ctx,
-		`SELECT EXISTS (
-			SELECT FROM information_schema.tables
-			WHERE table_schema='public' AND table_name=$1
-		)`, name).Scan(&ok)
-	return ok
+	return tableExistsCached(ctx, h.Pool, name) // AUDIT-2026-06-18 Onda2 (go-infoschema-cache)
 }
 
 // decodeBody decodifica JSON do body em out. Retorna 400 se inválido.
@@ -179,6 +236,18 @@ func (h *CodSaquesHandler) ListProducer(w http.ResponseWriter, r *http.Request) 
 			&pw.CompletedAt, &pw.CreatedAt)
 		out = append(out, pw)
 	}
+
+	// AUDIT-2026-06-21 #8/#18 (LGPD-PII-AUDIT): a lista de saques produtor serve chave
+	// PIX, nome e CPF do titular de cada saque. Registra na trilha de accountability —
+	// escopo = nº de saques retornados. Best-effort, espelha order_detail.go.
+	if actor := auth.FromCtx(ctx); actor != nil {
+		logPIIAccess(ctx, h.Pool, actor.ID, actor.Email, "producer", int64(len(out)),
+			[]string{"pix_key", "holder_name", "holder_cpf"}, "view", r.RemoteAddr)
+	} else {
+		logPIIAccess(ctx, h.Pool, 0, "", "producer", int64(len(out)),
+			[]string{"pix_key", "holder_name", "holder_cpf"}, "view", r.RemoteAddr)
+	}
+
 	httpx.JSON(w, 200, map[string]any{"items": out, "count": len(out)})
 }
 
@@ -203,15 +272,47 @@ func (h *CodSaquesHandler) MarkProducerPaid(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	tag, err := h.Pool.Exec(ctx,
+	// Transação com lock pessimista — espelha ApproveAffiliate (SELECT … FOR UPDATE).
+	// Sem a transação o FOR UPDATE seria inócuo: o pool devolveria a conexão logo
+	// após o SELECT e o lock de linha cairia antes do UPDATE rodar, abrindo janela
+	// para marcar o mesmo saque como pago duas vezes em corrida.
+	tx, err := h.Pool.Begin(ctx)
+	if err != nil {
+		httpx.Err(w, 500, "db_error", err.Error())
+		return
+	}
+	// Rollback é no-op após Commit bem-sucedido.
+	defer tx.Rollback(ctx)
+
+	// 1. Carrega saque + bloqueia a linha (evita pagar duas vezes em corrida).
+	var status string
+	if err := tx.QueryRow(ctx,
+		`SELECT COALESCE(status,'')
+		 FROM sz_cod_withdrawals
+		 WHERE id=$1
+		 FOR UPDATE`, id).Scan(&status); err != nil {
+		httpx.Err(w, 404, "not_found", "saque não encontrado")
+		return
+	}
+
+	// 2. UPDATE com a guarda mantida (status <> 'paid') — idempotência fail-safe.
+	// AUDIT-2026-07-30: decided_by/decided_at faltava aqui (só o path afiliado
+	// gravava) — ação financeira sem rastro de qual admin pagou.
+	var decidedBy any
+	if actor := auth.FromCtx(ctx); actor != nil {
+		decidedBy = actor.ID
+	}
+	tag, err := tx.Exec(ctx,
 		`UPDATE sz_cod_withdrawals
 		 SET status='paid',
-		     proof_url=NULLIF($1,''),
-		     admin_note=NULLIF($2,''),
+		     proof_url=NULLIF($1::text,''),
+		     admin_note=NULLIF($2::text,''),
+		     decided_by=$4,
+		     decided_at=NOW(),
 		     completed_at=NOW(),
 		     updated_at=NOW()
-		 WHERE id=$3 AND status <> 'paid'`,
-		body.ProofURL, body.AdminNote, id)
+		 WHERE id=$3::bigint AND status <> 'paid'`,
+		body.ProofURL, body.AdminNote, id, decidedBy)
 	if err != nil {
 		httpx.Err(w, 500, "db_error", err.Error())
 		return
@@ -221,19 +322,28 @@ func (h *CodSaquesHandler) MarkProducerPaid(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Replica do PHP: marca a tx de withdrawal correspondente como paid.
-	// Best-effort — não bloqueia a resposta se a tabela ainda não existe.
-	if h.tableExists(ctx, "sz_cod_wallet_transactions") {
-		_, _ = h.Pool.Exec(ctx,
-			`UPDATE sz_cod_wallet_transactions
-			 SET status='paid', updated_at=NOW()
-			 WHERE user_id=(SELECT user_id FROM sz_cod_withdrawals WHERE id=$1)
-			   AND type='withdrawal' AND status='analysis'`, id)
+	if err := tx.Commit(ctx); err != nil {
+		httpx.Err(w, 500, "db_error", err.Error())
+		return
 	}
 
-	// TODO: notificar produtor por e-mail (espelha sz_cod_notify_user() do PHP).
-	// Infraestrutura SMTP não existe neste serviço Go — implementar quando houver
-	// pacote de envio de e-mail (sz_cod_admin_complete_withdrawal, linha 857 de senderzz-cod-wallet.php).
+	// AUDIT-2026-07-30 CRITICAL: a tx de withdrawal (débito) é inserida com
+	// status='available' (wallet.go) e o Summary soma justamente status='available'
+	// pra compor o saldo disponível — incluindo esse débito negativo. Flipar pra
+	// 'released' aqui REMOVIA o débito da soma, e como o valor é negativo,
+	// removê-lo ELEVA o disponível de volta pelo valor recém-pago (saldo
+	// "reaparecia" e podia ser sacado de novo — drenagem repetível confirmada em
+	// produção). 'released' não é lido em nenhum outro lugar do código pra essa
+	// tabela — não fazia sentido nenhum além de causar o bug. Fix: NÃO tocar no
+	// status da tx de débito ao pagar — ela permanece 'available' pra sempre,
+	// debitando o disponível pra sempre (dinheiro realmente saiu). Contraste com
+	// RejectProducer, que corretamente usa 'reversed' (dinheiro nunca saiu).
+
+	// Notifica produtor por e-mail (espelha sz_cod_notify_user() do PHP). Best-effort:
+	// falha de envio não desfaz o pagamento já commitado, só loga (mesmo padrão de
+	// password_reset.go — e-mail nunca é o caminho crítico de uma transação financeira).
+	go notifyWithdrawalPaid(h.Pool, id)
+
 	httpx.JSON(w, 200, map[string]any{"ok": true, "id": id, "status": "paid"})
 }
 
@@ -257,20 +367,52 @@ func (h *CodSaquesHandler) RejectProducer(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	tag, err := h.Pool.Exec(ctx,
+	tx, err := h.Pool.Begin(ctx)
+	if err != nil {
+		httpx.Err(w, 500, "db_error", err.Error())
+		return
+	}
+	defer tx.Rollback(ctx)
+
+	var decidedBy any
+	if actor := auth.FromCtx(ctx); actor != nil {
+		decidedBy = actor.ID
+	}
+	tag, err := tx.Exec(ctx,
 		`UPDATE sz_cod_withdrawals
 		 SET status='rejected',
-		     admin_note=NULLIF($1,''),
+		     admin_note=NULLIF($1::text,''),
+		     decided_by=$3,
+		     decided_at=NOW(),
 		     completed_at=NOW(),
 		     updated_at=NOW()
-		 WHERE id=$2 AND status NOT IN ('paid','rejected')`,
-		body.AdminNote, id)
+		 WHERE id=$2::bigint AND status NOT IN ('paid','rejected')`,
+		body.AdminNote, id, decidedBy)
 	if err != nil {
 		httpx.Err(w, 500, "db_error", err.Error())
 		return
 	}
 	if tag.RowsAffected() == 0 {
 		httpx.Err(w, 404, "not_found", "saque não encontrado ou já decidido")
+		return
+	}
+
+	// Estorna débito na wallet: reverte a tx de saque (status='available' → 'reversed').
+	// Sem estorno o saldo fica permanentemente debitado e o produtor pode criar
+	// um segundo saque gerando saldo negativo.
+	// Constraint sz_cod_wallet_transactions_status_check: pending/available/released/reversed.
+	if h.tableExists(ctx, "sz_cod_wallet_transactions") {
+		_, _ = tx.Exec(ctx,
+			`UPDATE sz_cod_wallet_transactions
+			 SET status='reversed', updated_at=NOW()
+			 WHERE user_id=(SELECT user_id FROM sz_cod_withdrawals WHERE id=$1)
+			   AND type='withdrawal' AND status='available'
+			   AND description LIKE '%#'||$1::text`,
+			id)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		httpx.Err(w, 500, "db_error", err.Error())
 		return
 	}
 	httpx.JSON(w, 200, map[string]any{"ok": true, "id": id, "status": "rejected"})
@@ -298,12 +440,13 @@ func (h *CodSaquesHandler) ListAffiliate(w http.ResponseWriter, r *http.Request)
 		        COALESCE(w.pix_key,''), COALESCE(w.bank_info,''),
 		        COALESCE(w.status,''),
 		        w.admin_note,
+		        w.proof_url,
 		        w.decided_at::text,
 		        w.decided_by,
 		        w.created_at::text
 		 FROM senderzz_affiliate_withdrawals w
 		 LEFT JOIN senderzz_affiliates  a ON a.id = w.affiliate_id
-		 LEFT JOIN senderzz_portal_users p ON p.id = a.afiliado_id
+		 LEFT JOIN senderzz_portal_users p ON p.wp_user_id = a.afiliado_id
 		 WHERE ($1='' OR w.status=$1)
 		 ORDER BY CASE w.status
 		   WHEN 'pending'    THEN 1
@@ -326,10 +469,22 @@ func (h *CodSaquesHandler) ListAffiliate(w http.ResponseWriter, r *http.Request)
 		_ = rows.Scan(&aw.ID, &aw.AffiliateID, &aw.AffiliateName,
 			&aw.Amount, &aw.Fee, &aw.NetAmount,
 			&aw.PixKey, &aw.BankInfo,
-			&aw.Status, &aw.AdminNote,
+			&aw.Status, &aw.AdminNote, &aw.ProofURL,
 			&aw.DecidedAt, &aw.DecidedBy, &aw.CreatedAt)
 		out = append(out, aw)
 	}
+
+	// AUDIT-2026-06-21 #8/#18 (LGPD-PII-AUDIT): a lista de saques afiliado serve chave
+	// PIX e dados bancários do titular de cada saque. Registra na trilha de
+	// accountability — escopo = nº de saques retornados. Best-effort, espelha order_detail.go.
+	if actor := auth.FromCtx(ctx); actor != nil {
+		logPIIAccess(ctx, h.Pool, actor.ID, actor.Email, "affiliate", int64(len(out)),
+			[]string{"pix_key", "bank_info"}, "view", r.RemoteAddr)
+	} else {
+		logPIIAccess(ctx, h.Pool, 0, "", "affiliate", int64(len(out)),
+			[]string{"pix_key", "bank_info"}, "view", r.RemoteAddr)
+	}
+
 	httpx.JSON(w, 200, map[string]any{"items": out, "count": len(out)})
 }
 
@@ -356,6 +511,7 @@ func (h *CodSaquesHandler) ApproveAffiliate(w http.ResponseWriter, r *http.Reque
 	}
 	var body struct {
 		AdminNote string `json:"admin_note"`
+		ProofURL  string `json:"proof_url"`
 	}
 	if !h.decodeBody(w, r, &body) {
 		return
@@ -394,25 +550,34 @@ func (h *CodSaquesHandler) ApproveAffiliate(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// 2. Lock pessimista na wallet — paridade com SELECT … FOR UPDATE do PHP.
+	// 2. Lock pessimista na wallet + recomputa saldo vivo do livro de transações.
+	// Não confia no cache (balance) — pode estar stale se a sync não rodou desde
+	// o pedido de saque. Fórmula idêntica ao SyncWallet: SUM excluindo pending e
+	// cancelled; penalty entra como -ABS (PHP grava positivo mas é débito).
 	var balance float64
 	err = tx.QueryRow(ctx,
-		`SELECT COALESCE(balance,0) FROM senderzz_affiliate_wallet
+		`SELECT GREATEST(0, COALESCE(
+		    (SELECT SUM(CASE WHEN t.type='penalty' THEN -ABS(t.amount) ELSE t.amount END)
+		       FROM senderzz_affiliate_transactions t
+		      WHERE t.affiliate_id = $1
+		        AND t.status NOT IN ('pending','cancelled')), 0))
+		 FROM senderzz_affiliate_wallet
 		 WHERE affiliate_id=$1 FOR UPDATE`, affiliateID).Scan(&balance)
 	if err != nil {
 		httpx.Err(w, 409, "wallet_missing", "carteira do afiliado não encontrada")
 		return
 	}
 	if balance < amount {
-		httpx.Err(w, 409, "insufficient_balance", "saldo insuficiente para aprovar o saque")
+		httpx.Err(w, 409, "insufficient_balance",
+			fmt.Sprintf("saldo real insuficiente (R$ %.2f disponível, saque R$ %.2f)", balance, amount))
 		return
 	}
 
-	// 3. Debita wallet.
+	// 3. Debita wallet — atualiza cache com saldo recém-calculado menos o saque.
 	if _, err := tx.Exec(ctx,
 		`UPDATE senderzz_affiliate_wallet
-		 SET balance = GREATEST(0, balance - $1), updated_at=NOW()
-		 WHERE affiliate_id=$2`, amount, affiliateID); err != nil {
+		 SET balance = GREATEST(0, $2::numeric - $1::numeric), updated_at=NOW()
+		 WHERE affiliate_id=$3`, amount, balance, affiliateID); err != nil {
 		httpx.Err(w, 500, "db_error", err.Error())
 		return
 	}
@@ -421,8 +586,8 @@ func (h *CodSaquesHandler) ApproveAffiliate(w http.ResponseWriter, r *http.Reque
 	if _, err := tx.Exec(ctx,
 		`INSERT INTO senderzz_affiliate_transactions
 		   (affiliate_id, type, status, amount, available_at, meta_json, created_at)
-		 VALUES ($1, 'withdrawal', 'paid', -$2, NOW(),
-		         jsonb_build_object('source','admin_approve_saque','withdrawal_id',$3),
+		 VALUES ($1, 'withdrawal', 'paid', -$2::numeric, NOW(),
+		         jsonb_build_object('source','admin_approve_saque','withdrawal_id',$3::bigint),
 		         NOW())`, affiliateID, amount, id); err != nil {
 		httpx.Err(w, 500, "db_error", err.Error())
 		return
@@ -433,9 +598,10 @@ func (h *CodSaquesHandler) ApproveAffiliate(w http.ResponseWriter, r *http.Reque
 		`UPDATE senderzz_affiliate_withdrawals
 		 SET status='approved',
 		     decided_at=NOW(),
-		     decided_by=NULLIF($1,0),
-		     admin_note=NULLIF($2,'')
-		 WHERE id=$3`, adminID, body.AdminNote, id); err != nil {
+		     decided_by=NULLIF($1::bigint,0),
+		     admin_note=NULLIF($2::text,''),
+		     proof_url=NULLIF($3::text,'')
+		 WHERE id=$4::bigint`, adminID, body.AdminNote, body.ProofURL, id); err != nil {
 		httpx.Err(w, 500, "db_error", err.Error())
 		return
 	}
@@ -477,9 +643,9 @@ func (h *CodSaquesHandler) RejectAffiliate(w http.ResponseWriter, r *http.Reques
 		`UPDATE senderzz_affiliate_withdrawals
 		 SET status='rejected',
 		     decided_at=NOW(),
-		     decided_by=NULLIF($1,0),
-		     admin_note=NULLIF($2,'')
-		 WHERE id=$3 AND status IN ('pending','analysis','em_analise')`,
+		     decided_by=NULLIF($1::bigint,0),
+		     admin_note=NULLIF($2::text,'')
+		 WHERE id=$3::bigint AND status IN ('pending','analysis','em_analise')`,
 		adminID, body.AdminNote, id)
 	if err != nil {
 		httpx.Err(w, 500, "db_error", err.Error())
@@ -510,7 +676,7 @@ func defaultGlobalRules() GlobalRules {
 func (h *CodSaquesHandler) readOption(ctx context.Context, key, defaultVal string) string {
 	var v string
 	err := h.Pool.QueryRow(ctx,
-		`SELECT value FROM senderzz_options WHERE "key"=$1`, key).Scan(&v)
+		`SELECT value FROM senderzz_options WHERE name=$1`, key).Scan(&v)
 	if err != nil {
 		return defaultVal
 	}
@@ -605,8 +771,8 @@ func (h *CodSaquesHandler) SetGlobalRules(w http.ResponseWriter, r *http.Request
 
 	upsert := func(key, value string) error {
 		_, e := tx.Exec(ctx,
-			`INSERT INTO senderzz_options ("key", value) VALUES ($1, $2)
-			 ON CONFLICT ("key") DO UPDATE SET value = EXCLUDED.value`, key, value)
+			`INSERT INTO senderzz_options (name, value) VALUES ($1, $2)
+			 ON CONFLICT (name) DO UPDATE SET value = EXCLUDED.value`, key, value)
 		return e
 	}
 
@@ -644,6 +810,11 @@ func codProofDir() string {
 
 // codProofURL retorna o prefixo público das URLs dos comprovantes.
 // Configurável via COD_PROOF_UPLOAD_URL. Default: /uploads/cod-proofs/
+//
+// P0-07: este prefixo é servido como estático pelo proxy/nginx (não há endpoint
+// Go que serve /uploads/cod-proofs/). O proxy DEVE responder esses arquivos com
+// "Content-Disposition: attachment" (nunca inline) para impedir que um comprovante
+// malicioso seja renderizado no browser do admin. Espelha a convenção de custody.
 func codProofURL() string {
 	if v := strings.TrimSpace(os.Getenv("COD_PROOF_UPLOAD_URL")); v != "" {
 		return strings.TrimRight(v, "/") + "/"
@@ -679,23 +850,38 @@ func (h *CodSaquesHandler) UploadProducerProof(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	mime := strings.ToLower(header.Header.Get("Content-Type"))
-	if !strings.HasPrefix(mime, "image/") && mime != "application/pdf" {
-		httpx.Err(w, 400, "file_invalid", "comprovante precisa ser image/* ou application/pdf (recebido: "+mime+")")
+	// P0-07: valida por MAGIC BYTES (não pelo Content-Type do cliente, que é
+	// spoofável). http.DetectContentType lê os primeiros 512 bytes e assina o
+	// tipo real. Só aceita jpeg/png/pdf — qualquer outro tipo é rejeitado (400).
+	sniff := make([]byte, 512)
+	n, rerr := io.ReadFull(file, sniff)
+	if rerr != nil && rerr != io.ErrUnexpectedEOF && rerr != io.EOF {
+		httpx.Err(w, 400, "file_invalid", "não foi possível ler o comprovante: "+rerr.Error())
+		return
+	}
+	mime := http.DetectContentType(sniff[:n])
+
+	// IMPORTANTE: rebobina o arquivo após o sniff, senão os 512 bytes lidos
+	// somem do conteúdo gravado em disco e o comprovante fica corrompido.
+	if _, serr := file.Seek(0, io.SeekStart); serr != nil {
+		httpx.Err(w, 500, "upload_error", "falha ao reposicionar o arquivo: "+serr.Error())
 		return
 	}
 
-	// Extensão segura.
-	ext := strings.ToLower(filepath.Ext(header.Filename))
-	switch ext {
-	case ".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".pdf":
-		// OK
+	// Aceite só jpeg/png/pdf (match exato — DetectContentType devolve exatamente
+	// estes para as assinaturas correspondentes). Extensão derivada do tipo real,
+	// não do nome do arquivo enviado pelo cliente (também spoofável).
+	var ext string
+	switch mime {
+	case "image/jpeg":
+		ext = ".jpg"
+	case "image/png":
+		ext = ".png"
+	case "application/pdf":
+		ext = ".pdf"
 	default:
-		if mime == "application/pdf" {
-			ext = ".pdf"
-		} else {
-			ext = ".jpg"
-		}
+		httpx.Err(w, 400, "file_invalid", "comprovante precisa ser JPEG, PNG ou PDF (detectado: "+mime+")")
+		return
 	}
 
 	dir := codProofDir()
@@ -704,7 +890,13 @@ func (h *CodSaquesHandler) UploadProducerProof(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	name := fmt.Sprintf("cod-proof-%d-%d%s", id, time.Now().UnixNano(), ext)
+	// P2-01: nome NÃO-previsível (anti-IDOR) — crypto/rand, não UnixNano.
+	rb := make([]byte, 16)
+	if _, err := crand.Read(rb); err != nil {
+		httpx.Err(w, 500, "upload_error", "falha ao gerar nome seguro")
+		return
+	}
+	name := fmt.Sprintf("cod-proof-%d-%s%s", id, hex.EncodeToString(rb), ext)
 	full := filepath.Join(dir, name)
 
 	dst, err := os.Create(full)
@@ -724,21 +916,85 @@ func (h *CodSaquesHandler) UploadProducerProof(w http.ResponseWriter, r *http.Re
 	httpx.JSON(w, 200, map[string]any{"ok": true, "proof_url": proofURL})
 }
 
+// POST /cod-saques/affiliate/{id}/upload-proof  multipart: proof_file
+// Espelha UploadProducerProof mas para saques de afiliado.
+func (h *CodSaquesHandler) UploadAffiliateProof(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseIDParam(r)
+	if !ok {
+		httpx.Err(w, 400, "bad_request", "id inválido")
+		return
+	}
+	if err := r.ParseMultipartForm(16 << 20); err != nil {
+		httpx.Err(w, 400, "bad_request", "multipart inválido ou arquivo muito grande (max 16 MB)")
+		return
+	}
+	file, header, ferr := r.FormFile("proof_file")
+	if ferr != nil {
+		httpx.Err(w, 400, "file_missing", "campo proof_file obrigatório")
+		return
+	}
+	defer file.Close()
+	magic := make([]byte, 512)
+	n, _ := file.Read(magic)
+	ct := http.DetectContentType(magic[:n])
+	if _, err := file.Seek(0, 0); err != nil {
+		httpx.Err(w, 500, "upload_error", "seek falhou")
+		return
+	}
+	var ext string
+	switch {
+	case strings.HasPrefix(ct, "image/jpeg"):
+		ext = ".jpg"
+	case strings.HasPrefix(ct, "image/png"):
+		ext = ".png"
+	case ct == "application/pdf" || strings.HasSuffix(strings.ToLower(header.Filename), ".pdf"):
+		ext = ".pdf"
+	default:
+		httpx.Err(w, 415, "unsupported_media", "apenas jpeg, png ou pdf são aceitos")
+		return
+	}
+	dir := codProofDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		httpx.Err(w, 500, "upload_error", fmt.Sprintf("criar dir: %v", err))
+		return
+	}
+	rb := make([]byte, 8)
+	if _, err := crand.Read(rb); err != nil {
+		httpx.Err(w, 500, "upload_error", "rand falhou")
+		return
+	}
+	name := fmt.Sprintf("aff-proof-%d-%s%s", id, hex.EncodeToString(rb), ext)
+	full := filepath.Join(dir, name)
+	dst, err := os.Create(full)
+	if err != nil {
+		httpx.Err(w, 500, "upload_error", fmt.Sprintf("criar arquivo: %v", err))
+		return
+	}
+	defer dst.Close()
+	if _, err := io.Copy(dst, file); err != nil {
+		_ = os.Remove(full)
+		httpx.Err(w, 500, "upload_error", fmt.Sprintf("gravar arquivo: %v", err))
+		return
+	}
+	proofURL := codProofURL() + name
+	httpx.JSON(w, 200, map[string]any{"ok": true, "proof_url": proofURL})
+}
+
 // ─── Overrides de regras COD por produtor ───────────────────────────────
 
 // ProducerOverrideItem — produtor com seus overrides individuais de regras COD.
 // Campos nil significam "herdar global" (sem registro em senderzz_portal_user_meta).
 type ProducerOverrideItem struct {
-	UserID           int64    `json:"user_id"`
-	Nome             string   `json:"nome"`
-	Email            string   `json:"email"`
-	RetentionDays    *int     `json:"retention_days"`    // _senderzz_cod_retention_days
-	WithdrawFee      *float64 `json:"withdraw_fee"`      // _senderzz_cod_withdraw_fee
-	AnticipationFee  *float64 `json:"anticipation_fee"`  // _senderzz_cod_anticipation_fee_pct
+	UserID          int64    `json:"user_id"`
+	Nome            string   `json:"nome"`
+	Email           string   `json:"email"`
+	RetentionDays   *int     `json:"retention_days"`   // _senderzz_cod_retention_days
+	WithdrawFee     *float64 `json:"withdraw_fee"`     // _senderzz_cod_withdraw_fee
+	AnticipationFee *float64 `json:"anticipation_fee"` // _senderzz_cod_anticipation_fee_pct
 	// effective — valor em uso após aplicar fallback global
-	EffRetentionDays    int     `json:"eff_retention_days"`
-	EffWithdrawFee      float64 `json:"eff_withdraw_fee"`
-	EffAnticipationFee  float64 `json:"eff_anticipation_fee"`
+	EffRetentionDays   int     `json:"eff_retention_days"`
+	EffWithdrawFee     float64 `json:"eff_withdraw_fee"`
+	EffAnticipationFee float64 `json:"eff_anticipation_fee"`
 }
 
 // GetProducerOverrides lista produtores do portal com seus overrides COD individuais.
@@ -888,8 +1144,8 @@ func (h *CodSaquesHandler) SetProducerOverrides(w http.ResponseWriter, r *http.R
 
 	var body struct {
 		Items []struct {
-			UserID          int64   `json:"user_id"`
-			RetentionDays   *int    `json:"retention_days"`
+			UserID          int64    `json:"user_id"`
+			RetentionDays   *int     `json:"retention_days"`
 			WithdrawFee     *float64 `json:"withdraw_fee"`
 			AnticipationFee *float64 `json:"anticipation_fee_pct"`
 		} `json:"items"`
@@ -956,4 +1212,28 @@ func (h *CodSaquesHandler) SetProducerOverrides(w http.ResponseWriter, r *http.R
 	}
 
 	httpx.JSON(w, 200, map[string]any{"ok": true, "saved": len(body.Items)})
+}
+
+// notifyWithdrawalPaid envia o e-mail de "saque pago" ao produtor. Rodado em
+// goroutine própria (fire-and-forget) a partir de MarkProducerPaid — usa
+// context.Background() porque o request HTTP original já foi respondido antes
+// do envio terminar. Sem e-mail cadastrado ou falha de SMTP: só loga (Send já
+// trata isso internamente), nunca propaga erro pro chamador.
+func notifyWithdrawalPaid(pool *pgxpool.Pool, withdrawalID int64) {
+	ctx := context.Background()
+	var userEmail string
+	var net float64
+	err := pool.QueryRow(ctx,
+		`SELECT COALESCE(p.email,''), COALESCE(w.net,0)
+		 FROM sz_cod_withdrawals w
+		 LEFT JOIN senderzz_portal_users p ON p.wp_user_id = w.user_id
+		 WHERE w.id=$1`, withdrawalID).Scan(&userEmail, &net)
+	if err != nil || userEmail == "" {
+		return
+	}
+	subject := "Seu saque foi pago"
+	body := fmt.Sprintf(
+		"<p>Seu saque de <strong>R$ %.2f</strong> foi processado e pago.</p>",
+		net)
+	_ = email.Send(userEmail, subject, body)
 }

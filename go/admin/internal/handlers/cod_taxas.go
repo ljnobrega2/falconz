@@ -21,13 +21,7 @@ type CodTaxasHandler struct{ Pool *pgxpool.Pool }
 
 // tableExists verifica presença de uma tabela no schema public.
 func (h *CodTaxasHandler) tableExists(ctx context.Context, name string) bool {
-	var ok bool
-	_ = h.Pool.QueryRow(ctx,
-		`SELECT EXISTS (
-			SELECT FROM information_schema.tables
-			WHERE table_schema='public' AND table_name=$1
-		)`, name).Scan(&ok)
-	return ok
+	return tableExistsCached(ctx, h.Pool, name) // AUDIT-2026-06-18 Onda2 (go-infoschema-cache)
 }
 
 // parseRate aceita number ou string; troca vírgula por ponto e força >= 0.
@@ -85,7 +79,7 @@ func (h *CodTaxasHandler) getOptionFloat(ctx context.Context, key string, def fl
 	}
 	var raw string
 	err := h.Pool.QueryRow(ctx,
-		`SELECT value FROM senderzz_options WHERE "key"=$1`, key).Scan(&raw)
+		`SELECT value FROM senderzz_options WHERE name=$1`, key).Scan(&raw)
 	if err != nil {
 		return def
 	}
@@ -99,7 +93,7 @@ func (h *CodTaxasHandler) getOptionFloatPtr(ctx context.Context, key string) *fl
 	}
 	var raw string
 	err := h.Pool.QueryRow(ctx,
-		`SELECT value FROM senderzz_options WHERE "key"=$1`, key).Scan(&raw)
+		`SELECT value FROM senderzz_options WHERE name=$1`, key).Scan(&raw)
 	if err != nil {
 		return nil
 	}
@@ -118,7 +112,7 @@ func (h *CodTaxasHandler) getOptionJSON(ctx context.Context, key string, out any
 	}
 	var raw string
 	if err := h.Pool.QueryRow(ctx,
-		`SELECT value FROM senderzz_options WHERE "key"=$1`, key).Scan(&raw); err != nil {
+		`SELECT value FROM senderzz_options WHERE name=$1`, key).Scan(&raw); err != nil {
 		return
 	}
 	if strings.TrimSpace(raw) == "" {
@@ -133,9 +127,9 @@ func (h *CodTaxasHandler) upsertOption(ctx context.Context, key, value string) e
 		return nil
 	}
 	_, err := h.Pool.Exec(ctx,
-		`INSERT INTO senderzz_options ("key", value)
+		`INSERT INTO senderzz_options (name, value)
 		 VALUES ($1, $2)
-		 ON CONFLICT ("key") DO UPDATE SET value = EXCLUDED.value`, key, value)
+		 ON CONFLICT (name) DO UPDATE SET value = EXCLUDED.value`, key, value)
 	return err
 }
 
@@ -144,7 +138,7 @@ func (h *CodTaxasHandler) deleteOption(ctx context.Context, key string) error {
 	if !h.tableExists(ctx, "senderzz_options") {
 		return nil
 	}
-	_, err := h.Pool.Exec(ctx, `DELETE FROM senderzz_options WHERE "key"=$1`, key)
+	_, err := h.Pool.Exec(ctx, `DELETE FROM senderzz_options WHERE name=$1`, key)
 	return err
 }
 
@@ -161,6 +155,7 @@ func (h *CodTaxasHandler) upsertOrDelete(ctx context.Context, key string, val *f
 // CodTaxasGlobal cobre os 4 valores principais + 4 penalidades. KPI grid.
 type CodTaxasGlobal struct {
 	TaxaClienteCOD          float64 `json:"taxa_cliente_cod"`           // sz_motoboy_taxa_entrega
+	CodDeliveryFee          float64 `json:"cod_delivery_fee"`           // sz_cod_delivery_fee
 	TaxaTransacaoPercentual float64 `json:"taxa_transacao_percentual"`  // sz_motoboy_taxa_percentual
 	TaxaMotoboyEntrega      float64 `json:"taxa_motoboy_entrega"`       // sz_mbw_taxa_entrega
 	TaxaMotoboyFrustrado    float64 `json:"taxa_motoboy_frustrado"`     // sz_mbw_taxa_frustrado
@@ -205,6 +200,7 @@ func (h *CodTaxasHandler) GetGlobal(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	out := CodTaxasGlobal{
 		TaxaClienteCOD:          h.getOptionFloat(ctx, "sz_motoboy_taxa_entrega", 25.0),
+		CodDeliveryFee:          h.getOptionFloat(ctx, "sz_cod_delivery_fee", 23.98),
 		TaxaTransacaoPercentual: h.getOptionFloat(ctx, "sz_motoboy_taxa_percentual", 0.0),
 		TaxaMotoboyEntrega:      h.getOptionFloat(ctx, "sz_mbw_taxa_entrega", 18.0),
 		TaxaMotoboyFrustrado:    h.getOptionFloat(ctx, "sz_mbw_taxa_frustrado", 5.0),
@@ -221,6 +217,7 @@ func (h *CodTaxasHandler) GetGlobal(w http.ResponseWriter, r *http.Request) {
 // rawGlobal aceita string/number do JS (parseRate normaliza).
 type rawGlobal struct {
 	TaxaClienteCOD          any `json:"taxa_cliente_cod"`
+	CodDeliveryFee          any `json:"cod_delivery_fee"`
 	TaxaTransacaoPercentual any `json:"taxa_transacao_percentual"`
 	TaxaMotoboyEntrega      any `json:"taxa_motoboy_entrega"`
 	TaxaMotoboyFrustrado    any `json:"taxa_motoboy_frustrado"`
@@ -240,6 +237,7 @@ func (h *CodTaxasHandler) SaveGlobal(w http.ResponseWriter, r *http.Request) {
 
 	pairs := map[string]float64{
 		"sz_motoboy_taxa_entrega":              parseRate(in.TaxaClienteCOD),
+		"sz_cod_delivery_fee":                  parseRate(in.CodDeliveryFee),
 		"sz_motoboy_taxa_percentual":           parseRate(in.TaxaTransacaoPercentual),
 		"sz_mbw_taxa_entrega":                  parseRate(in.TaxaMotoboyEntrega),
 		"sz_mbw_taxa_frustrado":                parseRate(in.TaxaMotoboyFrustrado),
@@ -638,4 +636,45 @@ func (h *CodTaxasHandler) SaveAffiliates(w http.ResponseWriter, r *http.Request)
 	}
 
 	httpx.JSON(w, 200, map[string]any{"ok": true})
+}
+
+// ----- GET/POST /producer-fee-config -------------------------------------
+//
+// Lê/grava sz_producer_transaction_fee_pct em senderzz_options (default 4,99%).
+// É a taxa de transação aplicada ao PRODUTOR no breakdown financeiro de OrderDetail
+// (taxa_transacao_produtor = total × pct). Distinta da taxa do afiliado.
+
+// ProducerFeeConfig — payload do endpoint de configuração da taxa do produtor.
+type ProducerFeeConfig struct {
+	ProducerTransactionFeePct float64 `json:"producer_transaction_fee_pct"`
+}
+
+// GetProducerFeeConfig — GET /producer-fee-config.
+func (h *CodTaxasHandler) GetProducerFeeConfig(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	httpx.JSON(w, 200, ProducerFeeConfig{
+		ProducerTransactionFeePct: h.getOptionFloat(ctx, "sz_producer_transaction_fee_pct", 4.99),
+	})
+}
+
+// rawProducerFeeConfig aceita string/number do JS (parseRate normaliza).
+type rawProducerFeeConfig struct {
+	ProducerTransactionFeePct any `json:"producer_transaction_fee_pct"`
+}
+
+// SaveProducerFeeConfig — POST /producer-fee-config.
+func (h *CodTaxasHandler) SaveProducerFeeConfig(w http.ResponseWriter, r *http.Request) {
+	var in rawProducerFeeConfig
+	if err := httpx.DecodeJSON(r, &in); err != nil {
+		httpx.Err(w, 400, "bad_request", "json inválido")
+		return
+	}
+	ctx := r.Context()
+	pct := parseRate(in.ProducerTransactionFeePct)
+	if err := h.upsertOption(ctx, "sz_producer_transaction_fee_pct",
+		strconv.FormatFloat(pct, 'f', 4, 64)); err != nil {
+		httpx.Err(w, 500, "db_error", err.Error())
+		return
+	}
+	httpx.JSON(w, 200, map[string]any{"ok": true, "producer_transaction_fee_pct": pct})
 }

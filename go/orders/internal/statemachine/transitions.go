@@ -2,18 +2,20 @@
 //
 // Estados e transições válidas (espelha o fluxo do WooCommerce + status customizados):
 //
-//   pending      → processing | cancelled
-//   processing   → aguardando | cancelled
-//   aguardando   → em_separacao | on-hold | cancelled
-//   on-hold      → aguardando | cancelled
-//   em_separacao → embalado | cancelled
-//   embalado     → enviado | frustrado | cancelled
-//   enviado      → entregue | frustrado
-//   entregue     → completo | reembolsado
-//   completo     → reembolsado
-//   frustrado    → aguardando | cancelled
-//   cancelled    → [] (terminal)
-//   reembolsado  → [] (terminal)
+//	pending      → processing | cancelled
+//	processing   → aguardando | cancelled
+//	aguardando   → em_separacao | on-hold | cancelled
+//	on-hold      → aguardando | cancelled
+//	em_separacao → embalado | cancelled
+//	embalado     → coletado | enviado | frustrado | cancelled
+//	coletado     → enviado | frustrado | cancelled
+//	enviado      → a_caminho | entregue | frustrado
+//	a_caminho    → entregue | frustrado
+//	entregue     → completo | reembolsado
+//	completo     → reembolsado
+//	frustrado    → aguardando | cancelled
+//	cancelled    → [] (terminal)
+//	reembolsado  → [] (terminal)
 //
 // A transição é atômica: UPDATE sz_orders + INSERT sz_order_status_history
 // dentro de uma transação serializable. Falha se o status atual já mudou
@@ -40,13 +42,20 @@ var ValidTransitions = map[string][]string{
 	"aguardando":   {"em_separacao", "on-hold", "cancelled"},
 	"on-hold":      {"aguardando", "cancelled"},
 	"em_separacao": {"embalado", "cancelled"},
-	"embalado":     {"enviado", "frustrado", "cancelled"},
-	"enviado":      {"entregue", "frustrado"},
-	"entregue":     {"completo", "reembolsado"},
-	"completo":     {"reembolsado"},
-	"frustrado":    {"aguardando", "cancelled"},
-	"cancelled":    {},
-	"reembolsado":  {},
+	// AUDIT-2026-07-31 (dono): 'coletado' — operador logístico/admin marca quando
+	// coloca o pacote no ponto de coleta (ação manual). 'enviado' sobrepõe
+	// 'coletado' (a ME confirmando postagem/trânsito sempre vence — ver
+	// label_jobs.go ProcessSyncTracking, mirror de 'posted' aceita origem
+	// embalado OU coletado).
+	"embalado":    {"coletado", "enviado", "frustrado", "cancelled"},
+	"coletado":    {"enviado", "frustrado", "cancelled"},
+	"enviado":     {"a_caminho", "entregue", "frustrado"},
+	"a_caminho":   {"entregue", "frustrado"},
+	"entregue":    {"completo", "reembolsado"},
+	"completo":    {"reembolsado"},
+	"frustrado":   {"aguardando", "cancelled"},
+	"cancelled":   {},
+	"reembolsado": {},
 }
 
 // TerminalStatuses lista os status de onde não há transição possível.

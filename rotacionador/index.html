@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Rotacionador</title>
+    <meta name="robots" content="noindex, nofollow" />
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: Inter, system-ui, sans-serif;
+        color: #172033;
+        background: linear-gradient(180deg, #f5f7fb 0%, #eef3ff 100%);
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+      }
+      main {
+        width: min(720px, calc(100vw - 32px));
+        padding: 28px;
+        background: rgba(255, 255, 255, 0.82);
+        border: 1px solid #e1e7f0;
+        border-radius: 20px;
+        box-shadow: 0 20px 60px #243b5a12;
+        backdrop-filter: blur(8px);
+      }
+      .brand {
+        width: 250px;
+        height: 72px;
+        background: url('/assets/rotacionador-tech.png') center/400px 267px no-repeat;
+        margin-bottom: 18px;
+      }
+      h1 {
+        margin: 0 0 10px;
+        font-size: 30px;
+      }
+      p {
+        margin: 0;
+        line-height: 1.5;
+        color: #65738a;
+      }
+      .actions {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px;
+        margin-top: 24px;
+      }
+      a {
+        display: inline-flex;
+        justify-content: center;
+        align-items: center;
+        min-height: 48px;
+        padding: 0 16px;
+        border-radius: 12px;
+        text-decoration: none;
+        font-weight: 700;
+      }
+      .primary {
+        color: #fff;
+        background: #3157d5;
+      }
+      .secondary {
+        color: #2445a7;
+        background: #e8efff;
+      }
+      .hint {
+        margin-top: 16px;
+        font-size: 13px;
+        color: #76849b;
+      }
+      @media (max-width: 640px) {
+        main { width: calc(100vw - 20px); padding: 22px; }
+        .actions { grid-template-columns: 1fr; }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="brand" role="img" aria-label="Rotacionador Tech"></div>
+      <h1>Rotacionador</h1>
+      <p>Separado em duas entradas: o painel de campanhas e o padronizador que gera a base final em ZIP.</p>
+      <div class="actions">
+        <a class="primary" href="/">Abrir painel principal</a>
+        <a class="secondary" href="/padronizador/">Abrir padronizador ZIP</a>
+      </div>
+      <p class="hint">Se você precisar do empacotador, use o link do padronizador. Ele abre a tela correta.</p>
+    </main>
+  </body>
+</html>

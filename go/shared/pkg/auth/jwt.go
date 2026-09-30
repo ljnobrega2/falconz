@@ -44,26 +44,12 @@ func Emit(userID int64, email, role string, ttl time.Duration) (string, error) {
 	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte(secret))
 }
 
-// Parse valida e retorna as claims de um JWT.
+// Parse valida e retorna as claims de um JWT lendo o secret do ambiente.
+// Conveniência sobre ParseHS256 (claims.go): delega a validação pura para lá,
+// herdando WithValidMethods(HS256) + exp obrigatório (SEC-GO-02 / CODE-AUTH-03).
+// Não exige issuer (passa ""). Para exigir issuer, use ParseHS256 diretamente.
 func Parse(tokenStr string) (*Claims, error) {
-	secret := os.Getenv("JWT_SECRET")
-	if secret == "" {
-		return nil, fmt.Errorf("JWT_SECRET não configurado")
-	}
-	tok, err := jwt.ParseWithClaims(tokenStr, &Claims{}, func(t *jwt.Token) (any, error) {
-		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, fmt.Errorf("algoritmo inesperado: %v", t.Header["alg"])
-		}
-		return []byte(secret), nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	c, ok := tok.Claims.(*Claims)
-	if !ok || !tok.Valid {
-		return nil, fmt.Errorf("claims inválidas")
-	}
-	return c, nil
+	return ParseHS256(os.Getenv("JWT_SECRET"), tokenStr, "")
 }
 
 // Middleware HTTP que valida JWT e injeta claims no contexto.

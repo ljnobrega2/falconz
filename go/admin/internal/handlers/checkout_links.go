@@ -13,23 +13,32 @@
 // (afiliado_id, produto_id) já exista — admin não cria vínculo aqui, só link.
 //
 // Endpoints:
-//   GET    /checkout-links?q=&active=&produto_id=&affiliate_id=&limit=100&offset=0
-//   POST   /checkout-links             body { affiliate_id, produto_id, active }
-//   PUT    /checkout-links/{id}        body { active, produto_id }
-//   DELETE /checkout-links/{id}
+//
+//	GET    /checkout-links?q=&active=&produto_id=&affiliate_id=&limit=100&offset=0
+//	GET    /checkout-links/offers       (ofertas migradas — somente leitura)
+//	GET    /checkout-links/export.csv   (relatório p/ tirar do banco)
+//	POST   /checkout-links              → 410 Gone (links de afiliado são automáticos)
+//	PUT    /checkout-links/{id}         → 410 Gone
+//	DELETE /checkout-links/{id}         → 410 Gone
+//
+// DECISÃO DO DONO: "link afiliado nao criamos e automatico nao deve ter no
+// admin" + "admin nao precisa ter tela de todos os checkouts isso precisa ser
+// emitido via relatorio pra tirar do banco". A escrita manual foi desativada
+// (Create/Update/Delete viram 410); a leitura interna que outros handlers usam
+// (List/ListOffers; Commissions) foi preservada; e export.csv substitui a tela
+// de "todos os checkouts".
 //
 // PT-BR mantido em comentários e mensagens de erro (convenção do projeto).
 package handlers
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
+	"encoding/csv"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
 
-	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/senderzz/admin-service/internal/httpx"
 )
@@ -39,47 +48,30 @@ type CheckoutLinksHandler struct{ Pool *pgxpool.Pool }
 
 // checkoutLinkBaseURL — prefixo público do link de checkout. A URL completa
 // fica em `link_url` no payload de resposta para evitar reconstrução no front.
-const checkoutLinkBaseURL = "https://app.senderzz.com.br/checkout/"
+const checkoutLinkBaseURL = "https://app.falklog.com.br/checkout/"
 
 // CheckoutLink é o shape retornado pela API (já enriquecido com nomes/KPIs).
 type CheckoutLink struct {
 	ID            int64   `json:"id"`
-	AffiliateID   int64   `json:"affiliate_id"`   // senderzz_affiliates.id (vínculo)
+	AffiliateID   int64   `json:"affiliate_id"` // senderzz_affiliates.id (vínculo)
 	AfiliadoNome  string  `json:"afiliado_nome"`
 	AfiliadoEmail string  `json:"afiliado_email"`
 	ProdutorNome  string  `json:"produtor_nome"`
 	LinkToken     string  `json:"link_token"`
-	LinkURL       string  `json:"link_url"`        // computed: base + token
+	LinkURL       string  `json:"link_url"` // computed: base + token
 	ProdutoID     int64   `json:"produto_id"`
-	ProdutoNome   string  `json:"produto_nome"`    // de sz_products.nome (match por wp_post_id)
+	ProdutoNome   string  `json:"produto_nome"` // de sz_products.nome (match por wp_post_id)
 	Active        bool    `json:"active"`
 	Clicks        int64   `json:"clicks"`
-	Conversoes    int64   `json:"conversoes"`      // COUNT sz_orders por afiliado wp_user_id
-	ReceitaGerada float64 `json:"receita_gerada"`  // SUM sz_orders.total por afiliado wp_user_id
+	Conversoes    int64   `json:"conversoes"`     // COUNT sz_orders por afiliado wp_user_id
+	ReceitaGerada float64 `json:"receita_gerada"` // SUM sz_orders.total por afiliado wp_user_id
 	CreatedAt     string  `json:"created_at"`
 }
 
 // tableExists — checagem genérica para qualquer tabela public.<name>.
 // Mesma assinatura usada nos demais handlers para degradação graciosa.
 func (h *CheckoutLinksHandler) tableExists(ctx context.Context, name string) bool {
-	var exists bool
-	_ = h.Pool.QueryRow(ctx,
-		`SELECT EXISTS (
-			SELECT FROM information_schema.tables
-			WHERE table_schema = 'public' AND table_name = $1
-		)`, name).Scan(&exists)
-	return exists
-}
-
-// genLinkToken gera 32 bytes aleatórios → 64 chars hex.
-// UNIQUE constraint em senderzz_affiliate_links.link_token cobre colisão
-// (probabilidade nula com 256 bits de entropia — sem retry loop).
-func genLinkToken() (string, error) {
-	b := make([]byte, 32)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(b), nil
+	return tableExistsCached(ctx, h.Pool, name) // AUDIT-2026-06-18 Onda2 (go-infoschema-cache)
 }
 
 // ---------------------------------------------------------------------------
@@ -87,11 +79,12 @@ func genLinkToken() (string, error) {
 // ---------------------------------------------------------------------------
 //
 // Filtros aceitos via querystring:
-//   q             — busca textual (token, nome do afiliado, email, nome do produto)
-//   active        — "1" ou "0"; vazio = ambos
-//   produto_id    — wp_post_id do produto (filtra al.produto_id)
-//   affiliate_id  — wp_user_id do afiliado (resolvido para a.afiliado_id)
-//   limit/offset  — paginação (default 100, máx 200)
+//
+//	q             — busca textual (token, nome do afiliado, email, nome do produto)
+//	active        — "1" ou "0"; vazio = ambos
+//	produto_id    — wp_post_id do produto (filtra al.produto_id)
+//	affiliate_id  — wp_user_id do afiliado (resolvido para a.afiliado_id)
+//	limit/offset  — paginação (default 100, máx 200)
 //
 // Enriquecimentos:
 //   - afiliado_nome/email vêm de senderzz_portal_users (JOIN por a.afiliado_id)
@@ -214,149 +207,285 @@ func (h *CheckoutLinksHandler) List(w http.ResponseWriter, r *http.Request) {
 }
 
 // ---------------------------------------------------------------------------
-// POST /checkout-links
+// ESCRITA MANUAL DESATIVADA — POST/PUT/DELETE → 410 Gone
 // ---------------------------------------------------------------------------
 //
-// Body: { affiliate_id (wp_user_id), produto_id (wp_post_id), active }
-//
-// Resolução do vínculo:
-//   - busca senderzz_affiliates por (afiliado_id = body.affiliate_id, produto_id = body.produto_id)
-//   - se não existir → 400. Admin deve criar o vínculo antes (regra do produtor).
-//
-// O token é gerado server-side (32 bytes hex). UNIQUE constraint cobre colisão.
-type checkoutLinkCreateBody struct {
-	AffiliateID int64 `json:"affiliate_id"` // wp_user_id do afiliado (NÃO o vínculo PK)
-	ProdutoID   int64 `json:"produto_id"`   // wp_post_id do produto
-	Active      bool  `json:"active"`
+// DECISÃO DO DONO: "link afiliado nao criamos e automatico nao deve ter no
+// admin". Links de afiliado são gerados AUTOMATICAMENTE no fluxo de afiliação
+// (portal) — o admin nunca os cria, edita ou exclui manualmente. As rotas
+// continuam registradas (compatibilidade de roteador) mas respondem 410 Gone
+// com a mensagem canônica em PT-BR. A LEITURA (List/ListOffers/ExportCSV) e o
+// uso interno por outros handlers (ex.: Commissions lê senderzz_affiliate_links)
+// permanecem intactos.
+const checkoutLinkManualMsg = "Links de afiliado são automáticos — não são criados/editados no admin."
+
+// Create — desativado (410). Mantido para satisfazer o wiring de rotas.
+func (h *CheckoutLinksHandler) Create(w http.ResponseWriter, r *http.Request) {
+	httpx.Err(w, http.StatusGone, "gone", checkoutLinkManualMsg)
 }
 
-func (h *CheckoutLinksHandler) Create(w http.ResponseWriter, r *http.Request) {
+// Update — desativado (410).
+func (h *CheckoutLinksHandler) Update(w http.ResponseWriter, r *http.Request) {
+	httpx.Err(w, http.StatusGone, "gone", checkoutLinkManualMsg)
+}
+
+// Delete — desativado (410).
+func (h *CheckoutLinksHandler) Delete(w http.ResponseWriter, r *http.Request) {
+	httpx.Err(w, http.StatusGone, "gone", checkoutLinkManualMsg)
+}
+
+// ===========================================================================
+// OFERTAS DE CHECKOUT (somente leitura) — senderzz_checkout_links
+// ===========================================================================
+//
+// IMPORTANTE — DUAS coisas distintas, NÃO confundir:
+//   - senderzz_affiliate_links  → link de RASTREIO do afiliado (clicks). CRUD acima.
+//                                   Hoje vazio (0 linhas migradas).
+//   - senderzz_checkout_links   → link de OFERTA do PRODUTOR que define o PREÇO
+//                                   de venda (display_value/price_label). 38 linhas
+//                                   migradas fielmente do WP. SOMENTE LEITURA aqui.
+//
+// Este endpoint expõe os links de oferta migrados para a tela de admin os listar.
+// Joins fiéis (verificados contra o banco migrado):
+//   - producer_id → senderzz_portal_users.id          (NÃO wp_user_id) — 38/38
+//   - conversões/receita → sz_orders cujo pedido tem
+//       sz_order_meta._senderzz_checkout_link_id = checkout_links.id  (cl.id::text)
+//   - post_id NÃO é um produto e sim o CANAL de envio (22 = correio / 1075 =
+//       motoboy). Não existe FK direta da oferta para sz_products: post_id não casa
+//       com sz_products.wp_post_id (esses CPTs não foram migrados como produtos).
+//
+// PRODUTO DA OFERTA (TAREFA N parte b — nome do produto visível no admin):
+//   Como não há elo por id, resolvemos o produto por NOME (best-effort): casamos
+//   cl.name (sem o sufixo " — Motoboy") contra sz_products.nome, case-insensitive,
+//   via subquery ESCALAR (LIMIT 1) — NUNCA JOIN por nome, que multiplicaria linhas
+//   em colisão de nome. Quando não há match (ofertas descritivas como "5 Potes
+//   padrão", que descrevem variação/quantidade e não um produto cadastrado),
+//   caímos no próprio cl.name como descritor. Não escopamos por produtor porque os
+//   id-spaces de cl.producer_id e sp.produtor_id NÃO se alinham de forma confiável
+//   no dump vivo (verificado: oferta producer_id=40 casa produto produtor_id=15),
+//   então um filtro por produtor descartaria matches válidos.
+//
+// GET /checkout-links/offers?q=&tipo=&producer_id=&limit=100&offset=0
+
+// CheckoutOffer — shape de um link de oferta de checkout (preço de venda).
+type CheckoutOffer struct {
+	ID            int64   `json:"id"`
+	ProducerID    int64   `json:"producer_id"` // senderzz_portal_users.id
+	ProdutorNome  string  `json:"produtor_nome"`
+	PostID        int64   `json:"post_id"` // wp_post_id de origem (pode não ter produto migrado)
+	Token         string  `json:"token"`
+	Tipo          string  `json:"tipo"`          // correio / motoboy
+	URL           string  `json:"url"`           // link público completo (migrado, fiel)
+	DisplayValue  float64 `json:"display_value"` // preço de venda
+	PriceLabel    string  `json:"price_label"`   // "R$ 349,00"
+	Nome          string  `json:"name"`          // descritor da oferta
+	ProdutoNome   string  `json:"produto_nome"`  // nome do produto resolvido (best-effort por name; ver ListOffers)
+	Slug          string  `json:"slug"`
+	AffiliateVis  bool    `json:"affiliate_visible"`
+	Conversoes    int64   `json:"conversoes"`     // pedidos atribuídos a este link
+	ReceitaGerada float64 `json:"receita_gerada"` // SUM sz_orders.total atribuída
+	CreatedAt     string  `json:"created_at"`
+}
+
+// ListOffers — lista os links de oferta de checkout migrados (senderzz_checkout_links).
+// Somente leitura (não há CRUD aqui — os links são gerados no fluxo de produto do portal).
+func (h *CheckoutLinksHandler) ListOffers(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	if !h.tableExists(ctx, "senderzz_affiliate_links") || !h.tableExists(ctx, "senderzz_affiliates") {
-		httpx.Err(w, 503, "table_not_found",
-			"tabelas senderzz_affiliate_links/senderzz_affiliates ausentes — rode a migration de afiliados")
+	if !h.tableExists(ctx, "senderzz_checkout_links") {
+		httpx.JSON(w, 200, map[string]any{"items": []CheckoutOffer{}, "total": int64(0)})
 		return
 	}
 
-	var b checkoutLinkCreateBody
-	if err := httpx.DecodeJSON(r, &b); err != nil {
-		httpx.Err(w, 400, "bad_request", "json inválido")
-		return
+	q := r.URL.Query()
+	limit, _ := strconv.Atoi(q.Get("limit"))
+	if limit <= 0 || limit > 200 {
+		limit = 100
 	}
-	if b.AffiliateID == 0 {
-		httpx.Err(w, 400, "validation", "campo affiliate_id (wp_user_id) é obrigatório")
-		return
-	}
-	if b.ProdutoID == 0 {
-		httpx.Err(w, 400, "validation", "campo produto_id é obrigatório")
-		return
+	offset, _ := strconv.Atoi(q.Get("offset"))
+	search := strings.TrimSpace(q.Get("q"))
+	tipo := strings.TrimSpace(q.Get("tipo"))
+	producerID, _ := strconv.ParseInt(q.Get("producer_id"), 10, 64)
+
+	// Conversões/receita só agregadas quando sz_orders + sz_order_meta existem.
+	// cl.id::text porque _senderzz_checkout_link_id é gravado como string na meta.
+	convExpr := "0::bigint"
+	revExpr := "0::float8"
+	if h.tableExists(ctx, "sz_orders") && h.tableExists(ctx, "sz_order_meta") {
+		convExpr = `(SELECT COUNT(*) FROM sz_order_meta m
+		             WHERE m.meta_key='_senderzz_checkout_link_id'
+		               AND m.meta_value = cl.id::text)::bigint`
+		revExpr = `(SELECT COALESCE(SUM(o.total),0) FROM sz_orders o
+		            JOIN sz_order_meta m ON m.order_id = o.id
+		                 AND m.meta_key='_senderzz_checkout_link_id'
+		            WHERE m.meta_value = cl.id::text)::float8`
 	}
 
-	// Resolve o vínculo: senderzz_affiliates.id correspondente.
-	// Sem vínculo cadastrado, recusa o link — admin não cria vínculo aqui.
-	var vinculoID int64
-	err := h.Pool.QueryRow(ctx,
-		`SELECT id FROM senderzz_affiliates
-		 WHERE afiliado_id = $1 AND produto_id = $2
-		 ORDER BY id ASC LIMIT 1`,
-		b.AffiliateID, b.ProdutoID).Scan(&vinculoID)
-	if err != nil {
-		httpx.Err(w, 400, "vinculo_inexistente",
-			"vínculo afiliado↔produto não cadastrado — cadastre o vínculo em senderzz_affiliates primeiro")
-		return
+	hasPortalUsers := h.tableExists(ctx, "senderzz_portal_users")
+	produtorSel := "''::text AS produtor_nome"
+	produtorJoin := ""
+	if hasPortalUsers {
+		produtorSel = "COALESCE(pu.nome,'') AS produtor_nome"
+		produtorJoin = "LEFT JOIN senderzz_portal_users pu ON pu.id = cl.producer_id"
 	}
 
-	token, err := genLinkToken()
-	if err != nil {
-		httpx.Err(w, 500, "rand_error", err.Error())
-		return
+	// PRODUTO (best-effort por NOME). Subquery escalar (LIMIT 1) — nunca JOIN por
+	// nome (multiplicaria linhas em colisão). O regexp tira o sufixo " — Motoboy"
+	// para casar o par correio/motoboy com o mesmo produto.
+	//
+	// IMPORTANTE: retornamos string VAZIA quando NÃO há produto casável (em vez de
+	// cair no descritor da oferta). Só o backend sabe se houve match; devolver vazio
+	// deixa o front distinguir "produto resolvido" de "fallback" sem reinferir por
+	// comparação de string (que falha quando o nome do produto == descritor da oferta,
+	// ex.: "Dorvax"). O front exibe o descritor (sem sufixo) quando vier vazio.
+	produtoExpr := `''::text`
+	if h.tableExists(ctx, "sz_products") {
+		produtoExpr = `COALESCE(
+		    (SELECT sp.nome FROM sz_products sp
+		      WHERE lower(sp.nome) = lower(regexp_replace(cl.name, ' — Motoboy$', ''))
+		      ORDER BY sp.id ASC LIMIT 1),
+		    '')`
 	}
 
-	var id int64
-	err = h.Pool.QueryRow(ctx,
-		`INSERT INTO senderzz_affiliate_links (affiliate_id, link_token, produto_id, active)
-		 VALUES ($1, $2, $3, $4)
-		 RETURNING id`,
-		vinculoID, token, b.ProdutoID, b.Active).Scan(&id)
+	sqlList := `
+		SELECT cl.id, cl.producer_id, ` + produtorSel + `,
+		       cl.post_id, cl.token, cl.tipo, cl.url,
+		       cl.display_value, cl.price_label, cl.name,
+		       ` + produtoExpr + ` AS produto_nome,
+		       cl.slug, cl.affiliate_visible,
+		       ` + convExpr + ` AS conversoes,
+		       ` + revExpr + ` AS receita_gerada,
+		       cl.created_at::text
+		FROM senderzz_checkout_links cl
+		` + produtorJoin + `
+		WHERE ($1 = '' OR cl.name ILIKE '%' || $1 || '%' OR cl.token ILIKE '%' || $1 || '%')
+		  AND ($2 = '' OR cl.tipo = $2)
+		  AND ($3 = 0  OR cl.producer_id = $3)
+		ORDER BY cl.id DESC
+		LIMIT $4 OFFSET $5`
+
+	rows, err := h.Pool.Query(ctx, sqlList, search, tipo, producerID, limit, offset)
 	if err != nil {
 		httpx.Err(w, 500, "db_error", err.Error())
 		return
 	}
+	defer rows.Close()
 
-	httpx.JSON(w, 201, map[string]any{
-		"id":         id,
-		"link_token": token,
-		"link_url":   checkoutLinkBaseURL + token,
+	items := []CheckoutOffer{}
+	for rows.Next() {
+		var o CheckoutOffer
+		if err := rows.Scan(
+			&o.ID, &o.ProducerID, &o.ProdutorNome,
+			&o.PostID, &o.Token, &o.Tipo, &o.URL,
+			&o.DisplayValue, &o.PriceLabel, &o.Nome, &o.ProdutoNome, &o.Slug, &o.AffiliateVis,
+			&o.Conversoes, &o.ReceitaGerada, &o.CreatedAt,
+		); err != nil {
+			httpx.Err(w, 500, "scan_error", err.Error())
+			return
+		}
+		items = append(items, o)
+	}
+
+	var total int64
+	_ = h.Pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM senderzz_checkout_links cl
+		 WHERE ($1 = '' OR cl.name ILIKE '%' || $1 || '%' OR cl.token ILIKE '%' || $1 || '%')
+		   AND ($2 = '' OR cl.tipo = $2)
+		   AND ($3 = 0  OR cl.producer_id = $3)`,
+		search, tipo, producerID).Scan(&total)
+
+	httpx.JSON(w, 200, map[string]any{
+		"items":  items,
+		"total":  total,
+		"limit":  limit,
+		"offset": offset,
 	})
 }
 
-// ---------------------------------------------------------------------------
-// PUT /checkout-links/{id}
-// ---------------------------------------------------------------------------
+// ===========================================================================
+// RELATÓRIO — GET /checkout-links/export.csv
+// ===========================================================================
 //
-// Body opcional: { active, produto_id }. Campos ausentes ficam inalterados via
-// COALESCE com a coluna atual.
-type checkoutLinkUpdateBody struct {
-	Active    *bool  `json:"active"`
-	ProdutoID *int64 `json:"produto_id"`
-}
-
-func (h *CheckoutLinksHandler) Update(w http.ResponseWriter, r *http.Request) {
+// DECISÃO DO DONO: "admin nao precisa ter tela de todos os checkouts isso
+// precisa ser emitido via relatorio pra tirar do banco". Este endpoint é esse
+// relatório: puxa os links de oferta direto do banco (senderzz_checkout_links —
+// a tabela que carrega tipo/url/valor; senderzz_affiliate_links é de rastreio e
+// está vazia) e devolve CSV. Mesmos filtros opcionais de ListOffers (q/tipo/
+// producer_id) para espelhar o que a tela mostrava. Escopo admin (roda dentro
+// do mesmo grupo autenticado das demais rotas). Cap de 5000 linhas.
+//
+// Separador ";", UTF-8 BOM (Excel reconhece acentos), header PT-BR.
+func (h *CheckoutLinksHandler) ExportCSV(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	if !h.tableExists(ctx, "senderzz_affiliate_links") {
-		httpx.Err(w, 503, "table_not_found", "tabela senderzz_affiliate_links ausente")
-		return
-	}
-	id, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-	if id == 0 {
-		httpx.Err(w, 400, "validation", "id inválido")
+	if !h.tableExists(ctx, "senderzz_checkout_links") {
+		httpx.Err(w, 503, "table_missing", "tabela senderzz_checkout_links não migrada")
 		return
 	}
 
-	var b checkoutLinkUpdateBody
-	if err := httpx.DecodeJSON(r, &b); err != nil {
-		httpx.Err(w, 400, "bad_request", "json inválido")
-		return
+	q := r.URL.Query()
+	search := strings.TrimSpace(q.Get("q"))
+	tipo := strings.TrimSpace(q.Get("tipo"))
+	producerID, _ := strconv.ParseInt(q.Get("producer_id"), 10, 64)
+
+	hasPortalUsers := h.tableExists(ctx, "senderzz_portal_users")
+	produtorSel := "''::text AS produtor_nome"
+	produtorJoin := ""
+	if hasPortalUsers {
+		produtorSel = "COALESCE(pu.nome,'') AS produtor_nome"
+		produtorJoin = "LEFT JOIN senderzz_portal_users pu ON pu.id = cl.producer_id"
 	}
 
-	// Update parcial: COALESCE preserva o valor existente quando o campo é NULL
-	// no payload (clientes que só querem mudar active não precisam reenviar produto_id).
-	_, err := h.Pool.Exec(ctx,
-		`UPDATE senderzz_affiliate_links
-		 SET active     = COALESCE($1, active),
-		     produto_id = COALESCE($2, produto_id)
-		 WHERE id = $3`,
-		b.Active, b.ProdutoID, id)
+	rows, err := h.Pool.Query(ctx, `
+		SELECT cl.id, `+produtorSel+`, cl.token, cl.tipo, cl.url,
+		       cl.display_value, cl.created_at::text
+		FROM senderzz_checkout_links cl
+		`+produtorJoin+`
+		WHERE ($1 = '' OR cl.name ILIKE '%' || $1 || '%' OR cl.token ILIKE '%' || $1 || '%')
+		  AND ($2 = '' OR cl.tipo = $2)
+		  AND ($3 = 0  OR cl.producer_id = $3)
+		ORDER BY cl.id DESC
+		LIMIT 5000`, search, tipo, producerID)
 	if err != nil {
 		httpx.Err(w, 500, "db_error", err.Error())
 		return
 	}
-	httpx.JSON(w, 200, map[string]any{"ok": true, "id": id})
-}
+	defer rows.Close()
 
-// ---------------------------------------------------------------------------
-// DELETE /checkout-links/{id}
-// ---------------------------------------------------------------------------
-//
-// Hard delete — não há referência FK saindo daqui (senderzz_affiliate_links é
-// folha; sz_orders não referencia este id). Se algum dia carregar relatórios
-// históricos, considerar soft-delete via active=FALSE.
-func (h *CheckoutLinksHandler) Delete(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	if !h.tableExists(ctx, "senderzz_affiliate_links") {
-		httpx.Err(w, 503, "table_not_found", "tabela senderzz_affiliate_links ausente")
-		return
+	w.Header().Set("Content-Type", "text/csv; charset=UTF-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="links-checkout.csv"`)
+
+	// BOM UTF-8 para Excel reconhecer acentos.
+	_, _ = w.Write([]byte("\xEF\xBB\xBF"))
+
+	cw := csv.NewWriter(w)
+	cw.Comma = ';'
+
+	_ = cw.Write([]string{
+		"ID", "Produtor", "Token", "Tipo", "URL", "Valor", "Criado em",
+	})
+
+	for rows.Next() {
+		var (
+			id           int64
+			produtorNome string
+			token        string
+			tipoVal      string
+			url          string
+			displayValue float64
+			createdAt    string
+		)
+		if err := rows.Scan(&id, &produtorNome, &token, &tipoVal, &url, &displayValue, &createdAt); err != nil {
+			// Linha corrompida não derruba o download — segue.
+			continue
+		}
+		_ = cw.Write([]string{
+			strconv.FormatInt(id, 10),
+			produtorNome,
+			token,
+			tipoVal,
+			url,
+			fmt.Sprintf("%.2f", displayValue),
+			createdAt,
+		})
 	}
-	id, _ := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-	if id == 0 {
-		httpx.Err(w, 400, "validation", "id inválido")
-		return
-	}
-	_, err := h.Pool.Exec(ctx,
-		`DELETE FROM senderzz_affiliate_links WHERE id = $1`, id)
-	if err != nil {
-		httpx.Err(w, 500, "db_error", err.Error())
-		return
-	}
-	httpx.JSON(w, 200, map[string]any{"ok": true})
+	cw.Flush()
 }

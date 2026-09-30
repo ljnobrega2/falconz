@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
@@ -31,12 +32,33 @@ type motoboy struct {
 }
 
 func (h *MotoboysHandler) List(w http.ResponseWriter, r *http.Request) {
+	// MED20: por padrão lista apenas ativos (WHERE ativo=true) — preserva o
+	// comportamento histórico e evita que motoboys desativados apareçam como
+	// alvo de atribuição nos seletores (Fechamento, BulkActions, Custódia).
+	// include_inactive=1|true OU ativo=false|0 desativa o filtro para a tela de
+	// gestão de Motoboys exibir/filtrar inativos (filtro sim/não é client-side).
+	q := r.URL.Query()
+	incInativos := false
+	switch q.Get("include_inactive") {
+	case "1", "true", "yes":
+		incInativos = true
+	}
+	switch q.Get("ativo") {
+	case "0", "false", "no", "all", "todos":
+		incInativos = true
+	}
+
+	where := "WHERE ativo=true"
+	if incInativos {
+		where = ""
+	}
+
 	rows, err := h.Pool.Query(r.Context(),
 		`SELECT id, nome, COALESCE(telefone,''), COALESCE(cpf,''), COALESCE(email,''),
 		        COALESCE(tipo_pgto,'autonomo'), ativo, cd_id, zona_id,
 		        COALESCE(token_app,''), (pin_hash IS NOT NULL AND pin_hash <> ''),
 		        created_at::text
-		 FROM sz_motoboys WHERE ativo=true ORDER BY id DESC LIMIT 200`)
+		 FROM sz_motoboys `+where+` ORDER BY id DESC LIMIT 200`)
 	if err != nil {
 		httpx.Err(w, 500, "db_error", err.Error())
 		return
@@ -54,6 +76,28 @@ func (h *MotoboysHandler) List(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, 200, map[string]any{"items": out})
 }
 
+// Minimal retorna só id+nome dos motoboys ativos — para dropdowns em DualAuth (OL).
+func (h *MotoboysHandler) Minimal(w http.ResponseWriter, r *http.Request) {
+	type mbMin struct {
+		ID   int64  `json:"id"`
+		Nome string `json:"nome"`
+	}
+	rows, err := h.Pool.Query(r.Context(),
+		`SELECT id, nome FROM sz_motoboys WHERE ativo=true ORDER BY nome ASC LIMIT 200`)
+	if err != nil {
+		httpx.Err(w, 500, "db_error", err.Error())
+		return
+	}
+	defer rows.Close()
+	out := []mbMin{}
+	for rows.Next() {
+		var m mbMin
+		_ = rows.Scan(&m.ID, &m.Nome)
+		out = append(out, m)
+	}
+	httpx.JSON(w, 200, map[string]any{"items": out})
+}
+
 type motoboyInput struct {
 	Nome     string  `json:"nome"`
 	Telefone string  `json:"telefone"`
@@ -64,6 +108,29 @@ type motoboyInput struct {
 	CDID     *int64  `json:"cd_id"`
 	Pin      string  `json:"pin"`
 	ZonaIDs  []int64 `json:"zona_ids"`
+}
+
+// validarMotoboyInput valida presença dos dados pessoais obrigatórios do
+// motoboy (nome, telefone, cpf, email, cd). Tipo não é checado aqui pois é
+// auto-default para "autonomo" nos handlers antes de qualquer persistência.
+// Devolve mensagem PT-BR ou "" se ok.
+func validarMotoboyInput(in *motoboyInput) string {
+	if strings.TrimSpace(in.Nome) == "" {
+		return "nome obrigatório"
+	}
+	if strings.TrimSpace(in.Telefone) == "" {
+		return "telefone obrigatório"
+	}
+	if strings.TrimSpace(in.CPF) == "" {
+		return "cpf obrigatório"
+	}
+	if strings.TrimSpace(in.Email) == "" {
+		return "e-mail obrigatório"
+	}
+	if in.CDID == nil {
+		return "cd obrigatório"
+	}
+	return ""
 }
 
 // gerarTokenApp gera token hexadecimal de 32 chars para o campo token_app.
@@ -104,8 +171,11 @@ func (h *MotoboysHandler) Create(w http.ResponseWriter, r *http.Request) {
 		httpx.Err(w, 400, "bad_request", "json inválido")
 		return
 	}
-	if in.Nome == "" {
-		httpx.Err(w, 400, "bad_request", "nome obrigatório")
+	// Todos os dados pessoais do motoboy são obrigatórios (regra do dono).
+	// Defesa em profundidade — o client-side já valida, mas o backend rejeita
+	// payloads sem os campos essenciais. Mensagens PT-BR (user-facing).
+	if msg := validarMotoboyInput(&in); msg != "" {
+		httpx.Err(w, 400, "bad_request", msg)
 		return
 	}
 
@@ -174,6 +244,12 @@ func (h *MotoboysHandler) Update(w http.ResponseWriter, r *http.Request) {
 	var in motoboyInput
 	if err := httpx.DecodeJSON(r, &in); err != nil {
 		httpx.Err(w, 400, "bad_request", "json inválido")
+		return
+	}
+
+	// Dados pessoais obrigatórios também na edição (regra do dono).
+	if msg := validarMotoboyInput(&in); msg != "" {
+		httpx.Err(w, 400, "bad_request", msg)
 		return
 	}
 
@@ -296,6 +372,18 @@ func (h *MotoboysHandler) Dia(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	date := resolveDashboardDate(r.URL.Query().Get("date"))
 
+	// MED19: filtros opcionais motoboy_id (WHERE pré-agregação) e status (HAVING).
+	// motoboy_id=0 → sem filtro; status='' → sem filtro. Placeholders fixos
+	// ($1 date, $2 motoboy_id, $3 status) evitam off-by-one em $n dinâmico.
+	// status entra como HAVING (não WHERE) para preservar o breakdown por status
+	// de cada motoboy — um WHERE em p.status zeraria as demais colunas de contagem
+	// e corromperia taxa_sucesso / total_r.
+	motoboyID, _ := strconv.ParseInt(r.URL.Query().Get("motoboy_id"), 10, 64)
+	if motoboyID < 0 {
+		motoboyID = 0
+	}
+	statusFiltro := r.URL.Query().Get("status")
+
 	// Verifica existência de tabelas opcionais para graceful degradation
 	hasZonas := false
 	hasCDs := false
@@ -343,11 +431,13 @@ func (h *MotoboysHandler) Dia(w http.ResponseWriter, r *http.Request) {
 		       END AS taxa_sucesso
 		  FROM sz_motoboys m` + cdJoin + zonaJoin + `
 		  JOIN sz_motoboy_pedidos p ON p.motoboy_id = m.id
-		 WHERE DATE(p.created_at) = $1::date
+		 WHERE (p.created_at AT TIME ZONE 'America/Sao_Paulo')::date = $1::date
+		   AND ($2 = 0 OR m.id = $2)
 		 GROUP BY m.id, m.nome, m.telefone, cd_nome, zona_nome
+		HAVING ($3 = '' OR COUNT(*) FILTER (WHERE p.status = $3) > 0)
 		 ORDER BY COUNT(*) FILTER (WHERE p.status = 'entregue') DESC`
 
-	rows, err := h.Pool.Query(ctx, query, date)
+	rows, err := h.Pool.Query(ctx, query, date, motoboyID, statusFiltro)
 	if err != nil {
 		httpx.Err(w, 500, "db_error", err.Error())
 		return
@@ -365,7 +455,7 @@ func (h *MotoboysHandler) Dia(w http.ResponseWriter, r *http.Request) {
 	var semMotoboy int64
 	_ = h.Pool.QueryRow(ctx,
 		`SELECT COUNT(*)::bigint FROM sz_motoboy_pedidos
-		  WHERE DATE(created_at) = $1::date
+		  WHERE (created_at AT TIME ZONE 'America/Sao_Paulo')::date = $1::date
 		    AND (motoboy_id IS NULL OR motoboy_id = 0)
 		    AND status NOT IN ('cancelado','devolvido')`, date).Scan(&semMotoboy)
 

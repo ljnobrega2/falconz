@@ -22,7 +22,7 @@ const (
 	mbDefaultGeofence  = 500    // metros (raio padrão)
 	mbDefaultInicio    = "08:00"
 	mbDefaultFim       = "18:00"
-	mbDefaultCcFeePct  = 0.0
+	mbDefaultCcFeePct  = 3.29
 	mbMinGeofence      = 50
 	mbMaxGeofence      = 5000
 	mbMaxCcFeePct      = 30.0
@@ -35,13 +35,7 @@ var mbReHora = regexp.MustCompile(`^([01]\d|2[0-3]):[0-5]\d$`)
 
 // tableExists verifica presença de uma tabela no schema public.
 func (h *MotoboyConfigHandler) tableExists(ctx context.Context, name string) bool {
-	var ok bool
-	_ = h.Pool.QueryRow(ctx,
-		`SELECT EXISTS (
-			SELECT FROM information_schema.tables
-			WHERE table_schema='public' AND table_name=$1
-		)`, name).Scan(&ok)
-	return ok
+	return tableExistsCached(ctx, h.Pool, name) // AUDIT-2026-06-18 Onda2 (go-infoschema-cache)
 }
 
 // getOptionString lê option string com fallback. Tabela ausente → fallback.
@@ -51,7 +45,7 @@ func (h *MotoboyConfigHandler) getOptionString(ctx context.Context, key, def str
 	}
 	var raw string
 	err := h.Pool.QueryRow(ctx,
-		`SELECT value FROM senderzz_options WHERE "key"=$1`, key).Scan(&raw)
+		`SELECT value FROM senderzz_options WHERE name=$1`, key).Scan(&raw)
 	if err != nil {
 		return def
 	}
@@ -100,9 +94,9 @@ func (h *MotoboyConfigHandler) upsertOption(ctx context.Context, key, value stri
 		return nil
 	}
 	_, err := h.Pool.Exec(ctx,
-		`INSERT INTO senderzz_options ("key", value)
+		`INSERT INTO senderzz_options (name, value)
 		 VALUES ($1, $2)
-		 ON CONFLICT ("key") DO UPDATE SET value = EXCLUDED.value`, key, value)
+		 ON CONFLICT (name) DO UPDATE SET value = EXCLUDED.value`, key, value)
 	return err
 }
 

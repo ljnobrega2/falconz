@@ -74,6 +74,7 @@ var apiCatalog = []apiNamespace{
 			{Method: "GET", Path: "/orders", Description: "Lista pedidos (escopo por role)", AuthRequired: true},
 			{Method: "GET", Path: "/orders/{id}", Description: "Detalhe do pedido", AuthRequired: true},
 			{Method: "POST", Path: "/orders/{id}/status", Description: "Mudar status (whitelist: pending→cancelled apenas)", AuthRequired: true},
+			{Method: "POST", Path: "/orders/{id}/change-motoboy", Description: "Trocar motoboy do pedido", AuthRequired: true},
 			{Method: "GET", Path: "/reports", Description: "Relatórios gerais", AuthRequired: true},
 			{Method: "GET", Path: "/wallet", Description: "Saldo/carteira do usuário", AuthRequired: true},
 			{Method: "GET", Path: "/transactions", Description: "Transações financeiras", AuthRequired: true},

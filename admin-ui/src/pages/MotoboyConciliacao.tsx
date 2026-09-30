@@ -1,14 +1,19 @@
 import { useEffect, useMemo, useState } from 'react'
+import { confirmAsync } from '../components/ConfirmDialog'
+import { useToast } from '../hooks/useToast'
 import { api } from '../api'
+import FalkSelect from '../components/FalkSelect'
+import FalkDatePicker from '../components/FalkDatePicker'
 import FilterButton from '../components/FilterButton'
 import FilterTopPanel, {
   FilterField,
-  filterInputStyle,
   ActiveFilterChips,
   type ActiveChip,
 } from '../components/FilterTopPanel'
 import TableSkeleton from '../components/TableSkeleton'
+import StatusBadge from '../components/StatusBadge'
 import EmptyState from '../components/EmptyState'
+import ErrorState from '../components/ErrorState'
 import CardKpiSkeleton from '../components/CardKpiSkeleton'
 
 // MotoboyConciliacao — espelha sz_mb_tab_conciliacao() (admin.php:2064).
@@ -90,13 +95,7 @@ function daysAgoSP(n: number): string {
   return fmt.format(d)
 }
 
-// Badge de conciliacao (status do ganho).
-const CONC_BADGE: Record<string, string> = {
-  pendente:   'szv2-badge-warning',
-  disponivel: 'szv2-badge-success',
-  pago:       'szv2-badge-neutral',
-}
-
+// Rótulo de conciliação (cor vem do StatusBadge central).
 const CONC_LABEL: Record<string, string> = {
   pendente:   'Aguardando',
   disponivel: 'Conciliado',
@@ -138,7 +137,7 @@ export default function MotoboyConciliacao() {
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState('')
   const [busyConc, setBusyConc] = useState<number | null>(null)
-  const [toast, setToast] = useState<{ kind: 'ok' | 'err'; msg: string } | null>(null)
+  const showToast = useToast() // AUDIT-2026-06-18 Onda3
 
   // Filtro client-side: status de conciliação (pendente/disponivel/pago).
   const [conciliacaoStatus, setConciliacaoStatus] = useState<string>('')
@@ -165,10 +164,6 @@ export default function MotoboyConciliacao() {
 
   useEffect(() => { load() /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [])
 
-  function showToast(kind: 'ok' | 'err', msg: string) {
-    setToast({ kind, msg })
-    setTimeout(() => setToast(null), 5000)
-  }
 
   function quickLast7() {
     setDateFrom(daysAgoSP(7))
@@ -176,9 +171,7 @@ export default function MotoboyConciliacao() {
   }
 
   async function handleConciliar(pedidoID: number, wcOrderID: number) {
-    if (!window.confirm(
-      `Conciliar somente o pedido #${wcOrderID || pedidoID} e liberar a taxa para a carteira?`,
-    )) return
+    if (!await confirmAsync({ message: `Conciliar somente o pedido ${wcOrderID || pedidoID} e liberar a taxa para a carteira?` })) return
     setBusyConc(pedidoID)
     try {
       const r = await api<{ ok: boolean; ganhos_atualizados: number; hint?: string }>(
@@ -188,7 +181,7 @@ export default function MotoboyConciliacao() {
       if (r.ganhos_atualizados === 0) {
         showToast('err', r.hint || 'Nenhum lançamento pendente para esse pedido.')
       } else {
-        showToast('ok', `Pedido #${wcOrderID || pedidoID} conciliado (${r.ganhos_atualizados} lançamento(s) liberado(s)).`)
+        showToast('ok', `Pedido ${wcOrderID || pedidoID} conciliado (${r.ganhos_atualizados} lançamento(s) liberado(s)).`)
       }
       await load()
     } catch (e: any) {
@@ -209,7 +202,7 @@ export default function MotoboyConciliacao() {
     for (const it of resp.items) {
       const row = [
         fmtDateBR(it.data),
-        `#${it.wc_order_id || it.pedido_id}`,
+        `${it.wc_order_id || it.pedido_id}`,
         it.motoboy_nome || '—',
         it.zona_nome || '—',
         it.dest_nome || '—',
@@ -306,15 +299,9 @@ export default function MotoboyConciliacao() {
 
       <ActiveFilterChips chips={chips} onClearAll={clearFilters} />
 
-      {err && <div className="sz-alert-danger" style={{ marginBottom: 16 }}>{err}</div>}
-      {toast && (
-        <div
-          className={toast.kind === 'ok' ? 'sz-alert-success' : 'sz-alert-danger'}
-          style={{ marginBottom: 16 }}
-        >
-          {toast.msg}
-        </div>
-      )}
+      {/* Banner só com dados na tela (erro de refresh/ação). Falha de
+          carregamento inicial vira ErrorState na área da tabela. */}
+      {err && items.length > 0 && <div className="sz-alert-danger" style={{ marginBottom: 16 }}>{err}</div>}
 
       <FilterTopPanel
         open={filterOpen}
@@ -324,32 +311,30 @@ export default function MotoboyConciliacao() {
         title="Filtros"
       >
         <FilterField label="Data inicial">
-          <input
-            type="date"
-            style={filterInputStyle}
+          <FalkDatePicker
             value={draftFrom}
-            onChange={e => setDraftFrom(e.target.value)}
+            onChange={v => setDraftFrom(v)}
+            placeholder="dd/mm/aaaa"
           />
         </FilterField>
         <FilterField label="Data final">
-          <input
-            type="date"
-            style={filterInputStyle}
+          <FalkDatePicker
             value={draftTo}
-            onChange={e => setDraftTo(e.target.value)}
+            onChange={v => setDraftTo(v)}
+            placeholder="dd/mm/aaaa"
           />
         </FilterField>
         <FilterField label="Status de conciliação">
-          <select
-            style={filterInputStyle}
+          <FalkSelect
             value={draftConcStatus}
-            onChange={e => setDraftConcStatus(e.target.value)}
-          >
-            <option value="">Todos</option>
-            <option value="pendente">Aguardando</option>
-            <option value="disponivel">Conciliado</option>
-            <option value="pago">Pago</option>
-          </select>
+            onChange={v => setDraftConcStatus(v)}
+            options={[
+              { value: '', label: 'Todos' },
+              { value: 'pendente', label: 'Aguardando' },
+              { value: 'disponivel', label: 'Conciliado' },
+              { value: 'pago', label: 'Pago' },
+            ]}
+          />
         </FilterField>
       </FilterTopPanel>
 
@@ -421,6 +406,8 @@ export default function MotoboyConciliacao() {
 
         {loading && items.length === 0 ? (
           <TableSkeleton rows={6} cols={14} />
+        ) : err && items.length === 0 ? (
+          <ErrorState message={err} onRetry={load} />
         ) : !loading && items.length === 0 ? (
           <EmptyState
             icon="💼"
@@ -451,22 +438,17 @@ export default function MotoboyConciliacao() {
               <tbody>
                 {items.map(it => {
                   const conciliado = it.conciliacao === 'disponivel' || it.conciliacao === 'pago'
-                  const badge = CONC_BADGE[it.conciliacao] || 'szv2-badge-neutral'
                   return (
                     <tr key={`p-${it.pedido_id}`}>
                       <td style={{ fontSize: 12, color: 'var(--szv2-text-muted)' }}>
                         {fmtDateBR(it.data)}
                       </td>
-                      <td><strong>#{it.wc_order_id || it.pedido_id}</strong></td>
+                      <td><strong>{it.wc_order_id || it.pedido_id}</strong></td>
                       <td>{it.motoboy_nome || '—'}</td>
                       <td>{it.zona_nome || '—'}</td>
                       <td>{it.dest_nome || '—'}</td>
                       <td>
-                        <span
-                          className={`sz-badge ${it.status === 'frustrado' ? 'szv2-badge-danger' : 'szv2-badge-success'}`}
-                        >
-                          {it.status.toUpperCase()}
-                        </span>
+                        <StatusBadge status={it.status} />
                       </td>
                       <td style={{ fontSize: 12 }}>{it.forma}</td>
                       <td style={{ textAlign: 'right' }}>{fmtMoney(it.pgto_dinheiro)}</td>
@@ -491,9 +473,10 @@ export default function MotoboyConciliacao() {
                         {fmtMoney(it.total_validado)}
                       </td>
                       <td>
-                        <span className={`sz-badge ${badge}`}>
-                          {CONC_LABEL[it.conciliacao] || it.conciliacao}
-                        </span>
+                        <StatusBadge
+                          status={it.conciliacao}
+                          label={CONC_LABEL[it.conciliacao] || it.conciliacao}
+                        />
                       </td>
                       <td>
                         {conciliado ? (

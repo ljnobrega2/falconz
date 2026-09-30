@@ -21,6 +21,8 @@ import (
 	"context"
 	"encoding/csv"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -31,7 +33,10 @@ import (
 	"github.com/senderzz/admin-service/internal/httpx"
 )
 
-type LabelsHandler struct{ Pool *pgxpool.Pool }
+type LabelsHandler struct {
+	Pool             *pgxpool.Pool
+	LabelsServiceURL string // ex: http://labels-service:8084
+}
 
 type label struct {
 	ID           int64   `json:"id"`
@@ -48,13 +53,7 @@ type label struct {
 
 // tableExistsLabels verifica existência de tabela no schema public.
 func (h *LabelsHandler) tableExists(ctx context.Context, name string) bool {
-	var ok bool
-	_ = h.Pool.QueryRow(ctx,
-		`SELECT EXISTS (
-			SELECT FROM information_schema.tables
-			WHERE table_schema='public' AND table_name=$1
-		)`, name).Scan(&ok)
-	return ok
+	return tableExistsCached(ctx, h.Pool, name) // AUDIT-2026-06-18 Onda2 (go-infoschema-cache)
 }
 
 // List retorna lista paginada de etiquetas com filtros.
@@ -73,12 +72,12 @@ func (h *LabelsHandler) List(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	// Verifica se tabela de pedidos existe para JOIN de status WC e transportadora.
+	// AUDIT-2026-07-31: removido fallback pra wc_orders_meta (tabela MySQL/HPOS
+	// que nunca existiu no Postgres — sz_orders_meta é a nativa, criada na
+	// migração 040 e escrita em todo o sistema; o ramo era inalcançável).
 	hasOrders := h.tableExists(ctx, "sz_orders")
-	hasOrdersMeta := h.tableExists(ctx, "sz_orders_meta") || h.tableExists(ctx, "wc_orders_meta")
+	hasOrdersMeta := h.tableExists(ctx, "sz_orders_meta")
 	metaTbl := "sz_orders_meta"
-	if !h.tableExists(ctx, "sz_orders_meta") && h.tableExists(ctx, "wc_orders_meta") {
-		metaTbl = "wc_orders_meta"
-	}
 
 	// Monta query com JOINs opcionais para enriquecer a listagem.
 	var sb strings.Builder
@@ -234,10 +233,14 @@ func (h *LabelsHandler) KPIs(w http.ResponseWriter, r *http.Request) {
 	var k labelsKPIs
 
 	// Hoje: todos os statuses de expedição criados hoje.
+	// AUDIT-2026-06-18 Onda2 (go-date-sargable): range sargável no lugar de
+	// created_at::date = $N (cast na coluna impede uso de índice). Mesmo resultado.
+	dateIdx := len(args) + 1
 	_ = h.Pool.QueryRow(ctx,
 		fmt.Sprintf(`SELECT COUNT(*) FROM sz_orders
 		 WHERE status IN (%s)
-		   AND created_at::date = $%d`, inClause, len(args)+1),
+		   AND created_at >= $%d::date
+		   AND created_at <  $%d::date + interval '1 day'`, inClause, dateIdx, dateIdx),
 		append(args, today)...).Scan(&k.Hoje)
 
 	// Processando: total sem filtro de data.
@@ -323,16 +326,13 @@ func (h *LabelsHandler) fetchMarginData(ctx context.Context, dateFrom, dateTo st
 		Rows:      []marginReportRow{},
 	}
 
-	// Detecta tabelas disponíveis — espelha comportamento HPOS-aware do PHP.
+	// AUDIT-2026-07-31: removido fallback pra wc_orders_meta (nunca existiu no
+	// Postgres — ver comentário em List() acima).
 	orderTbl := ""
 	metaTbl := ""
-	if h.tableExists(ctx, "sz_orders") && (h.tableExists(ctx, "sz_orders_meta") || h.tableExists(ctx, "wc_orders_meta")) {
+	if h.tableExists(ctx, "sz_orders") && h.tableExists(ctx, "sz_orders_meta") {
 		orderTbl = "sz_orders"
-		if h.tableExists(ctx, "sz_orders_meta") {
-			metaTbl = "sz_orders_meta"
-		} else {
-			metaTbl = "wc_orders_meta"
-		}
+		metaTbl = "sz_orders_meta"
 	} else {
 		// Degradação graciosa: sem mirror, sem relatório.
 		return resp
@@ -377,7 +377,11 @@ func (h *LabelsHandler) fetchMarginData(ctx context.Context, dateFrom, dateTo st
 				'_senderzz_motoboy_flow_status',
 				'_senderzz_motoboy_status'
 			)
-		WHERE o.created_at::date BETWEEN $1::date AND $2::date
+		-- AUDIT-2026-06-18 Onda2 (go-date-sargable): range sargável no lugar de
+		-- created_at::date BETWEEN (cast na coluna impede índice). Fim inclusivo
+		-- do dia $2 preservado via < $2 + 1 dia.
+		WHERE o.created_at >= $1::date
+		  AND o.created_at <  $2::date + interval '1 day'
 		GROUP BY o.id, o.created_at, o.status
 		HAVING MAX(CASE WHEN m.meta_key = '_senderzz_service_fee'
 			THEN CAST(m.meta_value AS NUMERIC(10,2)) END) IS NOT NULL
@@ -522,12 +526,20 @@ func (h *LabelsHandler) fetchMarginData(ctx context.Context, dateFrom, dateTo st
 // MarginReport retorna o relatório de margem para o período.
 // GET /labels/margin-report?date_from=YYYY-MM-DD&date_to=YYYY-MM-DD
 func (h *LabelsHandler) MarginReport(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query()
-	dateFrom := strings.TrimSpace(q.Get("date_from"))
-	dateTo := strings.TrimSpace(q.Get("date_to"))
-
-	data := h.fetchMarginData(r.Context(), dateFrom, dateTo)
-	httpx.JSON(w, 200, data)
+	if strings.TrimSpace(h.LabelsServiceURL) == "" {
+		httpx.Err(w, http.StatusServiceUnavailable, "labels_service_unavailable", "servico de etiquetas indisponivel")
+		return
+	}
+	url := strings.TrimRight(h.LabelsServiceURL, "/") + "/internal/labels/margin-report"
+	if raw := r.URL.RawQuery; raw != "" {
+		url += "?" + raw
+	}
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, url, nil)
+	if err != nil {
+		httpx.Err(w, http.StatusInternalServerError, "internal_error", "erro ao montar relatorio")
+		return
+	}
+	doProxy(w, req)
 }
 
 // MarginReportCSV exporta o relatório de margem em CSV.
@@ -620,10 +632,10 @@ func (h *LabelsHandler) PDFUrl(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, 200, res)
 }
 
-// Generate enfileira geração de etiqueta para um pedido individual.
+// Generate dispara (re)geração de PDF de etiqueta via labels-service.
 // POST /labels/{id}/generate
-// Espelha padrão de bulk_actions.go: não chama ME API diretamente — atualiza
-// status para 'queued' e o worker PHP processa.
+// Chama o endpoint interno do labels-service que enfileira o job Asynq.
+// Não tenta setar status='queued' no banco (não é um status válido no CHECK).
 func (h *LabelsHandler) Generate(w http.ResponseWriter, r *http.Request) {
 	id, ok := parseLabelID(r)
 	if !ok {
@@ -636,43 +648,63 @@ func (h *LabelsHandler) Generate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	now := time.Now()
-	tag, err := h.Pool.Exec(ctx,
-		`UPDATE wc_me_labels
-		 SET status = 'queued', updated_at = $1
-		 WHERE id = $2 AND status NOT IN ('queued','processing')`,
-		now, id)
-	if err != nil {
-		httpx.Err(w, 500, "db_error", err.Error())
-		return
-	}
-	if tag.RowsAffected() == 0 {
-		// Verifica se a etiqueta existe.
-		var exists bool
-		_ = h.Pool.QueryRow(ctx,
-			`SELECT EXISTS(SELECT 1 FROM wc_me_labels WHERE id = $1)`, id).Scan(&exists)
-		if !exists {
-			httpx.Err(w, 404, "not_found", "etiqueta não encontrada")
-			return
-		}
-		httpx.JSON(w, 200, map[string]any{"ok": false, "message": "etiqueta já está na fila ou em processamento"})
-		return
-	}
-
-	var l label
+	// Verifica existência antes de chamar labels-service.
+	var exists bool
 	_ = h.Pool.QueryRow(ctx,
-		`SELECT id, wc_order_id, me_shipment_id, status, service_name, tracking_code, created_at::text, print_url
-		 FROM wc_me_labels WHERE id = $1`, id).
-		Scan(&l.ID, &l.WCOrderID, &l.MEShipmentID, &l.Status,
-			&l.ServiceName, &l.TrackingCode, &l.CreatedAt, &l.PrintURL)
+		`SELECT EXISTS(SELECT 1 FROM wc_me_labels WHERE id = $1)`, id).Scan(&exists)
+	if !exists {
+		httpx.Err(w, 404, "not_found", "etiqueta não encontrada")
+		return
+	}
 
-	httpx.JSON(w, 200, map[string]any{"ok": true, "label": l})
+	// Se LABELS_SERVICE_URL não estiver configurado, informa o operador.
+	if h.LabelsServiceURL == "" {
+		slog.Warn("[admin] Generate: LABELS_SERVICE_URL não configurado — enqueue impossível", "label_id", id)
+		httpx.Err(w, 503, "labels_service_unavailable",
+			"LABELS_SERVICE_URL não configurado; configure a variável de ambiente e reinicie o admin-service")
+		return
+	}
+
+	// Chama labels-service /internal/labels/{id}/enqueue-generate.
+	url := fmt.Sprintf("%s/internal/labels/%d/enqueue-generate", h.LabelsServiceURL, id)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
+	if err != nil {
+		slog.Error("[admin] Generate: erro ao criar requisição para labels-service", "label_id", id, "err", err)
+		httpx.Err(w, 500, "internal_error", "erro ao contatar labels-service")
+		return
+	}
+
+	if secret, ok := internalSecretHeader(); ok {
+		req.Header.Set("X-Internal-Secret", secret)
+	}
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		slog.Error("[admin] Generate: erro ao chamar labels-service", "label_id", id, "url", url, "err", err)
+		httpx.Err(w, 502, "labels_service_error", "falha ao contatar labels-service: "+err.Error())
+		return
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+
+	if resp.StatusCode >= 400 {
+		slog.Warn("[admin] Generate: labels-service retornou erro",
+			"label_id", id, "status", resp.StatusCode, "body", string(body))
+		httpx.Err(w, resp.StatusCode, "labels_service_error", string(body))
+		return
+	}
+
+	slog.Info("[admin] Generate: job enfileirado via labels-service", "label_id", id)
+	httpx.JSON(w, 200, map[string]any{"ok": true, "label_id": id, "queued": true})
 }
 
 // Cancel solicita cancelamento de uma etiqueta.
 // POST /labels/{id}/cancel
-// Atualiza status para 'cancel_requested' — o worker PHP processa o cancelamento
-// na API Melhor Envio e atualiza para 'cancelled'.
+// ALTO-10: grava status='canceled' (1 L) — único valor aceito pelo CHECK
+// chk_label_status (060-labels.sql) e pelo índice parcial uq_labels_order_service_alive
+// (WHERE status <> 'canceled'), que libera o slot (wc_order_id, service_id) para
+// reemissão. O valor antigo 'cancel_requested' violava o CHECK (→ 500) e, mesmo
+// se aceito, manteria a etiqueta "viva" travando a reemissão indefinidamente.
 func (h *LabelsHandler) Cancel(w http.ResponseWriter, r *http.Request) {
 	id, ok := parseLabelID(r)
 	if !ok {
@@ -688,8 +720,8 @@ func (h *LabelsHandler) Cancel(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 	tag, err := h.Pool.Exec(ctx,
 		`UPDATE wc_me_labels
-		 SET status = 'cancel_requested', updated_at = $1
-		 WHERE id = $2 AND status NOT IN ('cancel_requested','cancelled')`,
+		 SET status = 'canceled', updated_at = $1
+		 WHERE id = $2 AND status <> 'canceled'`,
 		now, id)
 	if err != nil {
 		httpx.Err(w, 500, "db_error", err.Error())
@@ -703,11 +735,11 @@ func (h *LabelsHandler) Cancel(w http.ResponseWriter, r *http.Request) {
 			httpx.Err(w, 404, "not_found", "etiqueta não encontrada")
 			return
 		}
-		httpx.JSON(w, 200, map[string]any{"ok": false, "message": "etiqueta já cancelada ou cancelamento já solicitado"})
+		httpx.JSON(w, 200, map[string]any{"ok": false, "message": "etiqueta já cancelada"})
 		return
 	}
 
-	httpx.JSON(w, 200, map[string]any{"ok": true, "id": id, "status": "cancel_requested"})
+	httpx.JSON(w, 200, map[string]any{"ok": true, "id": id, "status": "canceled"})
 }
 
 // Reverse enfileira geração de etiqueta reversa para o pedido.

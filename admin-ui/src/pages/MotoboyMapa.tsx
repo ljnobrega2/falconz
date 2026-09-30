@@ -57,6 +57,9 @@ export default function MotoboyMapa() {
       link.id = 'leaflet-css'
       link.rel = 'stylesheet'
       link.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css'
+      // AUDIT-2026-06-21 #23: SRI — CDN comprometida não injeta CSS adulterado na origem admin.
+      link.integrity = 'sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H'
+      link.crossOrigin = 'anonymous'
       document.head.appendChild(link)
     }
 
@@ -69,6 +72,9 @@ export default function MotoboyMapa() {
     const script = document.createElement('script')
     script.id = 'leaflet-js'
     script.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js'
+    // AUDIT-2026-06-21 #23: SRI — fail-closed se a CDN servir JS adulterado (script bloqueado pelo browser).
+    script.integrity = 'sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH'
+    script.crossOrigin = 'anonymous'
     script.onload = () => setLeafletReady(true)
     document.head.appendChild(script)
   }, [])
@@ -130,7 +136,7 @@ export default function MotoboyMapa() {
 
   function makeIcon(mb: MotoboiLocation) {
     const L = (window as any).L
-    const bg = mb.online ? '#EA580C' : '#9ca3af'
+    const bg = mb.online ? '#1E6FF2' : '#9ca3af'
     const initial = mb.nome.charAt(0).toUpperCase()
     return L.divIcon({
       className: '',
@@ -267,7 +273,7 @@ export default function MotoboyMapa() {
                   fontWeight: 500,
                 }}
               >
-                Nenhum motoboy em operação no momento.
+                Nenhum motoboy online no momento. Marcadores cinza mostram a última posição conhecida.
               </div>
             </div>
           )}
@@ -315,9 +321,9 @@ export default function MotoboyMapa() {
                   padding: '6px 12px',
                   borderRadius: 999,
                   border: '1px solid',
-                  borderColor: mb.online ? '#EA580C' : '#d1d5db',
-                  background: mb.online ? 'rgba(234,88,12,.07)' : '#f9fafb',
-                  color: mb.online ? '#EA580C' : '#6b7280',
+                  borderColor: mb.online ? '#1E6FF2' : '#d1d5db',
+                  background: mb.online ? 'rgba(30, 111, 242,.07)' : '#f9fafb',
+                  color: mb.online ? '#1E6FF2' : '#6b7280',
                   fontSize: 12,
                   fontWeight: 500,
                   cursor: mb.ultimo_lat != null ? 'pointer' : 'default',
@@ -338,7 +344,7 @@ export default function MotoboyMapa() {
                 <span>{mb.nome}</span>
                 <span
                   style={{
-                    background: mb.online ? '#EA580C' : '#9ca3af',
+                    background: mb.online ? '#1E6FF2' : '#9ca3af',
                     color: 'white',
                     borderRadius: 999,
                     padding: '1px 7px',

@@ -3,24 +3,70 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/senderzz/motoboy-service/internal/auth"
 	"github.com/senderzz/motoboy-service/internal/httpx"
 )
 
 // statusWhitelist lista os status válidos para mudança via OL.
+// Espelha o $allowed de sz_mb_api_ol_mudar_status() (rest-api.php:413), inclusive
+// 'a_caminho' (sub-etapa operacional de em_rota: "saiu para a próxima parada").
 var statusWhitelist = map[string]bool{
-	"agendado": true, "embalado": true, "em_rota": true,
+	"agendado": true, "embalado": true, "em_rota": true, "a_caminho": true,
 	"entregue": true, "frustrado": true, "cancelado": true,
 }
 
 // OLHandler implementa os endpoints de Operador Logístico.
 type OLHandler struct {
 	Pool *pgxpool.Pool
+}
+
+// operatorScopedCDs resolve os CDs (centros de distribuição) que o operador
+// logístico `userID` tem permissão de operar.
+//
+// SEC-GO-IDOR-CD (P2, auditoria de ataque 2026-06-20): os endpoints /ol/* são
+// hoje protegidos só por RequireRole("operator") — QUALQUER operador pode
+// mudar status / trocar motoboy / listar de QUALQUER pedido, de QUALQUER CD.
+// Hoje NÃO é explorável (existe 1 único CD), mas vira IDOR cross-operador assim
+// que entrar um 2º CD com um 2º operador.
+//
+// FIX DEFENSIVO (fail-OPEN por enquanto, de propósito): não existe ainda binding
+// operador→CD no schema (não há tabela sz_operador_cds, nem coluna/meta de cd em
+// senderzz_portal_users). Enquanto o binding não existir, retornamos (nil,false)
+// = "sem escopo" e os handlers NÃO aplicam filtro — preserva 100% do fluxo de 1 CD.
+//
+// QUANDO O BINDING ENTRAR: implementar a consulta abaixo (ex.: SELECT cd_id FROM
+// sz_operador_cds WHERE operador_user_id=$1) e retornar (cds,true). A partir daí
+// o filtro `AND cd_id = ANY($cds)` já cabeado nos 3 handlers passa a valer e o
+// IDOR cross-operador fecha SEM mais mexer nos handlers — só neste ponto.
+//
+// scoped=false  → operador sem restrição de CD (estado atual, 1 CD).
+// scoped=true   → aplicar `AND cd_id = ANY(cds)` em toda query sobre pedidos.
+func operatorScopedCDs(ctx context.Context, q queryer, userID int64) (cds []int64, scoped bool) {
+	// FLIP-POINT: ao introduzir o binding operador→CD, trocar este retorno fixo
+	// pela consulta real. Mantido como no-op deliberado (ver doc acima).
+	_ = ctx
+	_ = q
+	_ = userID
+	return nil, false
+}
+
+// olScopeFromReq extrai o user_id do operador autenticado da request e resolve
+// seus CDs permitidos. Encapsula operatorScopedCDs para uso direto nos handlers.
+// Retorna scoped=false quando não há operador no contexto (defensivo) ou quando
+// não há binding de CD — em ambos os casos os handlers NÃO filtram por CD.
+func (h *OLHandler) olScopeFromReq(r *http.Request) (cds []int64, scoped bool) {
+	u := auth.PortalUserFromCtx(r.Context())
+	if u == nil {
+		return nil, false
+	}
+	return operatorScopedCDs(r.Context(), h.Pool, u.ID)
 }
 
 // MudarStatus — POST /ol/mudar-status
@@ -46,24 +92,111 @@ func (h *OLHandler) MudarStatus(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 
-	// Busca status atual para auditoria e validação.
+	// Busca status atual + motoboy para auditoria e validação. wc_order_id e
+	// dest_telefone são necessários quando o OL muda para 'frustrado' (cálculo +
+	// congelamento das penalties — espelha a baixa do motoboy em rota.go).
 	var deStatus string
+	var donoID *int64
+	var wcOrderID int64
+	var destTelefone *string
 	err := h.Pool.QueryRow(ctx,
-		`SELECT status FROM sz_motoboy_pedidos WHERE id=$1`, req.PedidoID,
-	).Scan(&deStatus)
+		`SELECT status, motoboy_id, wc_order_id, dest_telefone FROM sz_motoboy_pedidos WHERE id=$1`, req.PedidoID,
+	).Scan(&deStatus, &donoID, &wcOrderID, &destTelefone)
 	if err != nil {
 		httpx.WriteErr(w, http.StatusNotFound, "pedido não encontrado")
 		return
 	}
 
-	_, err = h.Pool.Exec(ctx,
+	// PROIBIR DESPACHO SEM MOTOBOY: em_rota/a_caminho/entregue exigem motoboy
+	// atribuído (não há "a caminho" de um pedido sem entregador).
+	if (req.Status == "em_rota" || req.Status == "a_caminho" || req.Status == "entregue") && donoID == nil {
+		httpx.WriteErr(w, http.StatusUnprocessableEntity, "Pedido sem motoboy: defina o motoboy antes de despachar.")
+		return
+	}
+
+	// BAIXA EXIGE FOTO: concluir como entregue exige ao menos 1 comprovante (foto).
+	if req.Status == "entregue" {
+		var totalComprovantes int
+		if err := h.Pool.QueryRow(ctx,
+			`SELECT COUNT(*) FROM sz_motoboy_comprovantes WHERE pedido_id=$1`, req.PedidoID,
+		).Scan(&totalComprovantes); err != nil {
+			slog.Error("[ol] falha ao contar comprovantes", "pedido_id", req.PedidoID, "err", err)
+			httpx.WriteErr(w, http.StatusInternalServerError, "erro ao validar comprovante")
+			return
+		}
+		if totalComprovantes == 0 {
+			httpx.WriteErr(w, http.StatusUnprocessableEntity, "Baixa exige foto do comprovante.")
+			return
+		}
+	}
+
+	// BRIDGE: motoboy + sz_orders na MESMA transação. O helper mapeia o status
+	// (entregue→completo, frustrado→frustrado, cancelado→cancelled, em_rota→enviado,
+	// embalado→embalado) e silenciosamente pula 'agendado' (sem equivalente em escopo).
+	tx, err := h.Pool.Begin(ctx)
+	if err != nil {
+		slog.Error("[ol] falha ao iniciar transação", "pedido_id", req.PedidoID, "err", err)
+		httpx.WriteErr(w, http.StatusInternalServerError, "erro ao atualizar status")
+		return
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	if req.Status == "frustrado" {
+		// CONGELAMENTO (snapshot) do financeiro de frustração quando o OL marca
+		// frustrado — MESMAS colunas da baixa do motoboy (rota.go). Calculado DENTRO
+		// da tx p/ leitura consistente. valor_taxa_frustrado é a TAXA DO MOTOBOY por
+		// tentativa frustrada (sz_mbw_taxa_frustrado_mb_{id} > sz_mbw_taxa_frustrado >
+		// default 5.00) — é o que a conciliação lê p/ PAGAR o entregador, NUNCA penalty
+		// de produtor/afiliado. frustrado_isento marca a 1ª frustração por TELEFONE.
+		// ts_frustrado=NOW() (re-stamp a cada marcação, igual a rota.go).
+		tel := ""
+		if destTelefone != nil {
+			tel = *destTelefone
+		}
+		// donoID pode ser nil quando o OL frustra um pedido sem motoboy atribuído;
+		// taxaFrustrado(…, 0) cai no global → default 5.00 (seguro).
+		var mbID int64
+		if donoID != nil {
+			mbID = *donoID
+		}
+		taxaFrust := taxaFrustrado(ctx, tx, mbID)
+		isento := frustradoIsento(ctx, tx, wcOrderID, tel)
+		if _, err = tx.Exec(ctx, `
+			UPDATE sz_motoboy_pedidos
+			SET status='frustrado', ts_frustrado=NOW(),
+			    frustrado_isento=$2, valor_taxa_frustrado=$3, valor_taxa_frustrado_afiliado=0
+			WHERE id=$1`,
+			req.PedidoID, isento, taxaFrust,
+		); err != nil {
+			slog.Error("[ol] falha ao mudar status (frustrado/freeze)", "pedido_id", req.PedidoID, "err", err)
+			httpx.WriteErr(w, http.StatusInternalServerError, "erro ao atualizar status")
+			return
+		}
+		slog.Info("[ol] frustrado congelado", "pedido_id", req.PedidoID, "isento", isento,
+			"taxa_frustrado_motoboy", taxaFrust)
+	} else if _, err = tx.Exec(ctx,
 		`UPDATE sz_motoboy_pedidos SET status=$1 WHERE id=$2`,
 		req.Status, req.PedidoID,
-	)
-	if err != nil {
+	); err != nil {
 		slog.Error("[ol] falha ao mudar status", "pedido_id", req.PedidoID, "err", err)
 		httpx.WriteErr(w, http.StatusInternalServerError, "erro ao atualizar status")
 		return
+	}
+
+	szRows, err := bridgeUpdatePedidoStatus(ctx, tx, req.PedidoID, req.Status)
+	if err != nil {
+		slog.Error("[ol] falha no bridge sz_orders", "pedido_id", req.PedidoID, "err", err)
+		httpx.WriteErr(w, http.StatusInternalServerError, "erro ao atualizar status")
+		return
+	}
+
+	if err = tx.Commit(ctx); err != nil {
+		slog.Error("[ol] falha ao commitar mudança de status", "pedido_id", req.PedidoID, "err", err)
+		httpx.WriteErr(w, http.StatusInternalServerError, "erro ao atualizar status")
+		return
+	}
+	if szMapped, ok := motoboyStatusToSzOrder(req.Status); ok {
+		logBridge("ol.MudarStatus", req.PedidoID, req.Status, szMapped, szRows)
 	}
 
 	_, _ = h.Pool.Exec(ctx, `

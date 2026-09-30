@@ -1,0 +1,21 @@
+-- 518-order-status-history.sql
+--
+-- AUDIT-2026-07-30 #6 (dono): "falta horários e última atualização direto do
+-- ME" — rastreio público (tracking.go) nunca tinha como saber QUANDO o pedido
+-- passou por 'em_andamento'/'aprovado' pro fluxo expedição.
+--
+-- CORREÇÃO DE ROTA: tentei criar sz_order_status_history + trigger aqui, mas a
+-- tabela JÁ EXISTIA (schema diferente: order_id, status_de, status_para,
+-- motivo, actor_id, actor_tipo, created_at — bem mais completa) e JÁ é
+-- populada via INSERT explícito em vários handlers (go/orders/checkout.go,
+-- go/orders/orders.go, go/orders/statemachine/transitions.go,
+-- go/admin/order_detail.go, go/portal/expedicao.go). Minha trigger nova
+-- teria colunas erradas e quebraria TODO UPDATE de status em sz_orders —
+-- criada e revertida na hora (DROP TRIGGER/FUNCTION), sem nenhum pedido real
+-- afetado no meio.
+--
+-- NENHUMA mudança de schema necessária. tracking.go passou a LER dessa tabela
+-- existente pra timestamp real por etapa (pendente/em_andamento/aprovado/
+-- separado/enviado/entregue), com fallback pros pedidos criados antes de já
+-- estar coberta por todos os call sites (raro — a tabela é antiga).
+SELECT 1; -- no-op, mantido só como registro de migration numerada.
