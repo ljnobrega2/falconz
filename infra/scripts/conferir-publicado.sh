@@ -20,7 +20,7 @@ IGNORAR='node_modules|/dist/|\.git/|\.bak|\.backup|codex-backup|/\.env$'
 # Ferramentas que rodam NA MAQUINA de quem publica, nunca no servidor. Nao sao
 # divergencia: e onde elas devem estar. Qualquer outra coisa so no repositorio
 # significa codigo que nunca subiu, e isso o script precisa acusar.
-LOCAIS='infra/scripts/conferir-publicado.sh|infra/scripts/deploy-admin.sh'
+LOCAIS='infra/scripts/conferir-publicado.sh|infra/scripts/deploy-admin.sh|infra/scripts/publicar.sh'
 
 cd "$(dirname "$0")/../.." || exit 2
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
